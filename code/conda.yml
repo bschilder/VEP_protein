@@ -3,5 +3,17 @@ channels:
     - conda-forge  
     - bioconda
 dependencies:
+    - pandas
+    - numpy
+    - tqdm
     - bcbio-gff
+    - torch
+    - umap-learn
     - bioconda
+    - pyfaidx
+    - pysam
+    - HTSeq
+    - plotly
+    - pip
+    - pip:
+        - esm
