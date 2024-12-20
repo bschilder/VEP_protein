@@ -5,15 +5,19 @@ channels:
 dependencies:
     - pandas
     - numpy
+    - openpyxl
     - tqdm
     - bcbio-gff
     - torch
     - umap-learn
+    - IProgress
+    - ipywidgets
     - bioconda
     - pyfaidx
     - pysam
     - HTSeq
     - plotly
+    - seaborn
     - pip
     - pip:
         - esm
