@@ -53,7 +53,7 @@ def get_canonical_transcripts():
     knownCanonical['TranscriptId'] = knownCanonical[4].str.split('.').str[0]
     return knownCanonical
 
-def codon_buffer(seq, buffer='N'):
-    if buffer is not None:
-        seq += buffer * (3 - len(seq) % 3)
+def add_codon_buffer(seq, codon_buffer='N'):
+    if codon_buffer is not None:
+        seq += codon_buffer * (3 - len(seq) % 3)
     return seq
