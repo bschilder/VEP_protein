@@ -290,6 +290,8 @@ def process_vcf_file(f,
     if "REFERENCE" in samples:
         samples.remove("REFERENCE")
         samples = ["REFERENCE"] + samples
+    if max_samples is not None:
+        samples = samples[:max_samples]
     # Process each transcript
     for tx in tqdm(chr_transcripts, desc=f"Processing {chrom} transcripts"): 
         transcript_id = tx.id
@@ -309,8 +311,16 @@ def process_vcf_file(f,
             # Get transcript-level variables
             offset_ranges = get_offset_ranges(tx)
             ref_seq = get_ref_seq(tx=tx)
+            add_sample_progress_bar  = True
+            if add_sample_progress_bar:
+                samples_iterator = tqdm(
+                    samples, 
+                    desc=f"{transcript_id}: Processing {len(samples)} samples",
+                    leave=False, color="orange")
+            else:
+                samples_iterator = samples
             # Get personalized sequences
-            for sample in samples[:max_samples]:
+            for sample in samples_iterator:
                 (nuc_seqs_i, 
                  aa_seqs_i, 
                  variant_recorder_i, 
@@ -348,7 +358,7 @@ def process_vcf_file(f,
     # Return dictionary of results
     return chrom, results
 
-def personalize_proteins(vcf_files,
+def personalize_seqs(vcf_files,
                          ref_genome,
                          max_files = None,
                          max_transcripts = None,
@@ -456,9 +466,15 @@ def get_offset_ranges(tx,
    return offset_ranges
 
 def subset_seq(seq, 
-               offset_ranges): 
-    seq_subset = "".join(["".join(seq[x[0]-1:x[1]]) for x in offset_ranges])
-    return seq_subset
+               offset_ranges,
+               as_list=False): 
+    if as_list:
+        seq_subset = []
+        for range in offset_ranges:
+            seq_subset += seq[range[0]-1:range[1]]
+        return seq_subset
+    else:
+        return "".join(["".join(seq[x[0]-1:x[1]]) for x in offset_ranges])
 
 def translate_seq(seq, 
                   to_stop=False,
@@ -471,13 +487,10 @@ def translate_seq(seq,
     else:
         return seq
 
-def get_translated_seq(tx, **kwargs):
-    from Bio.Seq import Seq
-    relative_ranges = get_offset_ranges(tx)
-    final_seq = Seq('')
-    for x in relative_ranges:
-        final_seq += Seq(tx.coding_sequence[x[0]:x[1]])
-    return final_seq.translate(**kwargs)
+def get_translated_seq(tx, 
+                       **kwargs):
+    # return translate_seq(tx.coding_sequence, **kwargs)
+    return tx.protein_sequence
 
 def as_seq(seq):
     from Bio.Seq import Seq
@@ -500,7 +513,8 @@ def sequence_similarity(seq1, seq2):
 
 
 def get_sequence_similarity(results_all, 
-                            aa_seqs=None,
+                            seq_type=["aa", "nuc", "nuc_subset"][0],
+                            seqs=None,
                             db=None,
                             as_df=True):
     from tqdm.auto import tqdm
@@ -509,38 +523,121 @@ def get_sequence_similarity(results_all,
         db = get_db()
     # For each transcript get the sequence similarity between the reference and each of the two haplotypes within each sample 
     seq_similarity = {} 
-    if aa_seqs is None:
-        aa_seqs = get_aa_seqs(results_all, db=db)
-    for trancript_id, x in tqdm(aa_seqs.items(),"Processing transcripts"):
+    if seqs is None:
+        if seq_type == "aa":
+            seqs = get_aa_seqs(results_all, db=db)
+        elif seq_type == "nuc":
+            seqs = get_nuc_seqs(results_all, db=db)
+        elif seq_type == "nuc_subset":
+            seqs = get_nuc_seqs(results_all, db=db)
+    unique_sequences = {}
+    for trancript_id, x in tqdm(seqs.items(),"Processing transcripts"):
+        offset_ranges = get_offset_ranges(db.transcript_by_id(trancript_id))
+        unique_sequences[trancript_id] = []
+        # Add reference sequence
         if 'REFERENCE' in x.keys():
-            aa_ref_seq = x['REFERENCE'][0]
+            ref_seq = x['REFERENCE'][0]
+            if seq_type == "nuc_subset":
+                ref_seq = subset_seq(ref_seq, offset_ranges)
+            unique_sequences[trancript_id] += [ref_seq]
         else:
-            aa_ref_seq = db.transcript_by_id(trancript_id).protein_sequence
+            if seq_type == "aa":
+                ref_seq = db.transcript_by_id(trancript_id).protein_sequence
+            elif seq_type == "nuc":
+                ref_seq = db.transcript_by_id(trancript_id).coding_sequence
+        # Iterate over samples
         seq_similarity[trancript_id] = []
         for sample, seqs in x.items():
             if sample == 'REFERENCE':
                 continue
+            # Phase 1
             if seqs[0] is not None:
-                seq1_sim = sequence_similarity(aa_ref_seq, seqs[0])
+                seq = seqs[0]
+                if seq_type == "nuc_subset":
+                    seq = subset_seq(seq, offset_ranges)
+                seq1_sim = sequence_similarity(ref_seq, seq)
+                if seq not in unique_sequences[trancript_id]:
+                    unique_sequences[trancript_id] += [seq]
             else:
                 seq1_sim = None
+            # Phase 2
             if seqs[1] is not None:
-                seq2_sim = sequence_similarity(aa_ref_seq, seqs[1])
+                seq = seqs[1]
+                if seq_type == "nuc_subset":
+                    seq = subset_seq(seq, offset_ranges)
+                seq2_sim = sequence_similarity(ref_seq, seq)
             else:
                 seq2_sim = None
+            # Add unique sequences
+            for seq in [seqs[0], seqs[1]]:
+                if seq not in unique_sequences[trancript_id]:
+                    unique_sequences[trancript_id] += [seq]
             seq_similarity[trancript_id] += [seq1_sim, seq2_sim]
+    # Convert to dataframe
     if as_df:
         seq_similarity_df = pd.DataFrame(seq_similarity)
-        samples = [x['aa_seqs'].keys() for x in results_all.values()][0]
+        samples = get_samples(results_all, include_reference=False)
         # interleave the samples with itself
-        samples = [item for sublist in zip(samples, samples) for item in sublist if item != 'REFERENCE']
-        seq_similarity_df.index = samples
+        samples = [item for sublist in zip(samples, samples) for item in sublist]
+        seq_similarity_df.insert(0, "sample", samples)
         seq_similarity_df = seq_similarity_df.melt(ignore_index=False, 
+                                                   id_vars="sample",
                             var_name="transcript_id",
-                                value_name="similarity")   
+                            value_name="similarity")   
+        seq_similarity_df['similarity_mean'] = seq_similarity_df.groupby('transcript_id')['similarity'].transform('mean')
+        # Add the number of unique sequences per transcript
+        unique_sequences_df = pd.DataFrame({k:len(v) for k,v in unique_sequences.items()}, index=['unique_sequences']).T.reset_index()
+        unique_sequences_df.columns = ['transcript_id', 'unique_sequences']
+        seq_similarity_df = pd.merge(seq_similarity_df, 
+                                    unique_sequences_df, 
+                                    on='transcript_id', 
+                                    how="left")
         return seq_similarity_df
     else:
         return seq_similarity
+    
+def plot_sequence_similarity(seq_similarity_df, 
+                             title=None,
+                             sort=True, 
+                             interact=True,
+                             ylim=(-0.1,1.1)):
+    if sort:
+        seq_similarity_df = seq_similarity_df.sort_values(by="similarity_mean", ascending=False)
+    if title is None:
+        title = f"Similarity to reference sequence<br>{seq_similarity_df.transcript_id.nunique()} transcripts<br>{seq_similarity_df['sample'].nunique()} samples"
+    if interact: 
+        import plotly.express as px
+        # Add unique sequences count to hover text
+        fig = px.box(seq_similarity_df,
+                    x="transcript_id", y="similarity",
+                    title=title,
+                    labels={"transcript_id": "transcript_id (n unique sequences)"})
+        # Update x-axis labels to include unique sequence counts
+        fig.update_xaxes(ticktext=[f"{tid} (n={n})" for tid, n in 
+                        seq_similarity_df.groupby('transcript_id')['unique_sequences'].first().items()],
+                        tickvals=seq_similarity_df['transcript_id'].unique())
+        if ylim is not None:
+            fig.update_layout(yaxis_range=ylim)
+    else:
+        # With seaborn
+        import seaborn as sns
+        import matplotlib.pyplot as plt
+        if title is not None:
+            title = title.replace("<br>", "\n")
+        fig = sns.boxplot(x="transcript_id", y="similarity", data=seq_similarity_df)
+        plt.xticks(rotation=45, ha='right')
+        # Update x-axis labels to include unique sequence counts
+        ax = plt.gca()
+        ticks = ax.get_xticks()
+        ax.xaxis.set_major_locator(plt.FixedLocator(ticks))
+        ax.set_xticklabels([f"{tid} (n={n})" for tid, n in 
+                         seq_similarity_df.groupby('transcript_id')['unique_sequences'].first().items()])
+        plt.xlabel("transcript_id (n unique sequences)")
+        plt.title(title)
+        if ylim is not None:
+            plt.ylim(ylim)
+        plt.show()
+    return fig
     
 def get_aa_seqs(results_all, db=None):
     if db is None:
@@ -551,3 +648,82 @@ def get_nuc_seqs(results_all, db=None):
     if db is None:
         db = get_db()
     return {k: dict([('REFERENCE', db.transcript_by_id(k).coding_sequence)] + list(v['nuc_seqs'].items())) if 'REFERENCE' not in v['nuc_seqs'] else v['nuc_seqs'] for k,v in results_all.items()}
+
+def get_positions(tx):
+    return [x for y in [list(range(x[0]-1, x[1])) for x in tx.coding_sequence_position_ranges] for x in y]
+
+def get_exon_indices(tx):
+    return [x for y in [[i]*(x[1]-x[0]+1) for i,x in enumerate(tx.coding_sequence_position_ranges)] for x in y]
+
+def compare_nuc_seqs(results_all, 
+                     transcript_id,
+                     sample,
+                     db=None,
+                     coding_only=False,
+                     difference_only=False):
+    import pandas as pd
+    ref_seq = results_all[transcript_id]['nuc_seqs']['REFERENCE'][0]
+    seq1 = results_all[transcript_id]['nuc_seqs'][sample][0]
+    seq2 = results_all[transcript_id]['nuc_seqs'][sample][1]
+    if coding_only:
+        if db is None:
+            db = get_db()
+        tx = db.transcript_by_id(transcript_id)
+        # find rows where seq1 and seq2 are not identical to ref_seq
+        offset_ranges = get_offset_ranges(tx)
+        ref_seq = subset_seq(ref_seq, offset_ranges, as_list=True)
+        seq1 = subset_seq(seq1, offset_ranges, as_list=True)
+        seq2 = subset_seq(seq2, offset_ranges, as_list=True)
+        positions = get_positions(tx)
+        exon_indices = get_exon_indices(tx)
+        # subset seq_df to a list of tuples, where each tuple is a start and end index
+        # seq_df = pd.concat([seq_df.iloc[start:end] for start,end in offset_ranges])
+    seq_df =  pd.DataFrame({"ref_seq":ref_seq, 
+                            "seq1":seq1, 
+                            "seq2":seq2})
+    seq_df.insert(0, "exon_index", exon_indices)
+    seq_df.insert(0, "position", positions)
+    seq_df.insert(0, "chrom", tx.contig)
+    
+    if difference_only:
+        seq_df = seq_df[(seq_df.seq1 != seq_df.ref_seq) | (seq_df.seq2 != seq_df.ref_seq)]
+    return seq_df
+
+def get_samples(results_all, 
+                include_reference=False):
+    # Assumes all transcripts have the same samples
+    samples = list(list(results_all.values())[0]['nuc_seqs'].keys())
+    if not include_reference:
+        samples = [x for x in samples if x != 'REFERENCE']
+    return samples
+
+def count_variant_lengths(ref_seq, 
+                          seq1, 
+                          seq2, 
+                          sort=True, 
+                          verbose=True):
+    # count frequency of each variant length
+    from collections import Counter
+    # Get length counts and sort by length
+    ref_counts = Counter([len(x) for x in ref_seq])
+    seq1_counts = Counter([len(x) for x in seq1]) 
+    seq2_counts = Counter([len(x) for x in seq2])
+    if sort:
+        ref_counts = sorted(ref_counts.keys())
+        seq1_counts = sorted(seq1_counts.keys())
+        seq2_counts = sorted(seq2_counts.keys())
+    if verbose:
+        print("Variant length counts:")
+        for length in ref_counts:
+            print(f"Length {length}: {ref_counts[length]}")
+        print("\nSequence 1 lengths:")
+        for length in seq1_counts:
+            print(f"Length {length}: {seq1_counts[length]}")
+        print("\nSequence 2 lengths:")
+        for length in seq2_counts:
+            print(f"Length {length}: {seq2_counts[length]}")
+    return ref_counts, seq1_counts, seq2_counts
+
+def get_sequence_diff_indices(seq1, seq2):
+    indices = [i for i, (x, y) in enumerate(zip(seq1, seq2)) if x != y]
+    return indices
