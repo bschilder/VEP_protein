@@ -1,13 +1,10 @@
 import sys
 sys.path.append("code")
-from src.utils import as_list, intersect, add_codon_buffer
-import pickle
+from src.utils import as_list, intersect, add_codon_buffer, create_proteoform_id
 from concurrent.futures import ThreadPoolExecutor, ProcessPoolExecutor
-from multiprocessing import Pool
+# from multiprocessing import Pool
 from functools import partial
 from tqdm.auto import tqdm
-import pysam
-import pyfaidx
 import os
 from Bio.Seq import Seq
 
@@ -316,7 +313,8 @@ def process_vcf_file(f,
                 samples_iterator = tqdm(
                     samples, 
                     desc=f"{transcript_id}: Processing {len(samples)} samples",
-                    leave=False, color="orange")
+                    leave=False,
+                    colour="orange")
             else:
                 samples_iterator = samples
             # Get personalized sequences
@@ -399,6 +397,7 @@ def personalize_seqs(vcf_files,
                                verbose=verbose)
         results_all = list(tqdm(executor.map(process_func, vcf_files), 
                            desc="Processing VCF files",
+                           colour="black",
                            total=len(vcf_files)))
     # convert into dict
     print("Converting all results to dict.")
@@ -547,7 +546,10 @@ def get_sequence_similarity(results_all,
                 ref_seq = db.transcript_by_id(trancript_id).coding_sequence
         # Iterate over samples
         seq_similarity[trancript_id] = []
-        for sample, seqs in x.items():
+        for sample, seqs in tqdm(x.items(),
+                                 desc=f"{trancript_id}: Processing samples",    
+                                 leave=False,
+                                 colour="orange"):
             if sample == 'REFERENCE':
                 continue
             # Phase 1
@@ -576,9 +578,7 @@ def get_sequence_similarity(results_all,
     # Convert to dataframe
     if as_df:
         seq_similarity_df = pd.DataFrame(seq_similarity)
-        samples = get_samples(results_all, include_reference=False)
-        # interleave the samples with itself
-        samples = [item for sublist in zip(samples, samples) for item in sublist]
+        samples = get_samples(results_all, include_reference=False, per_phase=True)
         seq_similarity_df.insert(0, "sample", samples)
         seq_similarity_df = seq_similarity_df.melt(ignore_index=False, 
                                                    id_vars="sample",
@@ -639,15 +639,28 @@ def plot_sequence_similarity(seq_similarity_df,
         plt.show()
     return fig
     
-def get_aa_seqs(results_all, db=None):
-    if db is None:
-        db = get_db()
-    return {k: dict([('REFERENCE', db.transcript_by_id(k).protein_sequence)] + list(v['aa_seqs'].items())) if 'REFERENCE' not in v['aa_seqs'] else v['aa_seqs'] for k,v in results_all.items()}
+def get_unique_seqs(seq_dict):
+    return {k: list(set([y for v in seq_dict[k].values() for y in v if y is not None])) for k in aa_seqs.keys()}
 
-def get_nuc_seqs(results_all, db=None):
+def get_aa_seqs(results_all, 
+                db=None, 
+                unique=False):
     if db is None:
         db = get_db()
-    return {k: dict([('REFERENCE', db.transcript_by_id(k).coding_sequence)] + list(v['nuc_seqs'].items())) if 'REFERENCE' not in v['nuc_seqs'] else v['nuc_seqs'] for k,v in results_all.items()}
+    aa_seqs = {k: dict([('REFERENCE', db.transcript_by_id(k).protein_sequence)] + list(v['aa_seqs'].items())) if 'REFERENCE' not in v['aa_seqs'] else v['aa_seqs'] for k,v in results_all.items()}
+    if unique:
+        aa_seqs = get_unique_seqs(aa_seqs)
+    return aa_seqs
+
+def get_nuc_seqs(results_all, 
+                 db=None,
+                 unique=False):
+    if db is None:
+        db = get_db()
+    nuc_seqs = {k: dict([('REFERENCE', db.transcript_by_id(k).coding_sequence)] + list(v['nuc_seqs'].items())) if 'REFERENCE' not in v['nuc_seqs'] else v['nuc_seqs'] for k,v in results_all.items()}
+    if unique:
+        nuc_seqs = get_unique_seqs(nuc_seqs)
+    return nuc_seqs
 
 def get_positions(tx):
     return [x for y in [list(range(x[0]-1, x[1])) for x in tx.coding_sequence_position_ranges] for x in y]
@@ -690,13 +703,57 @@ def compare_nuc_seqs(results_all,
     return seq_df
 
 def get_samples(results_all, 
-                include_reference=False):
+                include_reference=False,
+                per_phase=False):
     # Assumes all transcripts have the same samples
     samples = list(list(results_all.values())[0]['nuc_seqs'].keys())
     if not include_reference:
         samples = [x for x in samples if x != 'REFERENCE']
+    if per_phase:
+        # interleave the samples with itself
+        samples = [item for sublist in zip(samples, samples) for item in sublist]
     return samples
 
+def count_variants(results_all, as_df=True):
+    # get variant counts from chr_variant_recorder: iterating through chromosomes, then transcripts, then samples, then variants
+    from itertools import chain
+    import pandas as pd
+
+
+    variant_counts = {}
+    samples = set()
+    for transcript_id, results in results_all.items():
+        variant_counts[transcript_id] = []
+        for sample, variants in results['variant_recorder'].items():
+            if sample != 'REFERENCE':
+                samples.add(sample)
+                # Process one transcript at a time to reduce memory usage
+                variant_counts[transcript_id] += [len(set(variants))]
+    if as_df:
+        variant_counts_df = pd.DataFrame(variant_counts,
+                                         index=samples).reset_index().rename(columns={'index':'sample'})
+        variant_counts_df = variant_counts_df.melt(id_vars='sample',
+                                                   var_name='transcript_id',
+                                                   value_name='variant_count')
+        return variant_counts_df
+    else:
+        return variant_counts
+    
+def plot_variant_counts(variant_counts_df, 
+                        interact=False):
+    if interact:
+        import plotly.express as px
+        fig = px.histogram(variant_counts_df, x=1)
+        return fig
+    else:
+        import seaborn as sns
+        import matplotlib.pyplot as plt
+        import numpy as np
+        # Plot histogram with seaborn
+        fig = sns.histplot(data=variant_counts_df, x='variant_count', bins=100)
+        plt.show()
+        return fig
+    
 def count_variant_lengths(ref_seq, 
                           seq1, 
                           seq2, 
@@ -727,3 +784,7 @@ def count_variant_lengths(ref_seq,
 def get_sequence_diff_indices(seq1, seq2):
     indices = [i for i, (x, y) in enumerate(zip(seq1, seq2)) if x != y]
     return indices
+
+def get_variant_counts(results_all):
+    return {k: len([x for x in len(set(results_all[k]['variant_recorder'])) if x is not None]) for k in results_all.keys()}
+

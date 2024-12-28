@@ -1,3 +1,5 @@
+## NO LONGER REALLY WORKS 
+
 from pyGeno.Genome import Genome
 from pyGeno.Gene import Gene
 from pyGeno.Transcript import Transcript
@@ -22,3 +24,11 @@ ref = Genome(name = 'GRCh38.109')
 
 # os.makedirs("/grid/koo/home/schilder/.local/lib/python3.9/site-packages/pyGeno/bootstrap_data/SNPs/", exist_ok=True)
 # B.importSNPs("Human.dummySRY_casava.tar.gz")
+
+
+# os.makedirs("/grid/koo/home/schilder/.local/lib/python3.9/site-packages/pyGeno/bootstrap_data/genomes", exist_ok=True)
+# os.makedirs("/grid/koo/home/schilder/.local/lib/python3.9/site-packages/pyGeno/bootstrap_data/SNPs", exist_ok=True)
+
+# import pyGeno.bootstrap as B
+# B.printDatawraps()
+# B.importGenome("Human.GRCh37.75_Y-Only.tar.gz")

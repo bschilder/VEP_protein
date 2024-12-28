@@ -57,3 +57,161 @@ def add_codon_buffer(seq, codon_buffer='N'):
     if codon_buffer is not None:
         seq += codon_buffer * (3 - len(seq) % 3)
     return seq
+
+def get_chr_map(save_path=None,#'"../data/chr_name_conv.txt"'
+                chroms_only=False,
+                ):
+    import pandas as pd
+    # Create map
+    chr_map = """
+    1 chr1
+    2 chr2
+    3 chr3
+    4 chr4
+    5 chr5
+    6 chr6
+    7 chr7
+    8 chr8
+    9 chr9
+    10 chr10
+    11 chr11
+    12 chr12
+    13 chr13
+    14 chr14
+    15 chr15
+    16 chr16
+    17 chr17
+    18 chr18
+    19 chr19
+    20 chr20
+    21 chr21
+    22 chr22
+    X chrX
+    """
+    # 23 chrX
+    # 24 chrY
+    # 25 chrXY
+    # 26 chrM
+    # write map to file
+    if save_path is not None:
+        with open(save_path, "w") as f:
+            f.write(chr_map)
+        # Import chromosomes
+        df = pd.read_csv(save_path, sep=" ", header=None)
+    else:
+        # Read directly from string
+        df = pd.read_csv(chr_map, header=None)
+    if chroms_only:
+        chrs = df[1].tolist()
+        chrs.reverse()
+        return chrs
+    else:
+        return df
+    
+def download_url(args): 
+    import time
+    import requests
+    import os
+    t0 = time.time() 
+    url, fn = args[0], args[1] 
+    if os.path.exists(fn):
+        print("Already exists:",fn)
+    else:
+        try: 
+            r = requests.get(url) 
+            with open(fn, 'wb') as f: 
+                f.write(r.content) 
+                print('url:', url, 'time (s):',time.time())
+                return url 
+        except Exception as e: 
+            print('Exception in download_url():', e)
+
+def download_parallel(args): 
+    from os import cpu_count
+    from multiprocessing.pool import ThreadPool
+    cpus = cpu_count() 
+    results = ThreadPool(cpus - 1).imap_unordered(download_url, args)  
+    return results
+
+def find_file(name='genomic.gff',
+              dir='./'):
+    import os
+    for root, dirs, files in os.walk(dir):
+        for file in files:
+            if file == name:
+                return os.path.join(root, file)
+    return None
+        
+
+def find_col(df, prefix, rename=False):
+    idx = [i for i in range(0,df.shape[1]-1) if str(df.iloc[:,i].values[0]).startswith(prefix)][0]
+    if rename:
+        df.rename(columns={df.columns[idx]:prefix}, inplace=True)
+        return prefix
+    else:
+        return idx
+    
+def name_enst(df, prefix="ENST"):
+    find_col(df, prefix, rename=True)
+
+
+# for each proteoform, come up with a unique ID based on the position and identity of each amino acid 
+# range(len(protein_seq))
+# map each amino acid to a number
+def create_proteoform_id(transcript_id,
+                         aa_seq,
+                         alphabet=None,
+                         extra_items=['*']):
+    if alphabet is None:
+        import esm
+        model, alphabet = esm.pretrained.esm2_t33_650M_UR50D()
+    token_map = {aa:i for i,aa in enumerate(set(alphabet.all_toks+extra_items))}
+    return f"{transcript_id}_proteoform{sum([token_map[x]*i for i,x in enumerate(str(aa_seq))])}"
+
+def filter_matrix(X):
+    print("Filtering matrix")
+    import torch
+    # Get indicies of rows in X that have Nan
+    nan_indices = torch.isnan(X).any(dim=1)
+    print("Matrix shape before filtering:",X.shape)
+    # Remove rows with Nan
+    X = X[~nan_indices]
+    print("Matrix shape after filtering:",X.shape)
+    return X, nan_indices
+
+def run_umap(X,
+             verbose = True,
+             filter=True,
+             **kwargs):
+    if filter is True:
+        X, nan_indices = filter_matrix(X)
+    print("Running UMAP")
+    import umap
+    reducer = umap.UMAP(verbose=verbose,
+                        **kwargs)
+    reducer.fit(X)
+    embedding = reducer.transform(X)
+    return reducer, embedding, nan_indices
+
+def plot_density(df,
+                 x='UMAP_1',
+                 y='UMAP_2',
+                 alpha=0.5,
+                 cmap='viridis',
+                 figsize=(10, 8),
+                 **kwargs):
+    import seaborn as sns
+    import matplotlib.pyplot as plt
+    plt.figure(figsize=figsize)  # Set figure size
+    plt.gca().set_facecolor('#2F0154') # Set background to slightly darker than darkest viridis color
+    sns.kdeplot(data=df, x=x, y=y, 
+                fill=True, 
+                cmap=cmap,
+                **kwargs
+                ) 
+    # Then overlay scatter points with some transparency
+    plt.scatter(data=df,
+                x=x, y=y,
+                alpha=alpha, # Make points semi-transparent
+                s=1, # Small point size
+                color='white') # White points
