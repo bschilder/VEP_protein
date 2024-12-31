@@ -44,14 +44,6 @@ def list_vcf(dir='/grid/koo/home/schilder/projects/GenomeEncoder/data/1KG/vcf_fo
     return vcf_files
 
 
-def get_canonical_transcripts():
-    import pandas as pd
-    knownCanonical = pd.read_csv("https://hgdownload.soe.ucsc.edu/goldenPath/hg38/database/knownCanonical.txt.gz", 
-                                 sep="\t", 
-                                 header=None)
-    # Extract the TranscriptId from the knownCanonical file
-    knownCanonical['TranscriptId'] = knownCanonical[4].str.split('.').str[0]
-    return knownCanonical
 
 def add_codon_buffer(seq, codon_buffer='N'):
     if codon_buffer is not None:
@@ -215,3 +207,7 @@ def plot_density(df,
                 alpha=alpha, # Make points semi-transparent
                 s=1, # Small point size
                 color='white') # White points
+    
+def is_VariantFile(x):
+    import pysam
+    return isinstance(x, pysam.VariantFile)

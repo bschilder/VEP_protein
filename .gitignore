@@ -1,5 +1,6 @@
 data/
 output.png
+code/*.tbi
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

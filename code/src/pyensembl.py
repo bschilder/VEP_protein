@@ -1,6 +1,8 @@
 import sys
 sys.path.append("code")
-from src.utils import as_list, intersect, add_codon_buffer, create_proteoform_id
+from src.utils import as_list, intersect, add_codon_buffer, is_VariantFile
+from src.variant_annotation import filter_variants
+
 from concurrent.futures import ThreadPoolExecutor, ProcessPoolExecutor
 # from multiprocessing import Pool
 from functools import partial
@@ -15,6 +17,39 @@ def get_db(release=111, species="homo_sapiens"):
 
 def get_ids(objects):
     return [x.id for x in objects]
+
+def get_mane_transcripts(protein_coding_only=True,
+                         db_only=True,
+                         db=None):
+    import pandas as pd
+    mane = pd.read_csv("https://ftp.ncbi.nlm.nih.gov/refseq/MANE/MANE_human/current/MANE.GRCh38.v1.4.summary.txt.gz", 
+                       sep="\t")
+    mane['TranscriptId'] = mane['Ensembl_nuc'].str.split('.').str[0]
+    if protein_coding_only:
+        mane = mane[mane['Ensembl_prot'].notna()]
+    if db_only:
+        if db is None:
+            db = get_db()
+        # if protein_coding_only:
+        #     ids = get_protein_coding_transcripts(db, ids_only=True)
+        # else: 
+        ids = db.transcript_ids()
+        mane = mane.loc[mane['TranscriptId'].isin(ids)]
+    print(f"{len(mane)} MANE transcripts found.")
+    return mane
+
+def get_canonical_transcripts(db=None, 
+                              protein_coding_only=True):
+    import pandas as pd
+    knownCanonical = pd.read_csv("https://hgdownload.soe.ucsc.edu/goldenPath/hg38/database/knownCanonical.txt.gz", 
+                                 sep="\t", 
+                                 header=None)
+    # Extract the TranscriptId from the knownCanonical file
+    knownCanonical['TranscriptId'] = knownCanonical[4].str.split('.').str[0]
+    if protein_coding_only:
+        coding_transcripts = get_protein_coding_transcripts(db)
+        knownCanonical = knownCanonical[knownCanonical['TranscriptId'].isin(coding_transcripts)]
+    return knownCanonical
 
 def filter_transcripts(transcripts, 
                        id=[],
@@ -42,13 +77,19 @@ def filter_transcripts(transcripts,
         print(f"{len(transcripts)} transcripts remaining.")
     return transcripts
 
-def get_protein_coding_transcripts(db, 
+def get_protein_coding_transcripts(db=None, 
+                                   ids_only=False,
                                    verbose=True):
     from tqdm.auto import tqdm
+    if db is None:
+        db = get_db()
     protein_ids = db.protein_ids()
     transcripts = [db.transcript_by_protein_id(x) for x in tqdm(protein_ids,"Retrieving transcripts.", disable=not verbose)]
     # transcripts = filter_transcripts(transcripts, biotype=['protein_coding'])
-    return transcripts
+    if ids_only:
+        return [x.id for x in transcripts]
+    else:
+        return transcripts
 
 def get_transcripts(db, 
                     biotypes=[], 
@@ -222,15 +263,28 @@ def run_check_ref_mismatch(rec,
 def get_variant_id(rec):
     return f"{rec.chrom}:{rec.start}_{rec.stop}_{rec.alleles[0]}_{rec.alleles[1]}"
 
+def process_allele(tx, 
+                   allele, 
+                   rec, 
+                   strand_aware=True): 
+    # Complement alleles if on negative strand
+    if strand_aware and tx.strand == "-":
+        allele = reverse_complement(allele)
+    check_allele_length(allele, rec)
+    return allele
+
+
 def personalize_nuc_seqs(tx,
                          vcf_in,
                          ref_genome,
-                         ref_seq,
-                         sample,
+                         ref_seq=None,
+                         nuc_seqs=None,
+                         sample=None,
                          variant_types=None,#["SNP", "DEL", "INS"],
                          check_ref_mismatch=True,
                          strand_aware=True,
-                         as_list=True):
+                         as_list=True,
+                         extra_variants=None):
     variant_recorder = []
     chrom = "chr"+tx.contig.replace("chr","")  
     # Get the reference sequence
@@ -244,10 +298,20 @@ def personalize_nuc_seqs(tx,
     if sample == "REFERENCE":
         return [ref_seq, ref_seq], variant_recorder
     # Get personalized sequences
-    seq1 = ref_seq.copy()
-    seq2 = ref_seq.copy()
+    if nuc_seqs is None:
+        seq1 = ref_seq.copy()
+        seq2 = ref_seq.copy()
+    else:
+        seq1 = nuc_seqs[0]
+        seq2 = nuc_seqs[1]
+    # Get variant records
+    if is_VariantFile(vcf_in):
+        records = vcf_in.fetch(chrom, tx.start, tx.end)
+    else:
+        records = vcf_in
+    
     # Iterate over variants within the transcript
-    for rec in vcf_in.fetch(chrom, tx.start, tx.end): 
+    for rec in records: 
         
         # Filter by variant type
         if variant_types is not None:
@@ -284,19 +348,17 @@ def personalize_nuc_seqs(tx,
             continue
         
         # Phase 1 allele
-        allele1 = alleles[gt[0]]
-        # Complement alleles if on negative strand
-        if strand_aware and tx.strand == "-":
-            allele1 = reverse_complement(allele1)
-        check_allele_length(allele1, rec)
+        allele1 = process_allele(tx, 
+                                 alleles[gt[0]], 
+                                 rec, 
+                                 strand_aware=strand_aware)
         seq1 = add_variant(seq1, allele1, rec_start, rec_stop, rec)
         
         # Phase 2 allele
-        allele2 = alleles[gt[1]]
-        # Complement alleles if on negative strand
-        if strand_aware and tx.strand == "-":
-            allele2 = reverse_complement(allele2)
-        check_allele_length(allele2, rec)
+        allele2 = process_allele(tx, 
+                                 alleles[gt[1]], 
+                                 rec, 
+                                 strand_aware=strand_aware)
         seq2 = add_variant(seq2, allele2, rec_start, rec_stop, rec)
 
         # Record variant (only if the variant is not already recorded)
@@ -309,6 +371,21 @@ def personalize_nuc_seqs(tx,
             raise ValueError(f"Sequences are not the same length: {len(seq1)} != {len(ref_seq)}: {variant_id}")
         if len(seq2) != len(ref_seq):
             raise ValueError(f"Sequences are not the same length: {len(seq2)} != {len(ref_seq)}: {variant_id}")
+    
+    # Use recursive function to add extra variants
+    if extra_variants is not None:
+        print(f"Adding {len(extra_variants)} extra variants")
+        nuc_seqs, variant_recorder = personalize_nuc_seqs(
+            tx=tx,
+            vcf_in=extra_variants,
+            nuc_seqs=[seq1, seq2],
+            ref_genome=ref_genome,
+            ref_seq=ref_seq,
+            sample=sample,
+            variant_types=variant_types,
+            as_list=as_list
+        )
+        return nuc_seqs, variant_recorder
     
     # Return as list or string
     if as_list is True:
@@ -324,6 +401,7 @@ def personalize_aa_seqs(tx,
                         to_stop=False, 
                         codon_buffer=None,
                         variant_types=None,
+                        extra_variants=None,
                         **kwargs):
     """
     Get personalized protein sequences for both haplotypes of a transcript.
@@ -346,6 +424,7 @@ def personalize_aa_seqs(tx,
             tx=tx,
             sample=sample,
             variant_types=variant_types,
+            extra_variants=extra_variants,
             **kwargs
         )
     # Translate CDS to Protein Sequence 
@@ -381,7 +460,8 @@ def process_vcf_file(f,
                      transcript_ids, 
                      codon_buffer, 
                      to_stop,
-                     verbose):
+                     verbose,
+                     extra_variants):
     from tqdm.auto import tqdm
     import pickle
     import os
@@ -413,6 +493,9 @@ def process_vcf_file(f,
         max_transcripts=max_transcripts,
         verbose=verbose > 1
     )
+    if len(chr_transcripts) == 0:
+        print(f"No transcripts found for {chrom}")
+        return chrom, {}
     # List samples
     if samples is None:
         samples = list(vcf_in.header.samples)
@@ -449,6 +532,15 @@ def process_vcf_file(f,
             offset_ranges = get_offset_ranges(tx)
             ref_seq = get_ref_seq(tx=tx)
             add_sample_progress_bar  = True
+            # Filter extra variants
+            if extra_variants is not None:
+                tx_extra_variants = filter_variants(
+                    recs=extra_variants, 
+                    regions=[f"{chrom}:{tx.start}-{tx.end}"],
+                    verbose=verbose>1)
+            else:
+                tx_extra_variants = None
+            # Add progress bar
             if add_sample_progress_bar:
                 samples_iterator = tqdm(
                     samples, 
@@ -470,7 +562,8 @@ def process_vcf_file(f,
                     sample=sample,
                     offset_ranges=offset_ranges,
                     codon_buffer=codon_buffer,
-                    to_stop=to_stop
+                    to_stop=to_stop,
+                    extra_variants=tx_extra_variants
                 )   
                 nuc_seqs[sample] = nuc_seqs_i
                 aa_seqs[sample] = aa_seqs_i
@@ -511,6 +604,7 @@ def personalize_seqs(vcf_files,
                          include_reference = True,
                          executor = "ThreadPoolExecutor",
                          group_by_chrom = False,
+                         extra_variants = None,
                          verbose = 0):
     if max_files is not None:
         vcf_files = vcf_files[:max_files]
@@ -534,7 +628,8 @@ def personalize_seqs(vcf_files,
                                to_stop=to_stop,
                                save_dir=save_dir,
                                force=force,
-                               verbose=verbose)
+                               verbose=verbose,
+                               extra_variants=extra_variants)
         results_all = list(tqdm(executor.map(process_func, vcf_files), 
                            desc="Processing VCF files",
                            colour="black",
