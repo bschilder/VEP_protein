@@ -85,21 +85,59 @@ def get_transcript_exons(db, transcript_id):
     exons = [db.exon_by_id(x) for x in exon_ids]
     return exons
 
-def add_variant(seq, 
-                allele, 
-                rec_start, 
-                rec_stop): 
-    # By definition, each position in the reference genome is a single base
-    # So, if the allele is a deletion, we need to add "-" to the end of the allele
-    # If the allele is an insertion, we need to add the allele to the start of the sequence
-    # If the allele is a substitution, we need to add the allele to the start of the sequence
-    if len(allele) < 1:  # Deletion
-        allele = allele + "-" * (abs(rec_stop - rec_start) - len(allele))
+# def add_variant(seq, 
+#                 allele, 
+#                 rec_start, 
+#                 rec_stop): 
+#     if len(allele) == 1:  
+#         seq[rec_start:rec_stop] = allele
+#     else:
+#         seq[rec_start:(rec_stop)] = list(allele) 
+#     return seq
+def add_variant(seq, allele, rec_start, rec_stop, rec): 
+    """
+    Inserts a variant into the reference sequence ensuring the sequence length remains unchanged.
+
+    Parameters:
+    - seq (list of str): The reference genome sequence as a list of single-character strings.
+    - allele (str): The allele to be inserted (can be an insertion, deletion, or substitution).
+    - rec_start (int): Start index of the variant in the sequence (0-based).
+    - rec_stop (int): Stop index of the variant in the sequence (exclusive).
+
+    Returns:
+    - list of str: The modified sequence with the variant applied.
+    """
+    # rec.start and rec.stop refer to the start and stop of the variant in the sequence, 
+    # NOT the start/stop of the reference allele
+
+    # Get reference length
+    ref_length = len("".join(rec.ref)) #rec_stop - rec_start
+    ref_length2 = rec_stop - rec_start
+    if ref_length != ref_length2:
+        raise ValueError(f"Reference length mismatch: {ref_length} != {ref_length2}")
+    # Get allele length
+    allele = allele.replace("-", "").replace(".", "")
+    allele_length = len(allele)
+    # Get allele/reference length difference
+    length_diff = allele_length - ref_length
+
+    # NOTE: Must insert allele using rec_start/rec_start variables (not original coordinates) because
+    # 1. These variable are relative to the reference sequence (as opposed to absolute genomic coordinates)
+    # 2. These variables account for strand orientation
+    if length_diff > 0:  # Insertion
+        # Insert allele and remove extra bases to maintain length
+        # Example: Insert 'TTT' where ref_length is 1
+        # Replace with 'TTT' and remove 2 additional bases
+        # seq[rec_start:rec_stop] = [allele] + ['-'] * (length_diff)
+        seq[rec_start] = allele
+    elif length_diff < 0:  # Deletion
+        # Replace with allele and pad with '-' to maintain length
+        # Example: Delete 2 bases, insert 'A' (length_diff = -1)
+        seq[rec_start:rec_stop] = [allele] + ['-'] * (-length_diff)
+    else:  # Substitution
+        # Direct replacement
         seq[rec_start:rec_stop] = list(allele)
-    elif len(allele) > 1:  # Insertion
-        seq[rec_start] = "".join(allele)
-    else:
-        seq[rec_start] = "".join(allele)
+
     return seq
 
 def check_allele_length(allele, rec):
@@ -114,6 +152,75 @@ def check_allele_length(allele, rec):
     elif rec.alleles_variant_types[1] == "INS":
         if len(allele) < 2:
             raise ValueError(f"Allele length should be greater than 1, but is {len(allele)}: {allele}")
+    # elif rec.alleles_variant_types[1] == "INDEL":
+    #     if len(allele) == len(rec.ref):
+    #         raise ValueError(f"Allele length should be different than reference length, but is {len(allele)}: {allele}")
+
+def get_rec_start_stop(tx, 
+                       rec, 
+                       ref_seq_len=None,
+                       relative=True,
+                       strand_aware=True):
+    """
+    Calculate the start and stop positions of a variant record relative to the transcript.
+
+    Parameters:
+    - tx: Transcript object containing genomic coordinates and strand information.
+    - rec: Variant record from VCF.
+    - relative: If True, return positions relative to the transcript.
+
+    Returns:
+    - (rec_start, rec_stop): Tuple of start and stop positions.
+    """
+    # Genomic coordinates from the variant record
+    variant_start = rec.start  # 1-based position
+    variant_end = rec.stop #rec.pos + len(rec.ref) - 1  # Inclusive end
+
+    if relative:
+        # Calculate relative to transcript start
+        rec_start = variant_start - tx.start
+        rec_stop = variant_end - tx.start
+    else:
+        rec_start = variant_start
+        rec_stop = variant_end
+
+    # Adjust for strand orientation
+    if strand_aware and tx.strand == "-":
+        if ref_seq_len is None:
+            ref_seq_len = len(tx.sequence)
+        # For negative strand, reverse the positions
+        rec_start, rec_stop = ref_seq_len - rec_stop, ref_seq_len - rec_start
+
+    return rec_start, rec_stop
+
+def run_check_ref_mismatch(rec, 
+                           rec_start, 
+                           rec_stop, 
+                           ref_seq, 
+                           ref_genome, 
+                           chrom,
+                           tx,
+                           strand_aware=True):
+    # Get reference allele
+    rec_ref = rec.ref
+    if strand_aware and tx.strand == "-":
+        rec_ref = reverse_complement(rec_ref)
+    # Check 1
+    ref_seq_rec = "".join(ref_seq[rec_start:rec_stop])
+    if (rec_ref != ref_seq_rec):
+        raise ValueError(f"Reference allele mismatch: {rec_ref} != {ref_seq_rec}")
+    # Check 2
+    ref_seq_rec = "".join(ref_genome[chrom][rec.start:rec.stop].seq) 
+    if strand_aware and tx.strand == "-":
+        ref_seq_rec = reverse_complement(ref_seq_rec)
+    if (rec_ref != ref_seq_rec):
+        raise ValueError(f"Reference allele mismatch: {rec_ref} != {ref_seq_rec}")
+    # Check 3
+    # if (rec.ref != rec.alleles[0]):
+    #     raise ValueError(f"Reference allele is not the same as the first allele: {rec.ref} == {rec.alleles[0]}")
+
+def get_variant_id(rec):
+    return f"{rec.chrom}:{rec.start}_{rec.stop}_{rec.alleles[0]}_{rec.alleles[1]}"
 
 def personalize_nuc_seqs(tx,
                          vcf_in,
@@ -122,14 +229,17 @@ def personalize_nuc_seqs(tx,
                          sample,
                          variant_types=None,#["SNP", "DEL", "INS"],
                          check_ref_mismatch=True,
+                         strand_aware=True,
                          as_list=True):
     variant_recorder = []
     chrom = "chr"+tx.contig.replace("chr","")  
     # Get the reference sequence
     if ref_seq is None:
-        ref_seq = get_ref_seq(tx=tx)
+        ref_seq = get_ref_seq(tx=tx, 
+                              strand_aware=strand_aware)
     # Convert ref_seq to list of strings
     ref_seq = ["".join(x) for x in list(ref_seq)]
+    ref_seq_len=len(ref_seq)
     # Return reference sequence if sample is "REFERENCE"
     if sample == "REFERENCE":
         return [ref_seq, ref_seq], variant_recorder
@@ -138,38 +248,68 @@ def personalize_nuc_seqs(tx,
     seq2 = ref_seq.copy()
     # Iterate over variants within the transcript
     for rec in vcf_in.fetch(chrom, tx.start, tx.end): 
+        
+        # Filter by variant type
         if variant_types is not None:
             if rec.alleles_variant_types[1] not in variant_types:
                 continue
+        
         # compute relative range of the variant in the transcript (manually, without using tx.offset_range)
         # VCF records already add 1 to the end position, so no need to add 1 to the end position
-        rec_start, rec_stop = rec.start - tx.start, rec.stop - tx.start 
+        rec_start, rec_stop = get_rec_start_stop(tx=tx,
+                                                 rec=rec,
+                                                 ref_seq_len=ref_seq_len,
+                                                 strand_aware=strand_aware,
+                                                 relative=True)
+        
         # Confirm that the reference allele is the same as the reference allele in the VCF  
-        ref_seq_rec = "".join(ref_seq[rec_start:rec_stop])
-        if check_ref_mismatch and (rec.ref != ref_seq_rec):
-            raise ValueError(f"Reference allele mismatch: {rec.ref} != {ref_seq_rec}")
-        # Confirm that the reference allele is the same as the reference allele in the VCF  
-        # Get reference sequence for the variant
-        ref_seq_rec = "".join(ref_genome[chrom][rec.start:rec.stop].seq)
-        if check_ref_mismatch and (rec.ref != ref_seq_rec):
-            raise ValueError(f"Reference allele mismatch: {rec.ref} != {ref_seq_rec}")
+        if check_ref_mismatch:
+            run_check_ref_mismatch(rec=rec, 
+                                   rec_start=rec_start, 
+                                   rec_stop=rec_stop, 
+                                   ref_seq=ref_seq, 
+                                   ref_genome=ref_genome, 
+                                   strand_aware=strand_aware,
+                                   tx=tx,
+                                   chrom=chrom)
+        
         # Get sample data
         sample_data = rec.samples[sample]  # Get sample by name
         alleles = rec.alleles # tuple of reference allele followed by alt alleles
         gt = sample_data.allele_indices  # Tuple of genotype indices for a sample (phase1, phase2) 
         # sample_data.phased
+
+        # Skip if both alleles are same as reference
+        if gt[0]==0 and gt[1]==0:
+            continue
+        
         # Phase 1 allele
         allele1 = alleles[gt[0]]
+        # Complement alleles if on negative strand
+        if strand_aware and tx.strand == "-":
+            allele1 = reverse_complement(allele1)
         check_allele_length(allele1, rec)
-        seq1 = add_variant(seq1, allele1, rec_start, rec_stop)
+        seq1 = add_variant(seq1, allele1, rec_start, rec_stop, rec)
+        
         # Phase 2 allele
         allele2 = alleles[gt[1]]
+        # Complement alleles if on negative strand
+        if strand_aware and tx.strand == "-":
+            allele2 = reverse_complement(allele2)
         check_allele_length(allele2, rec)
-        seq2 = add_variant(seq2, allele2, rec_start, rec_stop)
+        seq2 = add_variant(seq2, allele2, rec_start, rec_stop, rec)
+
         # Record variant (only if the variant is not already recorded)
-        variant_id = f"{rec.chrom}:{rec.pos}_{allele1}_{allele2}"
+        variant_id = get_variant_id(rec)
         if variant_id not in variant_recorder:
                 variant_recorder += [variant_id]
+
+        # Check that the sequences are the same length
+        if len(seq1) != len(ref_seq):
+            raise ValueError(f"Sequences are not the same length: {len(seq1)} != {len(ref_seq)}: {variant_id}")
+        if len(seq2) != len(ref_seq):
+            raise ValueError(f"Sequences are not the same length: {len(seq2)} != {len(ref_seq)}: {variant_id}")
+    
     # Return as list or string
     if as_list is True:
         return [seq1, seq2], variant_recorder
@@ -418,7 +558,7 @@ def download(url, path):
     if not os.path.exists(path):
         print(f"Downloading {path}")
         os.makedirs(os.path.dirname(path), exist_ok=True)
-        response = requests.get(f"url")
+        response = requests.get(url)
         with open(path, 'wb') as f:
             f.write(response.content)
 
@@ -444,7 +584,8 @@ def get_ref_seq(tx=None,
                 transcript_id=None,
                 ref_genome = "GRCh38/GRCh38_full_analysis_set_plus_decoy_hla.fa",
                 db = None,
-                coding_only = False):
+                coding_only = False, 
+                strand_aware = True):
     if tx is None:
         if db is None:
             db = get_db()
@@ -455,6 +596,9 @@ def get_ref_seq(tx=None,
         chrom = "chr"+str(tx.contig).replace("chr","")
         ref_genome = get_ref_genome(ref_genome)
         ref_seq = ref_genome[chrom][tx.start:tx.end].seq
+    if strand_aware:
+        if tx.strand == "-":
+            ref_seq = reverse_complement(ref_seq)
     return ref_seq
 
 def get_offset_ranges(tx, 
@@ -470,10 +614,10 @@ def subset_seq(seq,
     if as_list:
         seq_subset = []
         for range in offset_ranges:
-            seq_subset += seq[range[0]-1:range[1]]
+            seq_subset += seq[range[0]:range[1]]
         return seq_subset
     else:
-        return "".join(["".join(seq[x[0]-1:x[1]]) for x in offset_ranges])
+        return "".join(["".join(seq[x[0]:x[1]]) for x in offset_ranges])
 
 def translate_seq(seq, 
                   to_stop=False,
@@ -600,7 +744,8 @@ def plot_sequence_similarity(seq_similarity_df,
                              title=None,
                              sort=True, 
                              interact=True,
-                             ylim=(-0.1,1.1)):
+                             ylim=None#(-0.1,1.1)
+                             ):
     if sort:
         seq_similarity_df = seq_similarity_df.sort_values(by="similarity_mean", ascending=False)
     if title is None:
@@ -787,4 +932,8 @@ def get_sequence_diff_indices(seq1, seq2):
 
 def get_variant_counts(results_all):
     return {k: len([x for x in len(set(results_all[k]['variant_recorder'])) if x is not None]) for k in results_all.keys()}
+
+def reverse_complement(seq):
+    from Bio.Seq import Seq
+    return str(Seq(seq).reverse_complement())
 

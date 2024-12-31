@@ -300,7 +300,8 @@ def plot_umap(embedding_df,
 
 
 def get_patient_tensor(seq_reps,
-                       sample_to_proteoform):
+                       sample_to_proteoform,
+                       drop_nan=True):
     import torch
     from tqdm.auto import tqdm
 
@@ -308,10 +309,10 @@ def get_patient_tensor(seq_reps,
     samples = set([x[1] for x in sample_to_proteoform.keys()])
     transcripts = set([x[0] for x in sample_to_proteoform.keys()])
     phases = ['phase1', 'phase2']
-    patient_tensor = torch.zeros((len(samples), 
-                                len(transcripts), 
-                                len(phases),
-                                seq_reps[0][1].shape[0]))
+    tensor = torch.zeros((len(samples), 
+                          len(transcripts), 
+                          len(phases),
+                          seq_reps[0][1].shape[0]))
 
     seq_reps_keys = [x[0] for x in seq_reps]
     proteoform_ids = set()
@@ -324,11 +325,17 @@ def get_patient_tensor(seq_reps,
         # seq_rep 
         if proteoform_id not in seq_reps_keys:
             continue
+
         proteoform_ids.add(proteoform_id)
         seq_rep_idx = seq_reps_keys.index(proteoform_id)
         seq_rep = seq_reps[seq_rep_idx][1]
-        patient_tensor[sample_idx, transcript_idx, phase_idx, :] = seq_rep
-    return {'tensor':patient_tensor,
+        if drop_nan and torch.isnan(seq_rep).any():
+            continue
+        tensor[sample_idx, transcript_idx, phase_idx, :] = seq_rep
+    # Drop samples with no proteoforms
+    if drop_nan is True:
+        tensor = tensor[~torch.all(torch.all(tensor == 0, dim=-1))][0]
+    return {'tensor':tensor,
             'samples':samples,
             'transcripts':transcripts,
             'phases':phases}
