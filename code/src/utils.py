@@ -211,3 +211,69 @@ def plot_density(df,
 def is_VariantFile(x):
     import pysam
     return isinstance(x, pysam.VariantFile)
+
+def save_pickle(obj, 
+                save_path,
+                verbose=True):
+    """
+    Save an object to a pickle file.
+    """
+    if save_path is not None:
+        import pickle
+        import os
+        if verbose:
+            print(f"Saving ==> {save_path}")
+        if os.path.dirname(save_path) != "":
+            os.makedirs(os.path.dirname(save_path), exist_ok=True)
+        with open(save_path, 'wb') as f:
+            pickle.dump(obj, f)
+
+def load_pickle(save_path,
+                force=False,
+                verbose=True):
+    """
+    Load an object from a pickle file.
+    """
+    import pickle
+    import os
+    if save_path is not None:
+        if os.path.exists(save_path) and not force:
+            if verbose:
+                print(f"Loading ==> {save_path}")
+            with open(save_path, 'rb') as f:
+                return pickle.load(f), None
+    return None, None
+
+def save_vcf(recs, save_path, header, mode="wb", index=True):
+    import pysam
+    from tqdm.auto import tqdm
+    if save_path is not None:
+        # Create index file if it doesn't exist
+        with pysam.VariantFile(save_path, 
+                               mode=mode,
+                               header=header) as vcf_out:
+            for rec in tqdm(recs,
+                            desc=f"Saving VCF ==> {save_path}"):
+                vcf_out.write(rec)
+        if index:
+            index_vcf(save_path)
+                
+def sort_variants(recs,
+                  **kwargs):
+    from tqdm.auto import tqdm
+    if len(recs) > 0:
+        return sorted(tqdm(recs, desc="Sorting variants", **kwargs),
+                      key=lambda rec: (rec.contig, rec.start))
+    else:
+        return recs
+
+def index_vcf(save_path,
+              force=True):
+    """
+    Index a VCF file.
+    See: https://pysam.readthedocs.io/en/latest/api.html#pysam.tabix_index
+    """
+    import pysam
+    pysam.tabix_index(filename=save_path, 
+                      preset="vcf", force=force,
+                      index=save_path+".tbi")
