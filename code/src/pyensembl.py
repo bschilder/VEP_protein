@@ -1,6 +1,6 @@
 import sys
 sys.path.append("code")
-from src.utils import as_list, intersect, add_codon_buffer, is_VariantFile
+from src.utils import as_list, intersect, add_codon_buffer, is_VariantFile, save_pickle, load_pickle
 from src.variant_annotation import filter_variants
 
 from concurrent.futures import ThreadPoolExecutor, ProcessPoolExecutor
@@ -419,6 +419,7 @@ def personalize_aa_seqs(tx,
                         codon_buffer=None,
                         variant_types=None,
                         extra_variants=None,
+                        variant_recorder=None,
                         verbose=True,
                         **kwargs):
     """
@@ -437,6 +438,8 @@ def personalize_aa_seqs(tx,
         tuple: (protein_seq1, protein_seq2) - Protein sequences for both haplotypes
     """
     transcript_id = tx.id
+    if variant_recorder is None:
+        variant_recorder = []
     if nuc_seqs is None:
         nuc_seqs, variant_recorder = personalize_nuc_seqs(
             tx=tx,
@@ -452,7 +455,7 @@ def personalize_aa_seqs(tx,
     aa_seqs = ['', '']
     problem_seqs = []
     # Iterate over both phases
-    for i,phase in enumerate(["phase1", "phase2"]):
+    for i,phase in enumerate(["phase1", "phase2"]): 
         if phase == "phase1":
             cds_seq = subset_seq(nuc_seqs[0], offset_ranges)
         else:
@@ -467,6 +470,90 @@ def personalize_aa_seqs(tx,
             problem_seqs += [(transcript_id, sample, "phase1")]
             aa_seqs[i] = None
     return nuc_seqs, aa_seqs, variant_recorder, problem_seqs
+
+
+def process_vcf_i(tx, 
+                  samples, 
+                  transcript_id,
+                  save_path,
+                  vcf_in,
+                  ref_genome,
+                  codon_buffer,
+                  to_stop,
+                  extra_variants,
+                  chrom,
+                  verbose,
+                  tx_nuc_seqs=None,
+                  add_sample_progress_bar=True,
+                  tx_variant_recorder=None):
+    offset_ranges = get_offset_ranges(tx) 
+    # Get transcript-level variables
+    ref_seq = get_ref_seq(tx=tx) 
+    tx_results = {
+                    # Sample-level
+                    'nuc_seqs': {},
+                    'aa_seqs': {},
+                    # Transcript-level
+                    'offset_ranges': offset_ranges,
+                    'variant_recorder': tx_variant_recorder,
+                    'problem_seqs': []
+            }
+    if tx_results['variant_recorder'] is None:
+        tx_results['variant_recorder'] = {}
+    # Filter extra variants
+    if extra_variants is not None:
+        tx_extra_variants = filter_variants(
+            recs=extra_variants, 
+            regions=[f"{chrom}:{tx.start}-{tx.end}"],
+            verbose=verbose>1)
+    else:
+        tx_extra_variants = None 
+    
+    # Add progress bar
+    if add_sample_progress_bar:
+        samples_iterator = tqdm(
+            samples, 
+            desc=f"{transcript_id}: Processing {len(samples)} samples",
+            leave=False,
+            colour="orange")
+    else:
+        samples_iterator = samples
+    # Get personalized sequences
+    for sample in samples_iterator:
+        if tx_nuc_seqs is None:
+            nuc_seqs = None
+        else:
+            nuc_seqs = tx_nuc_seqs[sample]
+        if tx_variant_recorder is None:
+            variant_recorder = []
+        else:
+            variant_recorder = tx_variant_recorder[sample]
+        (nuc_seqs_i, 
+            aa_seqs_i, 
+            variant_recorder_i, 
+            problem_seqs_i) = personalize_aa_seqs(
+            tx=tx, 
+            vcf_in=vcf_in,
+            ref_genome=ref_genome,
+            ref_seq=ref_seq,
+            sample=sample,
+            nuc_seqs=nuc_seqs,
+            offset_ranges=offset_ranges,
+            codon_buffer=codon_buffer,
+            to_stop=to_stop,
+            extra_variants=tx_extra_variants,
+            variant_recorder=variant_recorder,
+            verbose=verbose>1
+        )   
+        tx_results['nuc_seqs'][sample] = nuc_seqs_i
+        tx_results['aa_seqs'][sample] = aa_seqs_i
+        tx_results['variant_recorder'][sample] = variant_recorder_i
+        tx_results['problem_seqs'] += problem_seqs_i
+    
+    # Save results per transcript
+    save_pickle(tx_results, save_path, verbose=verbose>1) 
+    return tx_results
+
 
 def process_vcf_file(f, 
                      ref_genome, 
@@ -486,8 +573,14 @@ def process_vcf_file(f,
     import os
     import pysam
     import pyfaidx
+    import copy
 
     # Initialize a separate db connection within the thread
+    if isinstance(save_dir, list):
+        save_dir2 = save_dir[1]
+        save_dir = save_dir[0]
+    else:
+        save_dir2 = None
     db = get_db()
     # Fetch transcripts relevant to this VCF file
     transcripts = get_protein_coding_transcripts(db, 
@@ -533,78 +626,49 @@ def process_vcf_file(f,
         samples = samples[:max_samples]
     # Process each transcript
     for tx in tqdm(chr_transcripts, desc=f"Processing {chrom} transcripts"): 
-        transcript_id = tx.id
-        # Create storage variables
-        tx_variant_recorder = {}
-        nuc_seqs = {}
-        aa_seqs = {}
-        problem_seqs = [] 
-        # Load existing file
+        transcript_id = tx.id  
         save_path = f"{save_dir}/{transcript_id}.pkl"
+         
+        #### Loading existing file ####
         if os.path.exists(save_path) and not force:
-            if verbose > 1:
-                print(f"Loading existing file: {save_path}")
-            with open(save_path, 'rb') as handle:
-                tx_results = pickle.load(handle)
-        else: 
-            # Get transcript-level variables
-            offset_ranges = get_offset_ranges(tx)
-            ref_seq = get_ref_seq(tx=tx)
-            add_sample_progress_bar  = True
-            # Filter extra variants
-            if extra_variants is not None:
-                tx_extra_variants = filter_variants(
-                    recs=extra_variants, 
-                    regions=[f"{chrom}:{tx.start}-{tx.end}"],
-                    verbose=verbose>1)
-            else:
-                tx_extra_variants = None
-            # Add progress bar
-            if add_sample_progress_bar:
-                samples_iterator = tqdm(
-                    samples, 
-                    desc=f"{transcript_id}: Processing {len(samples)} samples",
-                    leave=False,
-                    colour="orange")
-            else:
-                samples_iterator = samples
-            # Get personalized sequences
-            for sample in samples_iterator:
-                (nuc_seqs_i, 
-                 aa_seqs_i, 
-                 variant_recorder_i, 
-                 problem_seqs_i) = personalize_aa_seqs(
+            tx_results = load_pickle(save_path, verbose=verbose>1) 
+            # Inject extra variants into the existing file
+            if extra_variants is not None and save_dir2 is not None:
+                if verbose>1:
+                    print(f"Injecting extra variants into {save_path}")
+                save_path2 = f"{save_dir2}/{transcript_id}.pkl"  
+                tx_results = process_vcf_i(
                     tx=tx, 
+                    samples=samples, 
+                    tx_nuc_seqs=copy.deepcopy(tx_results['nuc_seqs']),
+                    transcript_id=transcript_id,
+                    save_path=save_path2,
                     vcf_in=vcf_in,
-                    ref_genome=ref_genome,
-                    ref_seq=ref_seq,
-                    sample=sample,
-                    offset_ranges=offset_ranges,
+                    ref_genome=ref_genome, 
                     codon_buffer=codon_buffer,
                     to_stop=to_stop,
-                    extra_variants=tx_extra_variants,
+                    tx_variant_recorder=tx_results['variant_recorder'],
+                    extra_variants=extra_variants,
+                    chrom=chrom,
                     verbose=verbose>1
-                )   
-                nuc_seqs[sample] = nuc_seqs_i
-                aa_seqs[sample] = aa_seqs_i
-                tx_variant_recorder[sample] = variant_recorder_i
-                problem_seqs += problem_seqs_i
-            # Save results per transcript
-            if save_path is not None:
-                if verbose > 1:
-                    print(f"Saving results: {save_path}")
-                os.makedirs(os.path.dirname(save_path), exist_ok=True)
-                tx_results = {
-                    # Sample-level
-                    'nuc_seqs': nuc_seqs,
-                    'aa_seqs': aa_seqs,
-                    # Transcript-level
-                    'offset_ranges': offset_ranges,
-                    'variant_recorder': tx_variant_recorder,
-                    'problem_seqs': problem_seqs
-                }
-                with open(save_path, 'wb') as handle:
-                    pickle.dump(tx_results, handle)
+                    )
+
+        #### Create new file ####
+        else:  
+            tx_results = process_vcf_i(
+                tx=tx, 
+                samples=samples, 
+                transcript_id=transcript_id,
+                save_path=save_path,
+                vcf_in=vcf_in,
+                ref_genome=ref_genome, 
+                codon_buffer=codon_buffer,
+                to_stop=to_stop,
+                extra_variants=extra_variants,
+                chrom=chrom,
+                verbose=verbose>1
+                )
+        # Append results
         results[transcript_id] = tx_results
     # Return dictionary of results
     return chrom, results
@@ -629,8 +693,7 @@ def personalize_seqs(vcf_files,
     if max_files is not None:
         vcf_files = vcf_files[:max_files]
         if verbose:
-            print(f"Only {len(vcf_files)} files being processed.")
-    os.makedirs(save_dir, exist_ok=True)
+            print(f"Only {len(vcf_files)} files being processed.") 
     if executor == "ProcessPoolExecutor":
         executor = ProcessPoolExecutor
     elif executor == "ThreadPoolExecutor":

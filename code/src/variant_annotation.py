@@ -2,7 +2,7 @@ import sys
 sys.path.append("code")
 from src.utils import as_list, save_pickle, load_pickle, save_vcf, sort_variants
 
-def get_mv_db():
+def get_myvariant_db():
     import myvariant
     mv = myvariant.MyVariantInfo()
     return mv
@@ -14,7 +14,7 @@ def find_field(search_string,
     https://docs.myvariant.info/en/latest/doc/data.html#available-fields
     """
     if mv is None:
-        mv = get_mv_db()
+        mv = get_myvariant_db()
     fields = mv.get_fields()
     return [k for k in fields if search_string in k]
 
@@ -50,7 +50,6 @@ def embl_get_variants(uniprot_id,
 def get_clinvar_db(url="https://ftp.ncbi.nlm.nih.gov/pub/clinvar/vcf_GRCh38/clinvar.vcf.gz"):
     import pysam
     return pysam.VariantFile(url)
-
 
 def get_clinvar_db_headers(cv=None):
     if cv is None:
@@ -278,7 +277,6 @@ def select_variants(recs,
             n_variants = sum([len(x) for x in recs_selected.values()])
             print(f"Selected {len(recs_selected)} transcripts with {n_variants} variants.")
     return transcripts_selected, recs_selected
-
 
 def get_sequence_ontology(**kwargs):
     # Import SO ontology

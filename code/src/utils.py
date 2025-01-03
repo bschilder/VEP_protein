@@ -243,8 +243,8 @@ def load_pickle(save_path,
             if verbose:
                 print(f"Loading ==> {save_path}")
             with open(save_path, 'rb') as f:
-                return pickle.load(f), None
-    return None, None
+                return pickle.load(f)
+    return None
 
 def save_vcf(recs, save_path, header, mode="wb", index=True):
     import pysam
