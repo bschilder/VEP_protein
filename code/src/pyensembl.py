@@ -9,6 +9,7 @@ from functools import partial
 from tqdm.auto import tqdm
 import os
 from Bio.Seq import Seq
+import numpy as np
 
 def get_db(release=111, species="homo_sapiens"):
     from pyensembl import EnsemblRelease
@@ -17,6 +18,14 @@ def get_db(release=111, species="homo_sapiens"):
 
 def get_ids(objects):
     return [x.id for x in objects]
+
+
+def transcript_to_gene(transcript_ids,
+                       db=None):
+    transcript_ids = as_list(transcript_ids)
+    if db is None:
+        db = get_db()
+    return {k:db.gene_name_of_transcript_id(k) for k in transcript_ids}
 
 def get_mane_transcripts(protein_coding_only=True,
                          db_only=True,
@@ -610,7 +619,7 @@ def personalize_seqs(vcf_files,
                          save_dir = "1KG/sequence_dict",
                          max_workers = 1,
                          force = False,
-                         codon_buffer = None,
+                         codon_buffer = 'N',
                          to_stop = False,
                          include_reference = True,
                          executor = "ThreadPoolExecutor",
@@ -753,14 +762,31 @@ def clean_seq(seq,
               replace=["-", ".", "="],
               codon_buffer=None):
     if isinstance(seq, list):
-        seq = "".join(seq)
+        seq = "".join(seq) 
     for x in replace:
         seq = seq.replace(x,"")
     seq = add_codon_buffer(seq, codon_buffer)
     return seq
 
 def sequence_similarity(seq1, seq2):
-    return sum([1 for x,y in zip(seq1, seq2) if x == y]) / len(seq1)
+    import numpy as np
+    # Get max length and pad shorter sequence with spaces which will count as mismatches
+    if isinstance(seq1, str):
+        seq1 = list(seq1)
+    if isinstance(seq2, str):
+        seq2 = list(seq2)
+    max_len = max(len(seq1), len(seq2))
+    seq1 = seq1 + [' '] * (max_len - len(seq1))
+    seq2 = seq2 + [' '] * (max_len - len(seq2))
+    
+    # Convert sequences to NumPy arrays
+    arr1 = np.array(seq1, dtype='U1')
+    arr2 = np.array(seq2, dtype='U1')
+    
+    # Calculate the number of matching elements
+    matches = np.sum(arr1 == arr2)
+    
+    return matches / max_len
 
 def get_ref_seq_keys(d):
     return [sample for sample in d.keys() if sample.startswith("REFERENCE")]
@@ -770,7 +796,8 @@ def get_sequence_similarity(results_all,
                             seqs=None,
                             split_samples="_",
                             db=None,
-                            as_df=True):
+                            as_df=True,
+                            unique=False):
     from tqdm.auto import tqdm
     import pandas as pd
     if db is None:
@@ -779,9 +806,9 @@ def get_sequence_similarity(results_all,
     seq_similarity = {} 
     if seqs is None:
         if seq_type == "aa":
-            seqs = get_aa_seqs(results_all, db=db)
+            seqs = get_aa_seqs(results_all, db=db, unique=unique)
         elif seq_type == "nuc":
-            seqs = get_nuc_seqs(results_all, db=db)
+            seqs = get_nuc_seqs(results_all, db=db, unique=unique)
         elif seq_type == "nuc_subset":
             seqs = get_nuc_seqs(results_all, db=db)
     unique_sequences = {}
@@ -951,7 +978,7 @@ def plot_sequence_similarity(seq_similarity_df,
         return fig
     
 def get_unique_seqs(seq_dict):
-    return {k: list(set([y for v in seq_dict[k].values() for y in v if y is not None])) for k in aa_seqs.keys()}
+    return {k: list(set([y for v in seq_dict[k].values() for y in v if y is not None])) for k in seq_dict.keys()}
 
 def get_nuc_seqs(results_all, 
                  db=None,

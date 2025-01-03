@@ -46,3 +46,21 @@ def get_sample_metadata():
     pop = get_pop()
     sample_metadata = ped.merge(pop, left_on='Population', right_index=True)
     return sample_metadata
+
+def get_annotation_vcf(chrom,
+                       base_url="https://ftp.1000genomes.ebi.ac.uk/vol1/ftp/release/20130502/supporting/functional_annotation/filtered/"):
+    import pysam
+    chrom = "chr"+str(chrom).replace("chr", "")
+    url = f"{base_url}ALL.{chrom}.phase3_shapeit2_mvncall_integrated_v5.20130502.sites.annotation.vcf.gz"  
+    return pysam.VariantFile(url)
+
+def query_annotation_vcf(vcf,
+                         rec,
+                         start=None,
+                         stop=None):
+    chrom = rec.contig.replace("chr", "")
+    if start is None:
+        start = rec.pos
+    if stop is None:
+        stop = rec.pos+1
+    return vcf.fetch(chrom, start, stop)

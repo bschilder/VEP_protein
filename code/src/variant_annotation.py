@@ -51,10 +51,16 @@ def get_clinvar_db(url="https://ftp.ncbi.nlm.nih.gov/pub/clinvar/vcf_GRCh38/clin
     import pysam
     return pysam.VariantFile(url)
 
+
 def get_clinvar_db_headers(cv=None):
     if cv is None:
         cv = get_clinvar_db()
     return list(cv.header.info)
+
+def get_clinvar_db_info_descriptions(cv=None):
+    if cv is None:
+        cv = get_clinvar_db()
+    return {k:v.description for k,v in dict(cv.header.info.items()).items()}
 
 def filter_variants(recs, 
                     filter=None, 
@@ -187,6 +193,54 @@ def get_clinvar_variants(db,
     # Return the results
     return recs_all, variant_counts, transcripts_to_variants
 
+def get_clinvar_variants_pathogenic(db,
+                                    filters = {'CLNSIG': ('Pathogenic',),
+                                               'CLNREVSTAT': ('practice_guideline', # 4-star
+                                                              'reviewed_by_expert_panel','expert_panel' # 3-star
+                                                             ),
+                                                },
+                                    mc_descendants=None,
+                                    min_variants_per_transcript=1,
+                                    max_variants_per_transcript=1,
+                                    **kwargs):
+   if mc_descendants is not None:
+       descendants = get_sequence_ontology_descendants(mc_descendants, as_str=True)
+       filters['MC'] = tuple(descendants)
+   recs, variant_counts, transcripts_to_variants = get_clinvar_variants(
+        filters = filters,
+        db=db, 
+        **kwargs
+    )
+   transcripts_selected, recs_selected = select_variants(
+    recs, 
+    variant_counts,
+    min_variants_per_transcript=min_variants_per_transcript,
+    max_variants_per_transcript=max_variants_per_transcript
+    )
+   return {
+       'recs': recs,
+       'recs_selected': recs_selected,
+       'transcripts_selected': transcripts_selected,
+       'transcripts_to_variants': transcripts_to_variants,
+       'variant_counts': variant_counts
+       }
+
+def get_clinvar_variants_benign(db,
+                                    filters = {'CLNSIG': ('Benign',),
+                                               'CLNREVSTAT': ('practice_guideline', # 4-star
+                                                              'reviewed_by_expert_panel','expert_panel' # 3-star
+                                                             )
+                                                },
+                                    min_variants_per_transcript=1,
+                                    max_variants_per_transcript=1,
+                                    **kwargs):
+   return get_clinvar_variants_pathogenic(db=db,
+                                    filters = filters,
+                                    min_variants_per_transcript=min_variants_per_transcript,
+                                    max_variants_per_transcript=max_variants_per_transcript,
+                                    **kwargs)
+
+
 def get_variant_chrom(recs):
     return [x.contig for x in recs]
 
@@ -224,3 +278,26 @@ def select_variants(recs,
             n_variants = sum([len(x) for x in recs_selected.values()])
             print(f"Selected {len(recs_selected)} transcripts with {n_variants} variants.")
     return transcripts_selected, recs_selected
+
+
+def get_sequence_ontology(**kwargs):
+    # Import SO ontology
+    import owlready2
+    so_url = "http://purl.obolibrary.org/obo/so.owl"
+    return owlready2.get_ontology(so_url, **kwargs).load()
+
+def get_sequence_ontology_descendants(ancestor_label,
+                                      so=None,
+                                      include_self=True,
+                                      as_str=False,
+                                      verbose=True):
+    if so is None:
+        so = get_sequence_ontology()
+    # get all descendant terms of 'coding_sequence_variant'
+    ancestor = so.search_one(label=ancestor_label)
+    descendants = ancestor.descendants(include_self=include_self)
+    if verbose:
+        print(f"Found {len(descendants)} descendants of '{ancestor_label}'")
+    if as_str:
+        return [f"{x.name.replace('_', ':')}|{x.label[0]}" for x in descendants]
+    return descendants

@@ -27,6 +27,8 @@ def as_list(x,
         return [x] 
     if x == None:
         return x
+    if isinstance(x, type({}.keys())):
+        return list(x)
     if type(x) != list:
         x = [x]
     if type_func != None:
@@ -277,3 +279,4 @@ def index_vcf(save_path,
     pysam.tabix_index(filename=save_path, 
                       preset="vcf", force=force,
                       index=save_path+".tbi")
+    
