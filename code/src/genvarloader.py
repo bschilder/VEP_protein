@@ -1,14 +1,14 @@
-import code.src.genvarloader as gvl
+import genvarloader as gvl
 import numba as nb
 import numpy as np
 import polars as pl
 import seqpro as sp
 import pooch
-import os
-os.chdir("/grid/koo/home/schilder/projects/GenomeEncoder/data/gvl")
 from tqdm.auto import tqdm
 
-def prepare_example():
+def prepare_example(save_dir="/grid/koo/home/schilder/projects/GenomeEncoder/data/gvl"):
+    import os
+    os.chdir(save_dir)
     # GRCh38 chromosome 22 sequence
     reference = pooch.retrieve(
         url="https://ftp.ensembl.org/pub/release-112/fasta/homo_sapiens/dna/Homo_sapiens.GRCh38.dna.chromosome.22.fa.gz",
@@ -52,14 +52,17 @@ def prepare_example():
     return reference, variants, bed_path
 
 
-def create_db(reference, bed, variants):
+def create_db(reference=None, 
+              bed=None, 
+              variants=None, 
+              save_path="gvl/geuvadis.chr22.gvl", 
+              force = False):
     import os
     import polars as pl
-    ds_path = "geuvadis.chr22.gvl"
-    force = False
-    if not os.path.exists(ds_path) or force is True:
+    if not os.path.exists(save_path) or force is True:
+        print("Creating database...")
         gvl.write(
-            path=ds_path,
+            path=save_path,
             bed=bed.filter(pl.col("chrom")=="chr22"),
             variants=variants,
             # bigwigs=gvl.BigWigs.from_table(name="depth", table=bigwig_table),
@@ -68,7 +71,8 @@ def create_db(reference, bed, variants):
             max_mem=16*2**30,
             overwrite=True,
         )
-    ds = gvl.Dataset.open(ds_path, reference=reference)
+    print("Connecting to database")
+    ds = gvl.Dataset.open(save_path, reference=reference)
     return ds
 
 def read_bed(bed_path="/grid/koo/home/schilder/projects/GenomeEncoder/data/ucsc/ucsc_knownGene_CDS.bed"):

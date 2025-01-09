@@ -1,70 +1,134 @@
 import sys
 sys.path.append("code")
-from src.utils import *
+from src.utils import create_proteoform_id, load_pickle, intersect, run_umap
+
+def get_torch_data_i(transcript_id, 
+                     results, 
+                     alphabet,
+                     suffix='',
+                     to_stop=True):
+    from tqdm.auto import tqdm
+    proteoform_counter = 1
+    # print(transcript_id)
+    if 'aa_seqs' not in results:
+        print(f"'aa_seqs' key not found in results for {transcript_id}")
+        return
+    if not results['aa_seqs']:
+        print(f"'aa_seqs' is empty for {transcript_id}")
+        return
+    data = []
+    for sample, (seq1, seq2) in tqdm(results['aa_seqs'].items(), 
+                                     desc=f"{transcript_id}: Processing samples.",
+                                     leave=False):
+        sample_suffix = f"{sample}{suffix}"
+        samples.append(sample_suffix) 
+        # Process both phases
+        for phase, seq in [("phase1", seq1), ("phase2", seq2)]:
+            # only use the substring up to the first stop codon
+            if seq is None:
+                continue
+            stop_codon_count = seq.count('*')
+            if to_stop is True:
+                if '*' in seq:
+                    seq = seq[:seq.find('*')]
+            proteoform_id = create_proteoform_id(transcript_id, seq, alphabet)
+            if seq not in seq_to_proteoform.keys():
+                if transcript_id not in transcript_to_proteoform:
+                    transcript_to_proteoform[transcript_id] = []
+                seq_to_proteoform[seq] = proteoform_id
+                data.append((proteoform_id, seq))
+                proteoform_to_stopcodons[proteoform_id] = stop_codon_count
+                transcript_to_proteoform[transcript_id].append(proteoform_id)
+                proteoform_counter += 1
+            sample_to_proteoform[(transcript_id,sample_suffix,phase)] = proteoform_id
+    return data
+    # return data, seq_to_proteoform, transcript_to_proteoform, sample_to_proteoform, proteoform_to_stopcodons, samples
+
+def get_torch_data_transcripts(results_all=None,
+                               save_dir=None,
+                               transcript_ids=None,
+                               max_transcripts=None):
+    import os
+    import glob 
+    # Get transcript IDs
+    if results_all is not None:
+        print(f"Loading data from results_all")
+        transcript_ids_x = results_all.keys()
+    elif save_dir is not None:
+        if isinstance(save_dir, str):
+            print(f"Loading data from {save_dir}")
+            files = glob.glob(f"{save_dir}/*.pkl")
+            transcript_ids_x = [os.path.basename(f).replace('.pkl','') for f in files]
+        elif isinstance(save_dir, dict):
+            transcript_ids_x = set()
+            for sample_group,save_dir_group in save_dir.items():
+                files = glob.glob(f"{save_dir_group}/*.pkl")
+                transcript_ids_x.update([os.path.basename(f).replace('.pkl','') for f in files])
+            transcript_ids_x = list(transcript_ids_x)
+    # Filter transcript IDs
+    if transcript_ids is not None:
+        transcript_ids_final = intersect(transcript_ids_x, transcript_ids)
+    else:
+        transcript_ids_final = transcript_ids_x
+    if max_transcripts is not None:
+        transcript_ids_final = transcript_ids_final[:max_transcripts]
+    if len(transcript_ids_final) == 0:
+        raise ValueError(f"No transcripts found in {save_dir}")
+    return transcript_ids_final
 
 def get_torch_data(results_all=None,
                    alphabet=None,
                    transcript_ids=None,
+                   max_transcripts=None,
                    save_dir = "1KG/sequence_dict_all",
+                   to_stop=True,
+                   verbose=True
                    ):
     # Prepare Data for ESM2 Model
-    global seq_to_proteoform, transcript_to_proteoform, sample_to_proteoform, proteoform_to_stopcodons, samples, batches
+    global seq_to_proteoform, transcript_to_proteoform, sample_to_proteoform, proteoform_to_stopcodons, samples
     seq_to_proteoform = {} # Maps transcript sequence to variant ID
     transcript_to_proteoform = {} # Maps transcript to variant IDs
     sample_to_proteoform = {} # Maps transcript,sample,phase to variant ID
     proteoform_to_stopcodons = {}
     samples = []
     batches = {}
-    from tqdm.auto import tqdm
-    def get_torch_data_i(transcript_id, results):
-        data = []
-        proteoform_counter = 1
-        # print(transcript_id)
-        for sample, (seq1, seq2) in tqdm(results['aa_seqs'].items(), 
-                                         desc=f"{transcript_id}: Processing samples.", leave=False):
-            samples.append(sample) 
-            # Process both phases
-            for phase, seq in [("phase1", seq1), ("phase2", seq2)]:
-                # only use the substring up to the first stop codon
-                if seq is not None:
-                    seq = seq[:seq.find('*')]
-                if seq not in seq_to_proteoform.keys() and seq is not None:
-                    if transcript_id not in transcript_to_proteoform:
-                        transcript_to_proteoform[transcript_id] = []
-                    proteoform_id = create_proteoform_id(transcript_id, seq, alphabet)
-                    seq_to_proteoform[seq] = proteoform_id
-                    data.append((proteoform_id, seq))
-                    proteoform_to_stopcodons[proteoform_id] = seq.count('*')
-                    transcript_to_proteoform[transcript_id].append(proteoform_id)
-                    proteoform_counter += 1
-                sample_to_proteoform[(transcript_id,sample,phase)] = proteoform_id
-        batches[transcript_id] = data
-
-    # When using results_all
-    import os
-    import glob
-    import pickle
-    # Get transcript IDs
-    if results_all is not None:
-        print(f"Loading data from results_all")
-        transcript_ids_x = results_all.keys()
-    elif save_dir is not None:
-        print(f"Loading data from {save_dir}")
-        files = glob.glob(f"{save_dir}/*.pkl")
-        transcript_ids_x = [os.path.basename(f).replace('.pkl','') for f in files]
-    # Filter transcript IDs
-    if transcript_ids is not None:
-        transcript_ids_final = intersect(transcript_ids_x, transcript_ids)
-    else:
-        transcript_ids_final = transcript_ids_x
+    from tqdm.auto import tqdm  
+    transcript_ids_final = get_torch_data_transcripts(
+        results_all=results_all,
+        save_dir=save_dir,
+        transcript_ids=transcript_ids,
+        max_transcripts=max_transcripts
+    )
     # Iterate over transcripts
     for transcript_id in tqdm(transcript_ids_final,
                               desc=f"Processing transcripts"):
+    
+        batches[transcript_id] = []
         if results_all is not None:
-            results = results_all[transcript_id]
+            results_tx = results_all[transcript_id]
         elif save_dir is not None:
-            results = pickle.load(open(f"{save_dir}/{transcript_id}.pkl",'rb'))
-        get_torch_data_i(transcript_id, results)
+            if isinstance(save_dir, str): 
+                f = f"{save_dir}/{transcript_id}.pkl"
+                results_tx = load_pickle(f, verbose=verbose>1) 
+                if results_tx is not None:
+                     batches[transcript_id] += get_torch_data_i(
+                        transcript_id=transcript_id, 
+                        results=results_tx, 
+                        alphabet=alphabet, 
+                        to_stop=to_stop
+                        )
+            elif isinstance(save_dir, dict):
+                for sample_group,save_dir_group in save_dir.items():
+                    f = f"{save_dir_group}/{transcript_id}.pkl"
+                    results_tx = load_pickle(f, verbose=verbose>1)
+                    if results_tx is not None:
+                        batches[transcript_id] += get_torch_data_i(
+                            transcript_id=transcript_id, 
+                            results=results_tx, 
+                            alphabet=alphabet, 
+                            suffix="_"+sample_group,
+                            to_stop=to_stop
+                            )
     # Return vars
     return seq_to_proteoform, transcript_to_proteoform, sample_to_proteoform, proteoform_to_stopcodons, samples, batches
 
@@ -75,6 +139,7 @@ def get_embeddings(batches,
                    force = False, 
                    max_transcripts = None,
                    verbose = False,
+                   error=False,
                    save_dir="1KG/embeddings/esm2_t33_650M_UR50D"):
     import os
     import pickle
@@ -102,11 +167,12 @@ def get_embeddings(batches,
                                     desc=f"Embedding transcript proteoforms"): 
         save_path = os.path.abspath(f"{save_dir}/{transcript_id}.pkl")
         try:
-            if os.path.exists(save_path) and force is not True:
-                if verbose:
-                    print(f"Loading existing file: {save_path}")
-                with open(save_path,'rb') as handle:
-                    results[transcript_id] = pickle.load(handle) 
+            results_tx = load_pickle(save_path, 
+                                     force=force, 
+                                     verbose=verbose>1)
+            if results_tx is not None: 
+                results[transcript_id] = results_tx
+                continue
             else:
                 batch_labels, batch_strs, batch_tokens = batch_converter(data)
                 # Generate Embeddings
@@ -128,9 +194,12 @@ def get_embeddings(batches,
             # Only add to save_paths if the file was created
             save_paths[transcript_id] = save_path
         except Exception as e: 
-            print(f"Failed to embed transcript {transcript_id}: {e}")   
-            failed_transcripts.append(transcript_id)
-            continue
+            if error is True:
+                raise e
+            else:
+                print(f"Failed to embed transcript {transcript_id}: {e}")   
+                failed_transcripts.append(transcript_id)
+                continue
     return results, save_paths, failed_transcripts
 
 def get_representations(save_paths=None,

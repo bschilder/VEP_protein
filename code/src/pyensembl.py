@@ -11,6 +11,7 @@ import os
 from Bio.Seq import Seq
 import numpy as np
 
+
 def get_db(release=111, species="homo_sapiens"):
     from pyensembl import EnsemblRelease
     db = EnsemblRelease(release=release, species=species) 
@@ -21,11 +22,16 @@ def get_ids(objects):
 
 
 def transcript_to_gene(transcript_ids,
-                       db=None):
+                       db=None, 
+                       sort=False):
     transcript_ids = as_list(transcript_ids)
     if db is None:
         db = get_db()
-    return {k:db.gene_name_of_transcript_id(k) for k in transcript_ids}
+    gene_map = {k:db.gene_name_of_transcript_id(k) for k in transcript_ids}
+    if sort:
+        return sorted(gene_map.items(), key=lambda x: x[1])
+    else:
+        return gene_map
 
 def get_mane_transcripts(protein_coding_only=True,
                          db_only=True,
@@ -134,16 +140,7 @@ def get_transcript_exons(db, transcript_id):
     exon_ids = db.exon_ids_of_transcript_id(transcript_id)
     exons = [db.exon_by_id(x) for x in exon_ids]
     return exons
-
-# def add_variant(seq, 
-#                 allele, 
-#                 rec_start, 
-#                 rec_stop): 
-#     if len(allele) == 1:  
-#         seq[rec_start:rec_stop] = allele
-#     else:
-#         seq[rec_start:(rec_stop)] = list(allele) 
-#     return seq
+ 
 def add_variant(seq, allele, rec_start, rec_stop, rec): 
     """
     Inserts a variant into the reference sequence ensuring the sequence length remains unchanged.
@@ -221,10 +218,9 @@ def get_rec_start_stop(tx,
     Returns:
     - (rec_start, rec_stop): Tuple of start and stop positions.
     """
-    # Genomic coordinates from the variant record
+    # # Genomic coordinates from the variant record
     variant_start = rec.start  # 1-based position
     variant_end = rec.stop #rec.pos + len(rec.ref) - 1  # Inclusive end
-
     if relative:
         # Calculate relative to transcript start
         rec_start = variant_start - tx.start
@@ -240,6 +236,10 @@ def get_rec_start_stop(tx,
         # For negative strand, reverse the positions
         rec_start, rec_stop = ref_seq_len - rec_stop, ref_seq_len - rec_start
 
+    # return rec_start, rec_stop
+    # rec_start, rec_stop = tx.offset_range(rec.start, rec.stop)
+    # if rec_start>rec_stop:
+    #     raise ValueError(f"rec_start > rec_stop: {rec_start} > {rec_stop}")
     return rec_start, rec_stop
 
 def run_check_ref_mismatch(rec, 
@@ -252,18 +252,25 @@ def run_check_ref_mismatch(rec,
                            strand_aware=True):
     # Get reference allele
     rec_ref = rec.ref
-    if strand_aware and tx.strand == "-":
-        rec_ref = reverse_complement(rec_ref)
+    # if strand_aware and tx.on_negative_strand:
+    #     rec_ref = reverse_complement(rec_ref)
     # Check 1
     ref_seq_rec = "".join(ref_seq[rec_start:rec_stop])
     if (rec_ref != ref_seq_rec):
+        print(rec)
+        seq_display = "".join(ref_seq[rec_start-3:rec_stop+3])
+        print("strand:",tx.strand)
+        print("ref (context):",seq_display)
+        print("ref (allele):",ref_seq_rec)
+        print("rec (original):",rec.ref)
+        print("rec (corrected):",rec_ref)
         raise ValueError(f"Reference allele mismatch: {rec_ref} != {ref_seq_rec}")
     # Check 2
-    ref_seq_rec = "".join(ref_genome[chrom][rec.start:rec.stop].seq) 
-    if strand_aware and tx.strand == "-":
-        ref_seq_rec = reverse_complement(ref_seq_rec)
-    if (rec_ref != ref_seq_rec):
-        raise ValueError(f"Reference allele mismatch: {rec_ref} != {ref_seq_rec}")
+    # ref_seq_rec = "".join(ref_genome[chrom][rec.start:rec.stop].seq) 
+    # if strand_aware and tx.strand == "-":
+    #     ref_seq_rec = reverse_complement(ref_seq_rec)
+    # if (rec_ref != ref_seq_rec):
+    #     raise ValueError(f"Reference allele mismatch: {rec_ref} != {ref_seq_rec}")
     # Check 3
     # if (rec.ref != rec.alleles[0]):
     #     raise ValueError(f"Reference allele is not the same as the first allele: {rec.ref} == {rec.alleles[0]}")
@@ -282,6 +289,21 @@ def process_allele(tx,
     return allele
 
 
+def check_ref_seq_translation(tx, 
+                              seq, 
+                              subset=True):
+    if subset:
+        seq = coding_sequence_subset(tx, seq)
+    if len(seq) % 3 != 0:
+        raise ValueError(f"Sequence length is not divisible by 3: {len(seq)}")
+    aa_seq = translate_seq(seq).replace("*", "")
+    aa_ref = tx.protein_sequence
+    if len(aa_seq) != len(aa_ref):
+        raise ValueError(f"Sequence length is not the same as the coding sequence length: {len(aa_seq)} != {len(tx.coding_sequence)}")
+    if aa_seq != aa_ref:
+        raise ValueError(f"Sequence is not the same as the coding sequence: {aa_seq} != {tx.coding_sequence}")
+
+
 def personalize_nuc_seqs(tx,
                          vcf_in,
                          ref_genome,
@@ -294,7 +316,9 @@ def personalize_nuc_seqs(tx,
                          as_list=True,
                          extra_variants=None,
                          variant_recorder = None,
+                         coding_only = True,
                          verbose=True):
+    
     if variant_recorder is None:
         variant_recorder = []
     chrom = "chr"+tx.contig.replace("chr","")  
@@ -302,6 +326,7 @@ def personalize_nuc_seqs(tx,
     if ref_seq is None:
         ref_seq = get_ref_seq(tx=tx, 
                               strand_aware=strand_aware)
+    check_ref_seq_translation(tx, ref_seq)
     # Convert ref_seq to list of strings
     ref_seq = ["".join(x) for x in list(ref_seq)]
     ref_seq_len=len(ref_seq)
@@ -317,12 +342,18 @@ def personalize_nuc_seqs(tx,
         seq2 = nuc_seqs[1]
     # Get variant records
     if is_VariantFile(vcf_in):
-        records = vcf_in.fetch(chrom, tx.start, tx.end)
+        if coding_only:
+            records = []
+            for range in tx.coding_sequence_position_ranges:
+                for y in vcf_in.fetch(chrom, range[0], range[1]):
+                    records.append(y)
+        else:
+            records = vcf_in.fetch(chrom, tx.start, tx.end)
     else:
         records = vcf_in
-    
+    # breakpoint()
     # Iterate over variants within the transcript
-    for rec in records: 
+    for rec in tqdm(records, desc="Processing variants", leave=False): 
         
         # Filter by variant type
         if variant_types is not None:
@@ -414,7 +445,6 @@ def personalize_nuc_seqs(tx,
 def personalize_aa_seqs(tx, 
                         sample,
                         nuc_seqs=None,
-                        offset_ranges=None,
                         to_stop=False, 
                         codon_buffer=None,
                         variant_types=None,
@@ -450,16 +480,14 @@ def personalize_aa_seqs(tx,
             **kwargs
         )
     # Translate CDS to Protein Sequence 
-    if offset_ranges is None:
-        offset_ranges = get_offset_ranges(tx)
     aa_seqs = ['', '']
     problem_seqs = []
     # Iterate over both phases
     for i,phase in enumerate(["phase1", "phase2"]): 
         if phase == "phase1":
-            cds_seq = subset_seq(nuc_seqs[0], offset_ranges)
+            cds_seq = coding_sequence_subset(tx, nuc_seqs[0])
         else:
-            cds_seq = subset_seq(nuc_seqs[1], offset_ranges)
+            cds_seq = coding_sequence_subset(tx, nuc_seqs[1])
         # Clean sequence and/or add codon buffer
         cds_seq = clean_seq(cds_seq, codon_buffer=codon_buffer)
         try:
@@ -486,7 +514,6 @@ def process_vcf_i(tx,
                   tx_nuc_seqs=None,
                   add_sample_progress_bar=True,
                   tx_variant_recorder=None):
-    offset_ranges = get_offset_ranges(tx) 
     # Get transcript-level variables
     ref_seq = get_ref_seq(tx=tx) 
     tx_results = {
@@ -494,7 +521,6 @@ def process_vcf_i(tx,
                     'nuc_seqs': {},
                     'aa_seqs': {},
                     # Transcript-level
-                    'offset_ranges': offset_ranges,
                     'variant_recorder': tx_variant_recorder,
                     'problem_seqs': []
             }
@@ -538,7 +564,6 @@ def process_vcf_i(tx,
             ref_seq=ref_seq,
             sample=sample,
             nuc_seqs=nuc_seqs,
-            offset_ranges=offset_ranges,
             codon_buffer=codon_buffer,
             to_stop=to_stop,
             extra_variants=tx_extra_variants,
@@ -567,7 +592,8 @@ def process_vcf_file(f,
                      codon_buffer, 
                      to_stop,
                      verbose,
-                     extra_variants):
+                     extra_variants,
+                     db=None):
     from tqdm.auto import tqdm
     import pickle
     import os
@@ -581,7 +607,8 @@ def process_vcf_file(f,
         save_dir = save_dir[0]
     else:
         save_dir2 = None
-    db = get_db()
+    if db is None:
+        db = get_db()
     # Fetch transcripts relevant to this VCF file
     transcripts = get_protein_coding_transcripts(db, 
                                                  verbose=verbose)
@@ -628,15 +655,17 @@ def process_vcf_file(f,
     for tx in tqdm(chr_transcripts, desc=f"Processing {chrom} transcripts"): 
         transcript_id = tx.id  
         save_path = f"{save_dir}/{transcript_id}.pkl"
+        save_path2 = f"{save_dir2}/{transcript_id}.pkl"  
          
         #### Loading existing file ####
-        if os.path.exists(save_path) and not force:
+        if os.path.exists(save_path2) and force<1:
+            tx_results = load_pickle(save_path2, verbose=verbose>1) 
+        elif os.path.exists(save_path) and force<2:
             tx_results = load_pickle(save_path, verbose=verbose>1) 
             # Inject extra variants into the existing file
             if extra_variants is not None and save_dir2 is not None:
                 if verbose>1:
                     print(f"Injecting extra variants into {save_path}")
-                save_path2 = f"{save_dir2}/{transcript_id}.pkl"  
                 tx_results = process_vcf_i(
                     tx=tx, 
                     samples=samples, 
@@ -689,7 +718,8 @@ def personalize_seqs(vcf_files,
                          executor = "ThreadPoolExecutor",
                          group_by_chrom = False,
                          extra_variants = None,
-                         verbose = 0):
+                         verbose = 0,
+                         db=None):
     if max_files is not None:
         vcf_files = vcf_files[:max_files]
         if verbose:
@@ -712,7 +742,8 @@ def personalize_seqs(vcf_files,
                                save_dir=save_dir,
                                force=force,
                                verbose=verbose,
-                               extra_variants=extra_variants)
+                               extra_variants=extra_variants,
+                               db=db)
         results_all = list(tqdm(executor.map(process_func, vcf_files), 
                            desc="Processing VCF files",
                            colour="black",
@@ -763,41 +794,69 @@ def get_ref_seq(tx=None,
                 ref_genome = "GRCh38/GRCh38_full_analysis_set_plus_decoy_hla.fa",
                 db = None,
                 coding_only = False, 
-                strand_aware = True):
+                strand_aware = True, 
+                method="pyensembl"):
     if tx is None:
         if db is None:
             db = get_db()
         tx = db.transcript_by_id(transcript_id)
-    if coding_only:
-        ref_seq = tx.coding_sequence
-    else:
-        chrom = "chr"+str(tx.contig).replace("chr","")
-        ref_genome = get_ref_genome(ref_genome)
-        ref_seq = ref_genome[chrom][tx.start:tx.end].seq
-    # import copy
-    # ref_seq = copy.deepcopy(ref_seq)
-    if strand_aware:
-        if tx.strand == "-":
-            ref_seq = reverse_complement(ref_seq)
+    if method == "pyensembl":
+        if coding_only:
+            ref_seq = tx.coding_sequence
+        else:
+            ref_seq = tx.sequence
+    else:  
+        if coding_only:
+            ref_seq = tx.coding_sequence
+        else:
+            chrom = "chr"+str(tx.contig).replace("chr","")
+            ref_genome = get_ref_genome(ref_genome)
+            ref_seq = ref_genome[chrom][tx.start:tx.end].seq
+        # import copy
+        # ref_seq = copy.deepcopy(ref_seq)
+        if strand_aware:
+            if tx.strand == "-":
+                ref_seq = reverse_complement(ref_seq)
     return ref_seq
 
-def get_offset_ranges(tx, 
-                      ranges=None):
-   if ranges is None:
-       ranges = tx.coding_sequence_position_ranges
-   offset_ranges = [tx.offset_range(x[0],x[1]) for x in ranges]
-   return offset_ranges
+# def get_offset_ranges(tx, 
+#                       ranges=None):
+#    if ranges is None:
+#        ranges = tx.coding_sequence_position_ranges
+#    offset_ranges = [tx.offset_range(x[0],x[1]) for x in ranges]
+#    return offset_ranges
 
-def subset_seq(seq, 
-               offset_ranges,
-               as_list=False): 
-    if as_list:
-        seq_subset = []
-        for range in offset_ranges:
-            seq_subset += seq[range[0]:range[1]]
-        return seq_subset
-    else:
-        return "".join(["".join(seq[x[0]:x[1]]) for x in offset_ranges])
+# def subset_seq(seq, 
+#                offset_ranges,
+#                as_list=False): 
+#     if as_list:
+#         seq_subset = []
+#         for range in offset_ranges:
+#             seq_subset += seq[range[0]:range[1]]
+#         return seq_subset
+#     else:
+#         return "".join(["".join(seq[x[0]:x[1]]) for x in offset_ranges])
+
+
+def coding_sequence_subset(tx, seq):
+    """
+    cDNA coding sequence (from start codon to stop codon, without
+    any introns).
+
+    Adapted from: https://github.com/openvax/pyensembl/blob/d292b1749875904b380a209f4ff44b7d75dafdc3/pyensembl/transcript.py#L439
+    """
+    start = tx.first_start_codon_spliced_offset
+    end = tx.last_stop_codon_spliced_offset
+
+    # If start codon is the at nucleotide offsets [3,4,5] and
+    # stop codon is at nucleotide offsets  [20,21,22]
+    # then start = 3 and end = 22.
+    #
+    # Adding 1 to end since Python uses non-inclusive ends in slices/ranges.
+
+    # pylint: disable=invalid-slice-index
+    # TODO(tavi) Figure out pylint is not happy with this slice
+    return seq[start : end + 1]
 
 def translate_seq(seq, 
                   to_stop=False,
@@ -831,28 +890,54 @@ def clean_seq(seq,
     seq = add_codon_buffer(seq, codon_buffer)
     return seq
 
-def sequence_similarity(seq1, seq2):
+def sequence_similarity(ref_seq, 
+                        query_seq, 
+                        method="Levenshtein.ratio"):
+                        
     import numpy as np
-    # Get max length and pad shorter sequence with spaces which will count as mismatches
-    if isinstance(seq1, str):
-        seq1 = list(seq1)
-    if isinstance(seq2, str):
-        seq2 = list(seq2)
-    max_len = max(len(seq1), len(seq2))
-    seq1 = seq1 + [' '] * (max_len - len(seq1))
-    seq2 = seq2 + [' '] * (max_len - len(seq2))
-    
-    # Convert sequences to NumPy arrays
-    arr1 = np.array(seq1, dtype='U1')
-    arr2 = np.array(seq2, dtype='U1')
-    
-    # Calculate the number of matching elements
-    matches = np.sum(arr1 == arr2)
-    
-    return matches / max_len
+    if method == "list":
+        # Get max length and pad shorter sequence with spaces which will count as mismatches
+        if isinstance(ref_seq, str):
+            ref_seq = list(ref_seq)
+        if isinstance(query_seq, str):
+            query_seq = list(query_seq)
+        max_len = max(len(ref_seq), len(query_seq))
+        ref_seq = ref_seq + [' '] * (max_len - len(ref_seq))
+        query_seq = query_seq + [' '] * (max_len - len(query_seq))
+        # Convert sequences to NumPy arrays
+        arr1 = np.array(ref_seq, dtype='U1')
+        arr2 = np.array(query_seq, dtype='U1')
+        matches = np.sum(arr1 == arr2)
+        return matches / max_len 
+    elif method == "str": 
+        if isinstance(ref_seq, list):
+            ref_seq = "".join(ref_seq)
+        if isinstance(query_seq, list):
+            query_seq = "".join(query_seq)
+        ref_array = np.frombuffer(ref_seq.encode(), dtype='S1')
+        query_array = np.frombuffer(query_seq.encode(), dtype='S1')
+        matches = np.sum(ref_array == query_array)
+        return matches / len(ref_seq)
+    elif method == "Levenshtein.ratio":
+        from Levenshtein import ratio
+        return ratio(ref_seq, query_seq)
+    elif method == "Levenshtein.setratio":
+        from Levenshtein import setratio
+        if isinstance(ref_seq, str):
+            ref_seq = list(ref_seq)
+        if isinstance(query_seq, str):
+            query_seq = list(query_seq)
+        return setratio(ref_seq, query_seq)
+    else:
+        raise ValueError(f"Invalid method: {method}")
 
 def get_ref_seq_keys(d):
     return [sample for sample in d.keys() if sample.startswith("REFERENCE")]
+
+def get_transcript(transcript_id, db=None):
+    if db is None:
+        db = get_db()
+    return db.transcript_by_id(transcript_id)
 
 def get_sequence_similarity(results_all, 
                             seq_type=["aa", "nuc", "nuc_subset"][0],
@@ -863,10 +948,15 @@ def get_sequence_similarity(results_all,
                             unique=False):
     from tqdm.auto import tqdm
     import pandas as pd
+    
     if db is None:
         db = get_db()
-    # For each transcript get the sequence similarity between the reference and each of the two haplotypes within each sample 
-    seq_similarity = {} 
+    
+    # Replace list with set for unique_sequences
+    unique_sequences = {}
+    seq_similarity = {}
+    data = []
+    
     if seqs is None:
         if seq_type == "aa":
             seqs = get_aa_seqs(results_all, db=db, unique=unique)
@@ -874,71 +964,78 @@ def get_sequence_similarity(results_all,
             seqs = get_nuc_seqs(results_all, db=db, unique=unique)
         elif seq_type == "nuc_subset":
             seqs = get_nuc_seqs(results_all, db=db)
-    unique_sequences = {}
-    for transcript_id, x in tqdm(seqs.items(),"Processing transcripts"):
-        offset_ranges = get_offset_ranges(db.transcript_by_id(transcript_id))
-        unique_sequences[transcript_id] = []
-        # Add reference sequence
-        # Find the reference sequence key
+    
+    for transcript_id, x in tqdm(seqs.items(), "Processing transcripts"):
+        tx = get_transcript(transcript_id, db=db)
+        unique_sequences[transcript_id] = set()
+        
+        # Reference sequence
         ref_seq_keys = get_ref_seq_keys(x)
         if len(ref_seq_keys) > 0:
             ref_seq = x[ref_seq_keys[0]][0]
-        else:
+        else: 
             if seq_type == "aa":
-                ref_seq = db.transcript_by_id(transcript_id).protein_sequence
+                ref_seq = tx.protein_sequence
             elif seq_type == "nuc":
-                ref_seq = db.transcript_by_id(transcript_id).coding_sequence
+                ref_seq = tx.coding_sequence
+        
         if seq_type == "nuc_subset":
-            ref_seq = subset_seq(ref_seq, offset_ranges)
-        unique_sequences[transcript_id] += [ref_seq]
+            ref_seq = coding_sequence_subset(tx, ref_seq)
+        
+        unique_sequences[transcript_id].add("".join(ref_seq))
+        
         # Iterate over samples
-        seq_similarity[transcript_id] = []
         for sample, seq_list in tqdm(x.items(),
-                                 desc=f"{transcript_id}: Processing samples",    
-                                 leave=False,
-                                 colour="orange"):
+                                      desc=f"{transcript_id}: Processing samples",    
+                                      leave=False,
+                                      colour="orange"):
             if sample in ref_seq_keys:
                 continue
+            
             # Phase 1
             if seq_list[0] is not None:
                 seq = seq_list[0]
                 if seq_type == "nuc_subset":
-                    seq = subset_seq(seq, offset_ranges)
+                    seq = coding_sequence_subset(tx, seq)
                 seq1_sim = sequence_similarity(ref_seq, seq)
-                if seq not in unique_sequences[transcript_id]:
-                    unique_sequences[transcript_id] += [seq]
+                unique_sequences[transcript_id].add("".join(seq))
             else:
                 seq1_sim = None
+            
             # Phase 2
             if seq_list[1] is not None:
                 seq = seq_list[1]
                 if seq_type == "nuc_subset":
-                    seq = subset_seq(seq, offset_ranges)
+                    seq = coding_sequence_subset(tx, seq)
                 seq2_sim = sequence_similarity(ref_seq, seq)
+                unique_sequences[transcript_id].add("".join(seq))
             else:
                 seq2_sim = None
-            # Add unique sequences
-            for seq in [seq_list[0], seq_list[1]]:
-                if seq not in unique_sequences[transcript_id]:
-                    unique_sequences[transcript_id] += [seq]
-            seq_similarity[transcript_id] += [seq1_sim, seq2_sim]
-    # Convert to dataframe
+            
+            # Record similarities
+            data.append({
+                'transcript_id': transcript_id,
+                'sample': sample,
+                'phase': 'phase1',
+                'similarity': seq1_sim
+            })
+            data.append({
+                'transcript_id': transcript_id,
+                'sample': sample,
+                'phase': 'phase2',
+                'similarity': seq2_sim
+            })
+    
     if as_df:
-        seq_similarity_df = pd.DataFrame(seq_similarity)
-        samples = get_samples(results_all, include_reference=False, per_phase=True)
-        # phases = get_phases(seqs)
-        # seq_similarity_df.insert(0, "phase", phases)
-        seq_similarity_df.insert(0, "sample", samples)
-        seq_similarity_df = seq_similarity_df.melt(ignore_index=False, 
-                                                   id_vars=["sample"],
-                            var_name="transcript_id",
-                            value_name="similarity")  
+        seq_similarity_df = pd.DataFrame(data)
         seq_similarity_df['sample_id'] = seq_similarity_df['sample'].str.split("_", expand=True)[0]
-        seq_similarity_df['phase'] = seq_similarity_df.groupby(['transcript_id','sample']).cumcount()  
         seq_similarity_df['similarity_mean'] = seq_similarity_df.groupby('transcript_id')['similarity'].transform('mean')
+        
         # Add the number of unique sequences per transcript
-        unique_sequences_df = pd.DataFrame({k:len(v) for k,v in unique_sequences.items()}, index=['unique_sequences']).T.reset_index()
-        unique_sequences_df.columns = ['transcript_id', 'unique_sequences']
+        unique_sequences_df = pd.DataFrame({
+            'transcript_id': list(unique_sequences.keys()),
+            'unique_sequences': [len(v) for v in unique_sequences.values()]
+        })
         seq_similarity_df = pd.merge(seq_similarity_df, 
                                      unique_sequences_df, 
                                      on='transcript_id', 
@@ -952,10 +1049,55 @@ def get_sequence_similarity(results_all,
 def correlate_sequence_similarity(seq_similarity_df,
                                   group_col="sample_group"):
     groups = seq_similarity_df[group_col].unique()
-    df = seq_similarity_df.pivot(index=["transcript_id","sample_id",'phase'], columns=group_col, values="similarity")
+    df = seq_similarity_df.pivot(index=["transcript_id","sample_id",'phase'],
+                                  columns=group_col, 
+                                  values="similarity")
     from scipy import stats
-    corr, pval = stats.pearsonr(df[groups[0]], df[groups[1]])
-    return {'r':corr, 'pval':pval}
+    
+    # Initialize results dictionary
+    results = {}
+    
+    # Get reference group (assuming it's the first group)
+    ref_group = groups[0]
+    
+    # Compute correlations between reference and each other group
+    for group in groups[1:]:
+        # Drop any NaN values before computing correlation
+        mask = ~(df[ref_group].isna() | df[group].isna())
+        ref_data = df[ref_group][mask]
+        group_data = df[group][mask]
+        
+        # Handle case where all values are identical or insufficient data
+        if len(ref_data) < 2:
+            print(f"Insufficient data points ({len(ref_data)} < 2) for correlation")
+            corr, pval = np.nan, np.nan
+        elif (ref_data == group_data).all():
+            print(f"{ref_group} and {group} data are identical")
+            corr, pval = 1, 0
+        elif ref_data.nunique() == 1:
+            print(f"{ref_group} data has only one unique value")
+            corr, pval = np.nan, np.nan
+        elif group_data.nunique() == 1:
+            print(f"{group} data has only one unique value") 
+            corr, pval = np.nan, np.nan
+        else:
+            corr, pval = stats.pearsonr(ref_data, group_data)
+        results[f"{ref_group}_vs_{group}"] = {
+            'r': corr,
+            'pval': pval
+        }
+        
+    # Also compute correlation between non-reference groups if more than 2 groups
+    # if len(groups) > 2:
+    #     for i, group1 in enumerate(groups[1:-1]):
+    #         for group2 in groups[i+2:]:
+    #             corr, pval = stats.pearsonr(df[group1], df[group2])
+    #             results[f"{group1}_vs_{group2}"] = {
+    #                 'r': corr,
+    #                 'pval': pval
+    #             }
+    
+    return results
     
 def plot_sequence_similarity(seq_similarity_df, 
                              title=None,
@@ -966,8 +1108,9 @@ def plot_sequence_similarity(seq_similarity_df,
                              return_fig=False   
                              ):
     if sort:
-         seq_similarity_df.sort_values(by=["sample_group","similarity_mean"], 
-                                        ascending=[False,False], 
+        group_cols = intersect([facet_col,"similarity_mean"], seq_similarity_df.columns)
+        seq_similarity_df.sort_values(by=group_cols, 
+                                        ascending=[False]*len(group_cols), 
                                         inplace=True)
     if title is None:
         title = f"Similarity to reference sequence<br>{seq_similarity_df.transcript_id.nunique()} transcripts<br>{seq_similarity_df['sample'].nunique()} samples"
@@ -991,7 +1134,7 @@ def plot_sequence_similarity(seq_similarity_df,
         import matplotlib.pyplot as plt
         if title is not None:
             title = title.replace("<br>", "\n")
-        if facet_col is not None:
+        if facet_col is not None and facet_col in seq_similarity_df.columns:
             # Create figure with subplots for each group
             groups = seq_similarity_df[facet_col].unique()
             fig, axes = plt.subplots(1, len(groups), figsize=(5*len(groups), 5), 
@@ -1088,15 +1231,12 @@ def compare_nuc_seqs(results_all,
         if db is None:
             db = get_db()
         tx = db.transcript_by_id(transcript_id)
-        # find rows where seq1 and seq2 are not identical to ref_seq
-        offset_ranges = get_offset_ranges(tx)
-        ref_seq = subset_seq(ref_seq, offset_ranges, as_list=True)
-        seq1 = subset_seq(seq1, offset_ranges, as_list=True)
-        seq2 = subset_seq(seq2, offset_ranges, as_list=True)
+        # find rows where seq1 and seq2 are not identical to ref_seq 
+        ref_seq = coding_sequence_subset(tx, ref_seq)
+        seq1 = coding_sequence_subset(tx, seq1)
+        seq2 = coding_sequence_subset(tx, seq2)
         positions = get_positions(tx)
-        exon_indices = get_exon_indices(tx)
-        # subset seq_df to a list of tuples, where each tuple is a start and end index
-        # seq_df = pd.concat([seq_df.iloc[start:end] for start,end in offset_ranges])
+        exon_indices = get_exon_indices(tx) 
     seq_df =  pd.DataFrame({"ref_seq":ref_seq, 
                             "seq1":seq1, 
                             "seq2":seq2})
@@ -1204,6 +1344,16 @@ def get_variant_counts(results_all):
 def reverse_complement(seq):
     from Bio.Seq import Seq
     return str(Seq(seq).reverse_complement())
+
+
+def add_suffix(results, suffix, key=["nuc_seqs", "aa_seqs"][0]):
+    import copy
+    import tqdm.auto as tqdm
+    results2 = copy.deepcopy(results)
+    for transcript_id in tqdm.tqdm(results.keys(), 
+                                   desc=f"Adding suffix '{suffix}' to personalized sequences"):
+        results2[transcript_id][key] = {f"{sample_id}{suffix}":v for sample_id,v in results[transcript_id][key].items()}
+    return results2
 
 def merge_personalized_seqs(results_wt, results_cv, 
                             suffixes=["_WT", "_ClinVar"]):

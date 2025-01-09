@@ -20,6 +20,7 @@ dependencies:
   - polars>=0.19.3
   - pgenlib # optional
   - poetry
+  - pyensembl
   - pyarrow
   - pybigwig
   - pysam

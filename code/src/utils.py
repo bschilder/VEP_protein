@@ -230,20 +230,78 @@ def save_pickle(obj,
         with open(save_path, 'wb') as f:
             pickle.dump(obj, f)
 
+
+
+
+def load_pickle_progress(filename, 
+                         **kwargs):
+    """
+    Load a pickle file with a progress bar.
+    
+    Parameters:
+        filename (str): Path to pickle file
+        **kwargs: Additional arguments passed to tqdm
+        
+    Returns:
+        Unpickled object
+    """
+    import pickle
+    from tqdm import tqdm
+    
+    with open(filename, "rb") as f:
+        # Get file size for progress bar
+        file_size = f.seek(0, 2)
+        f.seek(0)
+        
+        # Read entire file content first
+        with tqdm(total=file_size,
+                 unit='B',
+                 unit_scale=True,
+                 desc=f"Loading '{filename}'",
+                 **kwargs) as pbar:
+            content = f.read()
+            pbar.update(file_size)
+            
+        # Then unpickle the complete content
+        return pickle.loads(content)
+
 def load_pickle(save_path,
                 force=False,
-                verbose=True):
+                verbose=True,
+                progress=True,
+                **kwargs):
     """
-    Load an object from a pickle file.
+    Load an object from a pickle file with a real-time progress bar.
+
+    Parameters:
+        save_path (str): Path to the pickle file.
+        force (bool): If True, forces loading even if the file exists.
+        verbose (bool): If True, prints loading status.
+
+    Returns:
+        The unpickled object or None.
     """
     import pickle
     import os
+    from tqdm import tqdm
+
     if save_path is not None:
+        if not isinstance(save_path, str):
+            raise ValueError(f"save_path must be a string, not {type(save_path)}")
         if os.path.exists(save_path) and not force:
             if verbose:
-                print(f"Loading ==> {save_path}")
-            with open(save_path, 'rb') as f:
-                return pickle.load(f)
+                print(f"Loading ==> {save_path}") 
+            try:
+                if progress:
+                    obj = load_pickle_progress(save_path, 
+                                                    **kwargs)
+                else:
+                    with open(save_path, 'rb') as f:
+                        obj = pickle.load(f)
+                return obj
+            except Exception as e:
+                print(f"Failed to load pickle file: {e}")
+                return None
     return None
 
 def save_vcf(recs, save_path, header, mode="wb", index=True):
