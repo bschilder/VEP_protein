@@ -35,11 +35,16 @@ def transcript_to_gene(transcript_ids,
 
 def get_mane_transcripts(protein_coding_only=True,
                          db_only=True,
-                         db=None):
+                         db=None, 
+                         add_chr=True):
     import pandas as pd
     mane = pd.read_csv("https://ftp.ncbi.nlm.nih.gov/refseq/MANE/MANE_human/current/MANE.GRCh38.v1.4.summary.txt.gz", 
                        sep="\t")
     mane['TranscriptId'] = mane['Ensembl_nuc'].str.split('.').str[0]
+    # NC_000019.10
+    mane['chrom'] = mane['GRCh38_chr'].str.split(".").str[0].str.split("_").str[1].str.strip("0")
+    if add_chr:
+        mane['chrom'] = "chr" + mane['chrom']
     if protein_coding_only:
         mane = mane[mane['Ensembl_prot'].notna()]
     if db_only:
@@ -105,6 +110,11 @@ def get_protein_coding_transcripts(db=None,
         return [x.id for x in transcripts]
     else:
         return transcripts
+
+def get_transcript(transcript_id, db=None):
+    if db is None:
+        db = get_db()
+    return db.transcript_by_id(transcript_id)
 
 def get_transcripts(db, 
                     biotypes=[], 
@@ -219,27 +229,28 @@ def get_rec_start_stop(tx,
     - (rec_start, rec_stop): Tuple of start and stop positions.
     """
     # # Genomic coordinates from the variant record
-    variant_start = rec.start  # 1-based position
-    variant_end = rec.stop #rec.pos + len(rec.ref) - 1  # Inclusive end
-    if relative:
-        # Calculate relative to transcript start
-        rec_start = variant_start - tx.start
-        rec_stop = variant_end - tx.start
-    else:
-        rec_start = variant_start
-        rec_stop = variant_end
+    # variant_start = rec.start  # 1-based position
+    # variant_end = rec.stop #rec.pos + len(rec.ref) - 1  # Inclusive end
+    # if relative:
+    #     # Calculate relative to transcript start
+    #     rec_start = variant_start - tx.start
+    #     rec_stop = variant_end - tx.start
+    # else:
+    #     rec_start = variant_start
+    #     rec_stop = variant_end
 
-    # Adjust for strand orientation
-    if strand_aware and tx.strand == "-":
-        if ref_seq_len is None:
-            ref_seq_len = len(tx.sequence)
-        # For negative strand, reverse the positions
-        rec_start, rec_stop = ref_seq_len - rec_stop, ref_seq_len - rec_start
+    # # Adjust for strand orientation
+    # if strand_aware and tx.strand == "-":
+    #     if ref_seq_len is None:
+    #         ref_seq_len = len(tx.sequence)
+    #     # For negative strand, reverse the positions
+    #     rec_start, rec_stop = ref_seq_len - rec_stop, ref_seq_len - rec_start
 
     # return rec_start, rec_stop
-    # rec_start, rec_stop = tx.offset_range(rec.start, rec.stop)
-    # if rec_start>rec_stop:
-    #     raise ValueError(f"rec_start > rec_stop: {rec_start} > {rec_stop}")
+    
+    rec_start, rec_stop = tx.offset_range(rec.start, rec.stop)
+    if rec_start>rec_stop:
+        raise ValueError(f"rec_start > rec_stop: {rec_start} > {rec_stop}")
     return rec_start, rec_stop
 
 def run_check_ref_mismatch(rec, 
@@ -328,7 +339,8 @@ def personalize_nuc_seqs(tx,
                               strand_aware=strand_aware)
     check_ref_seq_translation(tx, ref_seq)
     # Convert ref_seq to list of strings
-    ref_seq = ["".join(x) for x in list(ref_seq)]
+    # ref_seq = ["".join(x) for x in list(ref_seq)]
+    ref_seq = list(ref_seq)
     ref_seq_len=len(ref_seq)
     # Return reference sequence if sample is "REFERENCE"
     if sample == "REFERENCE":
@@ -934,10 +946,7 @@ def sequence_similarity(ref_seq,
 def get_ref_seq_keys(d):
     return [sample for sample in d.keys() if sample.startswith("REFERENCE")]
 
-def get_transcript(transcript_id, db=None):
-    if db is None:
-        db = get_db()
-    return db.transcript_by_id(transcript_id)
+
 
 def get_sequence_similarity(results_all, 
                             seq_type=["aa", "nuc", "nuc_subset"][0],

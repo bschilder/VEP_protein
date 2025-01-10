@@ -38,12 +38,19 @@ def as_list(x,
 def intersect(x,y):
     return list(set(x) & set(y))
 
-def list_vcf(dir='/grid/koo/home/schilder/projects/GenomeEncoder/data/1KG/vcf_formatted/*.vcf.gz'):
+def list_vcf(dir='/grid/koo/home/schilder/projects/GenomeEncoder/data/1KG/vcf_formatted/*.vcf.gz', 
+             as_dict=False):
     # List all VCF files in the 1KG directory
     import glob
+    import os
     vcf_files = glob.glob(dir)
     print(len(vcf_files),"VCF files found.")
-    return vcf_files
+    if as_dict:
+        chroms_vcf = [os.path.basename(vcf_file).split(".")[1] for vcf_file in vcf_files]
+        chroms_dict = dict(zip(chroms_vcf, vcf_files))
+        return chroms_dict
+    else:
+        return vcf_files
 
 
 

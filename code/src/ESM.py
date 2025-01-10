@@ -1,6 +1,10 @@
-import sys
-sys.path.append("code")
-from src.utils import create_proteoform_id, load_pickle, intersect, run_umap
+try:
+    import sys
+    sys.path.append("code")
+    from src.utils import create_proteoform_id, load_pickle, intersect, run_umap
+except:
+    print("Could not import utils")
+
 
 def get_torch_data_i(transcript_id, 
                      results, 
@@ -136,9 +140,9 @@ def get_embeddings(batches,
                    model=None,
                    alphabet=None,
                    repr_layers=[33],
-                   force = False, 
-                   max_transcripts = None,
-                   verbose = False,
+                   force=False, 
+                   max_transcripts=None,
+                   verbose=False,
                    error=False,
                    save_dir="1KG/embeddings/esm2_t33_650M_UR50D"):
     import os
@@ -157,8 +161,7 @@ def get_embeddings(batches,
     # Init vars
     results = {}
     save_paths = {}
-    failed_transcripts = []
-    i = 1
+    failed_transcripts = [] 
     
     if max_transcripts!=None:
         batches = {k: v for k, v in list(batches.items())[:max_transcripts]}
@@ -171,6 +174,7 @@ def get_embeddings(batches,
                                      force=force, 
                                      verbose=verbose>1)
             if results_tx is not None: 
+                save_paths[transcript_id] = save_path
                 results[transcript_id] = results_tx
                 continue
             else:
@@ -178,8 +182,8 @@ def get_embeddings(batches,
                 # Generate Embeddings
                 with torch.no_grad():
                     embeddings = model(batch_tokens, 
-                                       repr_layers=repr_layers, 
-                                       return_contacts=False)
+                                    repr_layers=repr_layers, 
+                                    return_contacts=False)
                     results[transcript_id] = {
                         'embeddings':embeddings,
                         'batch_labels':batch_labels, 
@@ -189,17 +193,17 @@ def get_embeddings(batches,
                 # Save 
                 with open(save_path,'wb') as handle:
                     pickle.dump(results[transcript_id],
-                                handle)
-                i += 1
-            # Only add to save_paths if the file was created
-            save_paths[transcript_id] = save_path
+                                handle) 
+                # Only add to save_paths if the file was created
+                save_paths[transcript_id] = save_path
         except Exception as e: 
-            if error is True:
+            if error:
                 raise e
             else:
                 print(f"Failed to embed transcript {transcript_id}: {e}")   
                 failed_transcripts.append(transcript_id)
                 continue
+
     return results, save_paths, failed_transcripts
 
 def get_representations(save_paths=None,
@@ -258,16 +262,17 @@ def get_representation_matrix(seq_reps,
     print(X.shape)
     return X
 
-def get_representation_variances(seq_reps):
+def get_representation_variances(seq_reps, 
+                                 tx_id_sep=":"):
     import torch
     from tqdm.auto import tqdm
     transcript_variances = {}
     transcript_variance_means = {}
-    transcript_ids = list(set([x[0].split('_')[0] for x in seq_reps]))
+    transcript_ids = list(set([x[0].split(tx_id_sep)[0] for x in seq_reps]))
     # Compute the variance of each transcript embedding acrosss variants
     for transcript_id in tqdm(transcript_ids, desc="Computing transcript variances"):
         # print(transcript_id)
-        variant_embeddings = [x[1] for x in seq_reps if x[0].split('_')[0] == transcript_id]
+        variant_embeddings = [x[1] for x in seq_reps if x[0].split(tx_id_sep)[0] == transcript_id]
         if len(variant_embeddings) == 1:
             # Set variance to 0 when there is only 1 isoform
             transcript_variances[transcript_id] = torch.zeros(1,variant_embeddings[0].shape[0])
@@ -280,15 +285,16 @@ def get_representation_variances(seq_reps):
 
 def get_umap_df(seq_reps,
                 embedding=None,
-                nan_indices=None):
+                nan_indices=None,
+                tx_id_sep=":"):
     import pandas as pd
     if embedding is None or nan_indices is None:
         X = get_representation_matrix(seq_reps)
         reducer, embedding, nan_indices = run_umap(X)
     embedding_df = pd.DataFrame(embedding, columns=['UMAP 1', 'UMAP 2'])
     embedding_df['label'] = [x[0] for i,x in enumerate(seq_reps) if not nan_indices[i]]
-    embedding_df['transcript_id'] = [x.split('_')[0] for x in embedding_df['label']]
-    embedding_df['transcript'] = [x.split('_')[0].split('.')[0] for x in embedding_df['label']]
+    embedding_df['transcript_id'] = [x.split(tx_id_sep)[0] for x in embedding_df['label']]
+    embedding_df['transcript'] = [x.split(tx_id_sep)[0].split('.')[0] for x in embedding_df['label']]
     return embedding_df
 
 def plot_umap(embedding_df,
@@ -296,9 +302,27 @@ def plot_umap(embedding_df,
               opacity=0.1,
               facet_col=None,
               col_wrap=3,
+              color='white',
+              color_palette='tab10',
+              color_col=None,
+              size=None,
+              size_max=None,  
+              sizes=None,
               sharex=True,
               sharey=True,
+              highlight_label=None,
+              highlight_color='white',
+              highlight_size=100,
+              highlight_linewidth=2,
+              highlight_marker='D',
+              title=None,
               **kwargs): 
+    import seaborn as sns
+    if color_col is not None:
+        palette = sns.color_palette(color_palette, n_colors=len(embedding_df[color_col].unique()))
+        color= None
+        color_map = dict(sorted(zip(embedding_df[color_col].unique(), palette)))
+
     if interact is True:
         import plotly.express as px
         fig = px.scatter(embedding_df, 
@@ -306,9 +330,11 @@ def plot_umap(embedding_df,
                          y='UMAP 2',
                          facet_col=facet_col,
                          facet_col_wrap=col_wrap,
-                         hover_data=['label'], 
-                         size_max=10, 
-                         opacity=opacity,  
+                         hover_data=['label'],
+                         size=size, 
+                         size_max=size_max,  
+                         opacity=opacity,
+                         title=title,  
                          **kwargs)
         # Add px.density_contour underneath the points
         fig.add_trace(px.density_contour(embedding_df, 
@@ -318,13 +344,27 @@ def plot_umap(embedding_df,
                                          facet_col_wrap=col_wrap,
                                          **kwargs).data[0]
                                          )
+        if highlight_label is not None:
+            # Add red circles around highlighted points
+            highlight_df = embedding_df[embedding_df['label'].str.contains(highlight_label)]
+            fig.add_trace(px.scatter(highlight_df,
+                                   x='UMAP 1',
+                                   y='UMAP 2',
+                                   facet_col=facet_col,
+                                   facet_col_wrap=col_wrap).update_traces(
+                                       mode='markers',
+                                       marker=dict(symbol='circle-open',
+                                                 size=highlight_size,
+                                                 color=highlight_color,
+                                                 line=dict(width=highlight_linewidth,
+                                                           color=highlight_color))).data[0])
         if sharex is False:
             fig.update_xaxes(matches=None)
         if sharey is False:
             fig.update_yaxes(matches=None)
         return fig
     else:
-        from matplotlib import pyplot as plt
+        from matplotlib import pyplot as plt 
         import seaborn as sns
         plt.figure(figsize=(12, 12))  # Increase figure size
         # First plot the density contours
@@ -347,11 +387,21 @@ def plot_umap(embedding_df,
                         x='UMAP 1', y='UMAP 2', 
                         alpha=opacity,
                         s=1,
-                        color='white')
+                        color=color)
             
             # Set background color for each subplot
             for ax in g.axes.flat:
                 ax.set_facecolor('#2F0154')
+                if highlight_label is not None:
+                    # Add red circles around highlighted points for each facet
+                    highlight_df = embedding_df[embedding_df['label'].str.contains(highlight_label)]
+                    highlight_df_facet = highlight_df[highlight_df[facet_col] == ax.get_title().split(' = ')[1]]
+                    ax.scatter(highlight_df_facet['UMAP 1'], highlight_df_facet['UMAP 2'],
+                             facecolors='none', 
+                             edgecolors=highlight_color, 
+                             s=highlight_size, 
+                             linewidth=highlight_linewidth, 
+                             marker=highlight_marker)
         else:
             plt.gca().set_facecolor('#2F0154') # Set background to slightly darker than darkest viridis color
             sns.kdeplot(data=embedding_df, x='UMAP 1', y='UMAP 2', 
@@ -360,11 +410,51 @@ def plot_umap(embedding_df,
                         **kwargs
                         ) 
             # Then overlay scatter points with some transparency
-            plt.scatter(data=embedding_df,
-                        x='UMAP 1', y='UMAP 2',
-                        alpha=opacity, # Make points semi-transparent
-                        s=1, # Small point size
-                        color='white') # White points
+            if color_col is not None:
+                scatter = plt.scatter(data=embedding_df,
+                            x='UMAP 1', y='UMAP 2', 
+                            alpha=opacity, # Make points semi-transparent
+                            s=size, # Small point size
+                            sizes=sizes,
+                            color=embedding_df[color_col].map(color_map))
+                # Add legend mapping labels to colors
+                legend_elements = [plt.scatter([], [], c=color, label=label) 
+                                 for label, color in color_map.items()]
+                
+                # Add highlight label to legend if specified
+                if highlight_label is not None:
+                    legend_elements.append(plt.scatter([], [], 
+                                                    facecolors='none',
+                                                    edgecolors=highlight_color,
+                                                    s=50,
+                                                    linewidth=highlight_linewidth,
+                                                    marker=highlight_marker,
+                                                    label=highlight_label))
+         
+                plt.legend(handles=legend_elements,
+                           title=color_col, 
+                           facecolor='black', edgecolor='black', 
+                           labelcolor='white', title_fontsize=10).get_title().set_color('white')
+            else:
+                plt.scatter(data=embedding_df,
+                            x='UMAP 1', y='UMAP 2', 
+                            alpha=opacity, # Make points semi-transparent
+                            s=size, # Small point size
+                            sizes=sizes,
+                            color=color) # White points
+            
+            if highlight_label is not None:
+                # Add red circles around highlighted points
+                highlight_df = embedding_df[embedding_df['label'].str.contains(highlight_label)]
+                plt.scatter(highlight_df['UMAP 1'], highlight_df['UMAP 2'],
+                          facecolors='none', 
+                          edgecolors=highlight_color, 
+                          s=highlight_size, 
+                          linewidth=highlight_linewidth, 
+                          marker=highlight_marker)
+            
+            if title is not None:
+                plt.title(title) 
         plt.show()
 
 
