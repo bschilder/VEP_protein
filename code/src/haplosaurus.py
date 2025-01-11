@@ -1,6 +1,6 @@
 import sys
 sys.path.append("code")
-from src.utils import as_list, intersect
+from src.utils import as_list, intersect, load_pickle, save_pickle, load_json, save_json
 
 # https://ensemblrest.readthedocs.io/en/latest/
 
@@ -101,8 +101,7 @@ def filter_variants(variants_tx,
     return variants_tx_filtered
 
 def map_tx2prot_ensembl(tx_df, 
-                        batch_size=500,
-                        verbose=True):
+                        batch_size=500):
     """
     Map Ensembl Transcript ID to Ensembl Protein ID
     """
@@ -112,20 +111,18 @@ def map_tx2prot_ensembl(tx_df,
     from tqdm.auto import tqdm 
     batches = [tx_df['Ensembl Protein ID'].tolist()[i:i+batch_size] for i in range(0, len(tx_df['Ensembl Protein ID'].tolist()), batch_size)]
     prot_to_tx = {}
-    for batch in tqdm(batches[:3]):
+    for batch in tqdm(batches):
         prot_to_tx.update(client.lookup_post(params={'ids':batch})) 
     return prot_to_tx
 
 
 def get_variants(tx_id,
                 client=None,
-                params_query={'feature':'variation',
-                                'so_term': 'SO:0001583',
-                                'variant_set': 'clin_assoc'
-                                },
-                params_filter={'clinical_significance':['pathogenic']},
+                params_query={},
+                params_filter={},
                 error=False,
-                verbose=False):
+                verbose=False,
+                **kwargs):
     # https://ensemblrest.readthedocs.io/en/latest/#ensembl_rest.EnsemblClient.overlap_id
     # Ensembl overlap API: https://rest.ensembl.org/documentation/info/overlap_id
     # Variant sets: https://useast.ensembl.org/info/genome/variation/species/sets.html
@@ -144,12 +141,147 @@ def get_variants(tx_id,
     variants_tx = filter_variants(variants_tx, 
                                   params=params_filter,
                                   verbose=verbose,
-                                  leave=False
-                                            )
+                                  leave=False,
+                                  **kwargs
+                                  )
     if verbose:
         print(len(variants_tx),"variants returned")
     return variants_tx
 
-def get_proteoform_freq(hap_tx):
-    population_frequencies = {x['name']:x['population_frequencies'] for x in hap_tx['protein_haplotypes']}
-    return population_frequencies
+def get_variants_set(tx_ids,
+                     so_term = 'SO:0001583',
+                     consequence_type = ['missense_variant'],
+                     save_dir="data/haplosaurus",
+                     force=False,
+                     client=None,
+                     verbose=True):
+    from tqdm.auto import tqdm
+    # Gather pathogenic/benign variants
+    save_path = f"{save_dir}/{'-'.join(consequence_type)}.pkl"
+    variants_set = load_pickle(save_path, 
+                                force=force, 
+                                verbose=False)
+    if variants_set is not None:
+        return variants_set
+    else:
+        variants_pathogenic = {}
+        variants_benign = {}
+        variants_1kg = {}
+        valid_tx_ids = []
+        client = get_ensembl_client(client=client)
+        for tx_id in tqdm(tx_ids):
+            ## Get pathogenic variants
+            varp = get_variants(
+                tx_id=tx_id,
+                client=client,
+                params_query={'feature':'variation',
+                            'so_term': so_term,
+                            'variant_set': 'clin_assoc'
+                            },
+                params_filter={'clinical_significance':['pathogenic'],
+                                'consequence_type': consequence_type}, 
+                exact=True
+                )
+            if len(varp)==0: 
+                continue
+            else:
+                variants_pathogenic[tx_id] = varp
+            ## Get benign variants
+            varb = get_variants(
+                tx_id=tx_id,
+                params_query={'feature':'variation',
+                            'so_term': so_term,
+                            'variant_set': 'ClinVar'
+                            },
+                params_filter={'clinical_significance':['benign'], 
+                                'consequence_type': consequence_type},
+                exact=True
+                )
+            if len(varb)==0:
+                continue
+            else:
+                variants_benign[tx_id] = varb
+            ## Get 1KG variants
+            var1kg = get_variants(
+                tx_id=tx_id,
+                client=client,
+                params_query={'feature':'variation',
+                            'so_term': so_term,
+                            'variant_set': '1kg_3' # '1kg_3_com'
+                            }
+                )
+            if len(var1kg)>0:
+                variants_1kg[tx_id] = var1kg
+                ids_1kg = [x['id'] for x in var1kg]
+                # Remove pathogenic variants present in 1KG
+                varp = filter_variants(varp, 
+                                            params={'id':ids_1kg},
+                                            reverse=True,
+                                            verbose=False,
+                                            leave=False
+                                            )
+                if len(varp)==0:
+                    continue
+                # Remove benign variants present in 1KG
+                varb = filter_variants(varb, 
+                                            params={'id':ids_1kg},
+                                            reverse=True,
+                                            verbose=False,
+                                            leave=False
+                                            )
+                if len(varb)==0:
+                    continue
+            # Append transcript if it made it through all the filters
+            valid_tx_ids.append(tx_id) 
+        # save results as pickle
+        variants_set = {"variants_pathogenic": variants_pathogenic,
+                    "variants_benign": variants_benign,
+                    "variants_1kg": variants_1kg,
+                    "valid_tx_ids": valid_tx_ids}
+        save_pickle(save_path, 
+                    variants_set,
+                    verbose=verbose)
+        return variants_set
+
+def get_haplotypes(variants_set,
+                   save_dir="data/haplosaurus/haplotypes",
+                   species="homo_sapiens",
+                   params={'samples':1,
+                            'sequence':1,
+                            'aligned_sequences':1},
+                   client=None,
+                   force = False,
+                   verbose=True):
+    from tqdm.auto import tqdm
+    client = get_ensembl_client(client=client)
+    haplotypes = {} 
+    for tx_id in tqdm(variants_set['valid_tx_ids'],
+                    desc="Getting haplotypes"):
+        save_path = f"{save_dir}/{tx_id}.json.gz"
+        hap_tx_id = load_json(save_path, 
+                              force=force, 
+                              verbose=verbose>1)
+        if hap_tx_id is not None:
+            haplotypes[tx_id] = hap_tx_id
+        else:
+            try:
+                haplotypes[tx_id] = client.transcript_haplotypes_get(
+                    id=tx_id,
+                    species=species,
+                    params=params
+                    ) 
+                save_json(obj=haplotypes[tx_id],
+                          save_path=save_path,
+                          verbose=verbose>1)
+            except Exception as e:
+                if verbose:
+                    print(f"Error getting haplotypes for {tx_id}: {e}")
+                continue 
+    return haplotypes
+
+def get_haplotype_freqs(haplotypes):
+    from tqdm.auto import tqdm
+    pop_freqs = {}
+    for tx_id in tqdm(haplotypes.keys()):
+        pop_freqs[tx_id] = {x['name']:x['population_frequencies'] for x in haplotypes[tx_id]['protein_haplotypes']}
+    return pop_freqs

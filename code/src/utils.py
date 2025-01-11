@@ -237,9 +237,6 @@ def save_pickle(obj,
         with open(save_path, 'wb') as f:
             pickle.dump(obj, f)
 
-
-
-
 def load_pickle_progress(filename, 
                          **kwargs):
     """
@@ -309,6 +306,89 @@ def load_pickle(save_path,
             except Exception as e:
                 print(f"Failed to load pickle file: {e}")
                 return None
+    return None
+
+
+def save_json(obj,
+              save_path,
+              verbose=True,
+              compress=True):
+    """
+    Save an object to a JSON file with options to minimize size by removing whitespace
+    and compressing the file.
+    
+    Parameters:
+        obj (dict): The dictionary to save as JSON.
+        save_path (str): The file path where the JSON will be saved.
+        verbose (bool): If True, prints the saving status.
+        compress (bool): If True, compresses the JSON file using gzip.
+    """    
+    if save_path is not None:
+        import json
+        import os 
+        # Validate the obj
+        if not isinstance(obj, dict):
+            raise ValueError(f"obj must be a dictionary, not {type(obj)}")
+        if os.path.dirname(save_path):
+            os.makedirs(os.path.dirname(save_path), exist_ok=True)
+        if verbose:
+            print(f"Saving ==> {save_path}{' with compression' if compress else ''}")
+        # Ensure save_path ends with .json or .json.gz
+        if not save_path.endswith('.json') and not save_path.endswith('.json.gz'):
+            save_path = save_path + '.json'
+        if compress:
+            import gzip
+            # Ensure save_path ends with .gz
+            if not save_path.endswith('.gz'):
+                save_path = save_path + '.gz'
+            with gzip.open(save_path, 'wt', encoding='utf-8') as f:
+                # Use separators to eliminate unnecessary whitespace
+                json.dump(obj, f, separators=(',', ':'))
+        else:
+            with open(save_path, 'w') as f:
+                # Use separators to eliminate unnecessary whitespace
+                json.dump(obj, f, separators=(',', ':'))
+
+def load_json(save_path,
+              verbose=True,
+              force=False):
+    """
+    Load an object from a JSON file, supporting both compressed (.gz) and uncompressed files.
+
+    Parameters:
+        save_path (str): Path to the JSON file. Can be a .json or .json.gz file.
+        verbose (bool): If True, prints loading status.
+
+    Returns:
+        dict: The loaded JSON object.
+    """
+    import json
+    import os
+    import gzip
+    if save_path is not None:
+        if not os.path.exists(save_path) and not force:
+            if verbose:
+                print(f"File does not exist: {save_path}")
+            return None 
+        else:
+            if verbose:
+                print(f"Loading ==> {save_path}")
+        # Determine if the file is compressed based on the file extension
+        _, file_ext = os.path.splitext(save_path)
+        if file_ext == '.gz':
+            open_func = gzip.open
+            mode = 'rt'  # Read text mode
+        else:
+            open_func = open
+            mode = 'r'
+
+        try:
+            with open_func(save_path, mode, encoding='utf-8') as f:
+                return json.load(f)
+        except Exception as e:
+            print(f"Failed to load JSON file: {e}")
+            return None
+
     return None
 
 def save_vcf(recs, save_path, header, mode="wb", index=True):
