@@ -366,10 +366,12 @@ def load_json(save_path,
     import os
     import gzip
     if save_path is not None:
-        if not os.path.exists(save_path) and not force:
+        if not os.path.exists(save_path):
             if verbose:
                 print(f"File does not exist: {save_path}")
             return None 
+        elif force:
+            return None
         else:
             if verbose:
                 print(f"Loading ==> {save_path}")
