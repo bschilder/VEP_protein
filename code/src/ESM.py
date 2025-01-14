@@ -1,7 +1,7 @@
 try:
     import sys
     sys.path.append("code")
-    from src.utils import create_proteoform_id, load_pickle, intersect, run_umap
+    from src.utils import create_proteoform_id, load_pickle, save_pickle, intersect, run_umap
 except:
     print("Could not import utils")
 
@@ -143,16 +143,17 @@ def get_embeddings(batches,
                    force=False, 
                    max_transcripts=None,
                    verbose=False,
-                   error=False,
-                   save_dir="1KG/embeddings/esm2_t33_650M_UR50D"):
+                   error=True,
+                   save_dir="1KG/embeddings/esm2_t33_650M_UR50D",
+                   desc=f"Embedding transcript proteoforms",
+                   **kwargs): 
+                   
     import os
-    import pickle
     from tqdm.auto import tqdm
-    import torch
-
-    os.makedirs(save_dir, exist_ok=True)
-
+    import torch 
     if model is None:
+        if verbose:
+            print(f"Using model: esm2_t33_650M_UR50D")
         import esm
         model, alphabet = esm.pretrained.esm2_t33_650M_UR50D()
     if alphabet is None:
@@ -164,12 +165,15 @@ def get_embeddings(batches,
     failed_transcripts = [] 
     
     if max_transcripts!=None:
+        if verbose:
+            print(f"Limiting to {max_transcripts} transcripts")
         batches = {k: v for k, v in list(batches.items())[:max_transcripts]}
 
     for transcript_id, data in tqdm(batches.items(), 
-                                    desc=f"Embedding transcript proteoforms"): 
+                                    desc=desc): 
         save_path = os.path.abspath(f"{save_dir}/{transcript_id}.pkl")
         try:
+            # Load existing embeddings
             results_tx = load_pickle(save_path, 
                                      force=force, 
                                      verbose=verbose>1)
@@ -178,12 +182,14 @@ def get_embeddings(batches,
                 results[transcript_id] = results_tx
                 continue
             else:
+                # Prepare batches for model
                 batch_labels, batch_strs, batch_tokens = batch_converter(data)
-                # Generate Embeddings
+                # Generate embeddings
                 with torch.no_grad():
                     embeddings = model(batch_tokens, 
                                     repr_layers=repr_layers, 
-                                    return_contacts=False)
+                                    return_contacts=False,
+                                    **kwargs)
                     results[transcript_id] = {
                         'embeddings':embeddings,
                         'batch_labels':batch_labels, 
@@ -191,16 +197,18 @@ def get_embeddings(batches,
                         'batch_tokens':batch_tokens
                     }
                 # Save 
-                with open(save_path,'wb') as handle:
-                    pickle.dump(results[transcript_id],
-                                handle) 
+                save_pickle(obj=results[transcript_id],
+                            save_path=save_path,
+                            verbose=verbose>1) 
                 # Only add to save_paths if the file was created
                 save_paths[transcript_id] = save_path
         except Exception as e: 
+            # print(data)
             if error:
                 raise e
             else:
-                print(f"Failed to embed transcript {transcript_id}: {e}")   
+                if verbose:
+                    print(f"Failed to embed transcript {transcript_id}: {e}")   
                 failed_transcripts.append(transcript_id)
                 continue
 
@@ -457,7 +465,6 @@ def plot_umap(embedding_df,
                 plt.title(title) 
         plt.show()
 
-
 def get_patient_tensor(seq_reps,
                        sample_to_proteoform,
                        drop_nan=True):
@@ -546,10 +553,7 @@ def run_tensor_factorization(patient_tensor,
         'phases': C.detach(),
         'features': D.detach()
     } 
-
     return factors
-
-
 
 def get_transcript_contributions(factors, 
                                  patient_tensor, 
@@ -574,9 +578,6 @@ def get_transcript_contributions(factors,
     else:
         l2_contrib_df = None
     return tx_contrib_df, l2_contrib_df
-    
-
-
 
 def plot_tensor_factorization(factors, 
                               keys=None):

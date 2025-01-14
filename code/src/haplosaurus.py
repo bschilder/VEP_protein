@@ -151,8 +151,12 @@ def get_variants(tx_id,
 def get_variant_sets(tx_ids,
                      so_term = 'SO:0001583',
                      consequence_type = ['missense_variant'],
+                     pathogenic_variant_set = 'clin_assoc',
+                     benign_variant_set = 'ClinVar',
                      nagative_variant_set = '1kg_3',  # '1kg_3_com'
+                     check_vep=True,
                      save_dir="data/haplosaurus/variant_sets",
+                     save_dir_vep="data/haplosaurus/vep",
                      force=False,
                      client=None,
                      cache_only=False,
@@ -161,6 +165,8 @@ def get_variant_sets(tx_ids,
     # Gather pathogenic/benign variants
     variant_sets = {}
     client = get_ensembl_client(client=client)
+    if cache_only:
+        force = False
     # Iterate over transcripts
     for tx_id in tqdm(tx_ids,"Gathering variant sets"):
         save_path = f"{save_dir}/{'.'.join(consequence_type)}/{tx_id}.json.gz"
@@ -168,20 +174,35 @@ def get_variant_sets(tx_ids,
                                     force=force, 
                                     verbose=verbose>1)
         if variant_sets_tx is not None:
+             # Annotate pathogenic variants with VEP
+            if check_vep:
+                varp_vep = get_vep(ids=[x['id'] for x in variant_sets_tx['variants_pathogenic']],
+                                save_dir=save_dir_vep,
+                                client=client,
+                                desc=f"{tx_id}: Annotating pathogenic variants",
+                                leave=False,
+                                verbose=verbose>1)
+                varp_vep = filter_vep(varp_vep,
+                                    consequence_terms=consequence_type,
+                                    exact=True,
+                                    desc=f"{tx_id}: Filtering pathogenic variants",
+                                    leave=False,
+                                    verbose=verbose>1)
+                if varp_vep is None:
+                    continue
             variant_sets[tx_id] = variant_sets_tx
             continue
         elif cache_only:
             continue
-        else:
-            variant_sets_tx = {}
         ## Get pathogenic variants
+        variant_sets_tx = {}
         varp = get_variants(
             tx_id=tx_id,
             client=client,
             params_query={'feature':'variation',
                           'so_term': so_term,
-                          'variant_set': 'clin_assoc'
-                        },
+                          'variant_set': pathogenic_variant_set
+                          },
             params_filter={'clinical_significance':['pathogenic'],
                             'consequence_type': consequence_type}, 
             exact=True
@@ -194,9 +215,9 @@ def get_variant_sets(tx_ids,
         varb = get_variants(
             tx_id=tx_id,
             params_query={'feature':'variation',
-                        'so_term': so_term,
-                        'variant_set': 'ClinVar'
-                        },
+                          'so_term': so_term,
+                          'variant_set': benign_variant_set
+                          },
             params_filter={'clinical_significance':['benign'], 
                            'consequence_type': consequence_type},
             exact=True
@@ -215,7 +236,7 @@ def get_variant_sets(tx_ids,
                         }
             )
         if len(varn)>0:
-            variant_sets_tx['variants_1kg'] = varn
+            variant_sets_tx['variants_negative'] = varn
             ids_neg = [x['id'] for x in varn]
             # Remove pathogenic variants present in 1KG
             varp = filter_variants(varp, 
@@ -235,7 +256,23 @@ def get_variant_sets(tx_ids,
                                     )
             if len(varb)==0:
                 continue
-        # Append transcript if it made it through all the filters
+        # Annotate pathogenic variants with VEP
+        if check_vep:
+            varp_vep = get_vep(ids=[x['id'] for x in varp],
+                               save_dir=save_dir_vep,
+                               client=client,
+                               desc=f"{tx_id}: Annotating pathogenic variants",
+                               leave=False,
+                               verbose=verbose>1)
+            varp_vep = filter_vep(varp_vep,
+                                  consequence_terms=consequence_type,
+                                  exact=True,
+                                  desc=f"{tx_id}: Filtering pathogenic variants",
+                                  leave=False,
+                                  verbose=verbose>1)
+            if varp_vep is None:
+                continue
+        # Only add to variant_sets if it made it through all the filters
         variant_sets[tx_id] = variant_sets_tx
         # save results as pickle 
         save_json(obj=variant_sets_tx,
@@ -243,6 +280,40 @@ def get_variant_sets(tx_ids,
                   verbose=verbose>1)
     return variant_sets
     
+def filter_vep(variant_vep,
+               consequence_terms=None, 
+               exact=False,
+               desc="Filtering variants VEP",
+               leave=False,
+               verbose=True):
+    """
+    Filter VEP results to only include variants with HIGH impact
+    """
+    if consequence_terms is None:
+        return variant_vep
+    from tqdm.auto import tqdm
+    consequence_terms = as_list(consequence_terms)
+    variant_vep_filtered = {}
+    for id, variant_vep_id in tqdm(variant_vep.items(),
+                   desc=desc,
+                   leave=leave): 
+        cterms = set()
+        for i in variant_vep_id:
+            if 'transcript_consequences' not in i.keys():
+                continue
+            cterms.update([consequence_terms for tc in i['transcript_consequences'] for consequence_terms in tc['consequence_terms']])
+        if exact:
+            if set(cterms) == set(consequence_terms):
+                variant_vep_filtered[id] = variant_vep_id
+        else:
+            if len(set(cterms) & set(consequence_terms)) > 0:
+                variant_vep_filtered[id] = variant_vep_id
+    if verbose:
+        print(f"{len(variant_vep_filtered)}/{len(variant_vep)} variants retained")
+    if len(variant_vep_filtered)==0:
+        return None
+    return variant_vep_filtered
+
 def get_vep(ids,
             species='homo_sapiens',
             params={'AlphaMissense':1,
@@ -254,23 +325,60 @@ def get_vep(ids,
                     'REVEL':1,
                     'pick':1
                     },
-            client=None):
+            save_dir="data/haplosaurus/vep",
+            client=None,
+            desc="Getting variant info",
+            leave=True,
+            force=False,
+            verbose=True,
+            cache_only=False):
     """
     Get variant info from Ensembl VEP
     """
+    # protein_id = hs.get_haplotype_protein_ids(haplotypes[tx_id])
+    # protein_info = client.lookup(protein_id)
+    # offeset = variant['start'] - protein_info['start']
+    # variant_info = client.variation_id(species='homo_sapiens',
+    #                                   id=variant['id'])
+    # client.variant_recoder(species='homo_sapiens',
+    #                         id=variant['id'], 
+    #                         params={'fields':'hgvsp',
+    #                                 'gencode_basic':1,
+    #                                 'gencode_primary':1,
+    #                                 }
+    #                                 )
+
     from tqdm.auto import tqdm
+    if cache_only:
+        force = False
     client = get_ensembl_client(client=client)
-    variant_info = {}
+    variant_vep = {}
     ids = as_list(ids)
     for id in tqdm(ids,
-                   desc="Getting variant info"):
-        variant_info[id] = client.vep_id_get(
+                   desc=desc,
+                   leave=leave):
+        # Check if variant info is already cached
+        save_path = f"{save_dir}/{id}.json.gz"
+        variant_vep_id = load_json(save_path, 
+                                    force=force, 
+                                    verbose=verbose>1)
+        if variant_vep_id is not None:
+            variant_vep[id] = list(variant_vep_id.values())[0]
+            continue
+        if cache_only:
+            continue
+        # Get variant info from Ensembl VEP
+        variant_vep_id = client.vep_id_get(
             species=species,
             id=id, 
             params=params
             )
-    return variant_info
-
+        # Save variant info to cache
+        save_json(obj={id:variant_vep_id},
+                  save_path=save_path,
+                  verbose=verbose>1)
+        variant_vep[id] = variant_vep_id
+    return variant_vep
 
 def get_variant_ids(variant_sets):
     from tqdm.auto import tqdm
@@ -279,22 +387,10 @@ def get_variant_ids(variant_sets):
     elif isinstance(variant_sets, dict):
         ids = {}
         for tx_id in tqdm(variant_sets.keys()):
-            print(tx_id)
-            for k in variant_sets[tx_id].keys():
-                if k.startswith('variants_'):
-                    ids[tx_id][k] = [variant['id'] for variant in variant_sets[tx_id][k]]
+            ids[tx_id] = {}
+            for k in variant_sets[tx_id].keys(): 
+                ids[tx_id][k] = [variant['id'] for variant in variant_sets[tx_id][k]]
     return ids
-
-def add_variants(haplotypes,
-                 variant_sets,
-                 params={}):
-    from tqdm.auto import tqdm
-    for tx_id in tqdm(haplotypes.keys()):
-
-        variants_vep = get_vep(variant_sets[tx_id], 
-                               params=params)
-    return haplotypes
-
 
 def get_haplotypes(tx_ids,
                    save_dir="data/haplosaurus/haplotypes",
@@ -309,6 +405,8 @@ def get_haplotypes(tx_ids,
     from tqdm.auto import tqdm
     client = get_ensembl_client(client=client)
     haplotypes = {} 
+    if cache_only:
+        force = False
     for tx_id in tqdm(tx_ids,
                     desc="Getting haplotypes"):
         save_path = f"{save_dir}/{tx_id}.json.gz"
@@ -336,12 +434,30 @@ def get_haplotypes(tx_ids,
     return haplotypes
 
 def get_haplotype_seqs(haplotypes,
-                       aligned=True):
+                       aligned=True,
+                       return_missing=False,
+                       verbose=False):
     from tqdm.auto import tqdm
     hap_seqs = {}
+    missing_seqs = []
     for tx_id in tqdm(haplotypes.keys()):
-        hap_seqs[tx_id] = [x['aligned_sequences'][1] if aligned else x['seq'] for x in haplotypes[tx_id]['protein_haplotypes']]
-    return hap_seqs
+        if isinstance(haplotypes[tx_id], dict) and 'protein_haplotypes' in haplotypes[tx_id].keys():
+            hap_seqs[tx_id] = [x['aligned_sequences'][1] if aligned else x['seq'] for x in haplotypes[tx_id]['protein_haplotypes']]
+        else:
+            if len(haplotypes[tx_id])>0:
+                if aligned:
+                    hap_seqs[tx_id] = haplotypes[tx_id][0]['aligned_sequences'][1] 
+                else:
+                    hap_seqs[tx_id] = haplotypes[tx_id][0]['seq']
+            else:
+                if verbose:
+                    print(f"No seqs found for {tx_id}")
+                missing_seqs += [tx_id]
+                continue
+    if return_missing:
+        return hap_seqs, missing_seqs
+    else:
+        return hap_seqs
 
 def get_haplotype_freqs(haplotypes):
     from tqdm.auto import tqdm
@@ -376,12 +492,207 @@ def get_haplotype_protein_ids(haplotypes):
         hap_protein_ids[tx_id] = haplotypes[tx_id]['protein_haplotypes'][0]['name'].split(':')[0]
     return hap_protein_ids
 
+def get_haplotype_ref(haplotypes):
+    from tqdm.auto import tqdm
+    if isinstance(haplotypes, list):
+        hap_ref = [x for x in haplotypes if ":REF" in tqdm(x['name'])]
+    elif 'protein_haplotypes' in haplotypes.keys():
+        hap_ref = [x for x in haplotypes['protein_haplotypes'] if ":REF" in tqdm(x['name'])]
+    else:
+        hap_ref = {}
+        for tx_id in tqdm(haplotypes.keys(),"Processing transcripts"):
+            hap_ref[tx_id] = [x for x in haplotypes[tx_id]['protein_haplotypes'] if ":REF" in x['name']]
+            if isinstance(hap_ref[tx_id], list) and len(hap_ref[tx_id])>0:
+                hap_ref[tx_id] = hap_ref[tx_id]
+    return hap_ref
+
+def to_stop(seq,
+            replace='-'):
+    if replace is not None:
+        seq = seq.replace(replace, '')
+    return seq if seq.find('*')==-1 else seq[:seq.find('*')]
 
 def haplotypes_to_batches(haplotypes,
-                          strip='*'):
+                          strip='*',
+                          verbose=True):
+    """
+    Prepare batches for ESM2
+    """
+    if verbose:
+        print("Preparing batches for ESM")
     from tqdm.auto import tqdm
     batches = {}
     for tx_id in tqdm(haplotypes.keys(),
                        desc="Preparing batches"):
-        batches[tx_id] = [(x['name'], x['seq'].strip(strip)) for x in haplotypes[tx_id]['protein_haplotypes']]
+        batches[tx_id] = [(x['name'], to_stop(x['seq'].strip(strip))) for x in haplotypes[tx_id]['protein_haplotypes']]
     return batches
+
+def _add_variant_to_haplotypes_tx(hap_tx, 
+                                 variant_id, 
+                                 variants_vep, 
+                                 add_variant_id,
+                                 include_all_fields,
+                                 include_variant_info,
+                                 # Turn off for now since ref genome not gauranteed to be the same as the haplotype
+                                 ref_checks=True,
+                                 desc="Adding variants to haplotypes",
+                                 leave=False
+                                 ):
+        from tqdm.auto import tqdm
+        import copy
+        # Create a copy of the haplotypes to modify
+        hap_tx_modified = {}
+        if include_all_fields:
+            hap_tx_modified['protein_haplotypes'] = copy.deepcopy(hap_tx['protein_haplotypes'])
+        else:
+            hap_tx_modified['protein_haplotypes'] = copy.deepcopy([{k: x[k] for k in ['name', 'aligned_sequences']} for x in hap_tx['protein_haplotypes']   ])
+        # Get variant info once instead of for each haplotype
+        try:
+            variant = variants_vep[variant_id][0]['transcript_consequences'][0]
+            protein_start = variant['protein_start']
+            protein_end = variant['protein_end'] 
+            ref_aa, alt_aa = variant['amino_acids'].split('/')
+        except Exception as e:
+            print(f"variant_id: {variant_id}")
+            print(f"variant: {variant}")
+            raise ValueError(f"Error getting variant info for {variant_id}: {e}")
+        
+        def _add_variant_to_haplotypes_tx_i(haplotype_entry):
+            # Work directly with strings instead of converting to list
+            aligned_seqs = haplotype_entry['aligned_sequences']
+            ref_aa_seq = aligned_seqs[0][protein_start-1:protein_end]
+            
+            if ref_checks and ref_aa != ref_aa_seq:
+                print(
+                    f"aligned_seqs length: {len(aligned_seqs)}","\n",
+                    f"Variant ID: {variant_id}","\n",
+                    f"Variant: {variant}","\n",
+                    f"Haplotype: {haplotype_entry['name']}","\n",
+                    f"Haplotype sequence 1: {haplotype_entry['aligned_sequences'][0]}","\n",
+                    f"Haplotype sequence 2: {haplotype_entry['aligned_sequences'][1]}","\n",
+                    # Haplotype sequence windows
+                    f"Haplotype sequence 1 preview: {aligned_seqs[0][protein_start-1:protein_end+5]}","\n",
+                    f"Haplotype sequence 2 preview: {aligned_seqs[1][protein_start-1:protein_end+5]}","\n",
+                    )
+                raise ValueError(
+                    f"Reference amino acid {ref_aa} does not match haplotype sequence {ref_aa_seq}",
+                    )
+                
+            # Modify sequence directly
+            haplotype_entry['aligned_sequences'][1] = (
+                aligned_seqs[1][:protein_start-1] + 
+                alt_aa + 
+                aligned_seqs[1][protein_end:]
+            )
+            haplotype_entry['seq'] = haplotype_entry['aligned_sequences'][1].replace('-', '')
+            if add_variant_id:
+                haplotype_entry['name'] = f"{haplotype_entry['name']}_{variant_id}"
+            if include_variant_info:
+                haplotype_entry['variant_info'] = variant
+            return haplotype_entry
+
+        return [_add_variant_to_haplotypes_tx_i(h) for h in 
+                tqdm(hap_tx_modified['protein_haplotypes'], 
+                     desc=desc,
+                     leave=leave)]
+
+def add_variant_to_haplotypes(haplotypes, 
+                              variant_sets,
+                              client=None,
+                              max_transcripts=None,
+                              max_pathogenic_variants=1,
+                              max_benign_variants=1,
+                              add_variant_id=False,
+                              include_variant_info=True,
+                              include_all_fields=False,
+                              params_vep={'AlphaMissense':1,
+                                        'CADD':1,
+                                        'ClinPred':1,
+                                        'EVE':1,
+                                        'Enformer':1,
+                                        'MaveDB':1,
+                                        'REVEL':1,
+                                        'pick':1
+                                        },
+
+                              save_dir_vep="data/haplosaurus/vep",
+                              ref_checks=False,
+                              error=True,
+                              verbose=True,
+                              **kwargs
+                              ):
+    from tqdm.auto import tqdm
+    haplotypes_pathogenic = {}
+    haplotypes_benign = {}
+    haplotypes = subset_haplotypes(haplotypes,
+                                   max_transcripts=max_transcripts)
+    for tx_id,hap_tx in tqdm(haplotypes.items(),
+                             desc="Adding variants to transcript haplotypes"):
+        try:
+            # Add pathogenic variants
+            haplotypes_pathogenic[tx_id] = {}
+            variant = variant_sets[tx_id]['variants_pathogenic'][:max_pathogenic_variants]
+            variant_ids = [x['id'] for x in variant][0]
+            variants_vep = get_vep(
+                    ids=variant_ids, 
+                    params=params_vep,
+                    client=client,
+                    save_dir=save_dir_vep,
+                    desc="Getting pathogenic variant VEP",
+                    leave=False,
+                    **kwargs
+                    ) 
+            haplotypes_pathogenic[tx_id]['protein_haplotypes'] = _add_variant_to_haplotypes_tx(
+                hap_tx=hap_tx, 
+                variant_id=variant_ids, 
+                variants_vep=variants_vep, 
+                add_variant_id=add_variant_id,
+                include_all_fields=include_all_fields,
+                include_variant_info=include_variant_info,
+                ref_checks=ref_checks,
+                desc="Adding pathogenic variants to haplotypes",
+                leave=False)
+            # Add benign variants
+            haplotypes_benign[tx_id] = {}
+            variant = variant_sets[tx_id]['variants_benign'][:max_benign_variants]
+            variant_ids = [x['id'] for x in variant][0]
+            variants_vep = get_vep(
+                    ids=variant_ids, 
+                    params=params_vep,
+                    client=client,
+                    save_dir=save_dir_vep,
+                    desc="Getting benign variant VEP",
+                    leave=False,
+                    **kwargs
+                    )
+            haplotypes_benign[tx_id]['protein_haplotypes'] = _add_variant_to_haplotypes_tx(
+                hap_tx=hap_tx, 
+                variant_id=variant_ids, 
+                variants_vep=variants_vep, 
+                add_variant_id=add_variant_id,
+                include_all_fields=include_all_fields,
+                include_variant_info=include_variant_info,
+                ref_checks=ref_checks,
+                desc="Adding benign variants to haplotypes",
+                leave=False)
+        except Exception as e:
+            print(f"Error adding variants to {tx_id}")
+            if error:
+                raise e
+            else:
+                if verbose:
+                    print(f"Error adding variants to {tx_id}: {e}")
+                continue
+    return haplotypes, haplotypes_pathogenic, haplotypes_benign
+
+def subset_haplotypes(haplotypes,
+                      tx_ids=None,
+                      max_transcripts=None):
+    if tx_ids is not None:
+        # Limit to tx_ids
+        haplotypes = {k: haplotypes[k] for k in tx_ids}
+    elif max_transcripts is not None:
+        # Limit to max_transcripts
+        tx_ids = list(haplotypes.keys())[:max_transcripts]
+        haplotypes = {k: haplotypes[k] for k in tx_ids}
+    return haplotypes
