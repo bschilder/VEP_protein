@@ -1,23 +1,26 @@
-name: Label Issue Based on Assignee
+name: Label issues
 on:
   issues:
-    types: [opened, assigned]
+    types: [opened, reopened, assigned]
 jobs:
-  label_issue:
-    permissions:
-      contents: read
-      issues: write
+  label_issues:
     runs-on: ubuntu-latest
+    permissions:
+      issues: write
     steps:
-      - uses: actions/github-script@v6
+      - name: Add Koo lab label if bschilder is assigned
+        if: contains(github.event.issue.assignees.*.login, 'bschilder')
+        run: gh issue edit "$NUMBER" --add-label "koo lab"
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          github-token: ${{ secrets.GITHUB_TOKEN }}
-          script: |
-            const assignee = github.issue.assignee.login;
-            if (assignee === 'bschilder') {
-              github.issues.addLabels({ issue_number: github.context.issue.number, labels: [':us: Team CSHL: Koo Lab :us:'] });
-            } else if (assignee === 'mengysun') {
-              github.issues.addLabels({ issue_number: github.context.issue.number, labels: [':us: Team CSHL: McCandlish Lab :us:'] });
-            }
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          NUMBER: ${{ github.event.issue.number }}
+          LABELS: ':us: Team CSHL: Koo Lab :us:'
+      - name: Add McCandlish lab label if mengysun is assigned
+        if: contains(github.event.issue.assignees.*.login, 'mengysun')
+        run: gh issue edit "$NUMBER" --add-label "mccandlish lab"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          NUMBER: ${{ github.event.issue.number }}
+          LABELS: ':us: Team CSHL: McCandlish Lab :us:'

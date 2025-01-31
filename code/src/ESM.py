@@ -1,7 +1,9 @@
 try:
     import sys
     sys.path.append("code")
-    from src.utils import create_proteoform_id, load_pickle, save_pickle, intersect, run_umap
+    from src.utils import create_proteoform_id, load_pickle, save_pickle, intersect, run_umap, run_tsvd, as_list, get_marker_map
+    from src.haplosaurus import add_haplotype_freqs, add_txid
+    from src.config import PALETTES
 except:
     print("Could not import utils")
 
@@ -145,7 +147,10 @@ def get_embeddings(batches,
                    verbose=False,
                    error=True,
                    save_dir="1KG/embeddings/esm2_t33_650M_UR50D",
+                   tx_suffix_dict=None,
                    desc=f"Embedding transcript proteoforms",
+                   return_paths_only=False,
+                   save_hdf5=True,
                    **kwargs): 
                    
     import os
@@ -162,202 +167,363 @@ def get_embeddings(batches,
     # Init vars
     results = {}
     save_paths = {}
-    failed_transcripts = [] 
+    failed_tx_ids = [] 
     
     if max_transcripts!=None:
         if verbose:
             print(f"Limiting to {max_transcripts} transcripts")
         batches = {k: v for k, v in list(batches.items())[:max_transcripts]}
 
-    for transcript_id, data in tqdm(batches.items(), 
+    for tx_id, data in tqdm(batches.items(), 
                                     desc=desc): 
-        save_path = os.path.abspath(f"{save_dir}/{transcript_id}.pkl")
+        if tx_suffix_dict is not None and tx_id in tx_suffix_dict:
+            save_path_suffix = tx_suffix_dict[tx_id]
+        else:
+            save_path_suffix = ''
+        if save_hdf5:
+            ext = '.h5'
+        else:
+            ext = '.pkl'
+        save_path = os.path.abspath(f"{save_dir}/{tx_id}{save_path_suffix}{ext}")
         try:
             # Load existing embeddings
-            results_tx = load_pickle(save_path, 
+            if os.path.exists(save_path) and force is False and return_paths_only is True:
+                save_paths[tx_id] = save_path
+                continue
+            if save_hdf5:
+                results_tx = load_esm_res_hdf5(save_path, 
                                      force=force, 
                                      verbose=verbose>1)
+            else:
+                results_tx = load_pickle(save_path, 
+                                        force=force, 
+                                        verbose=verbose>1)
             if results_tx is not None: 
-                save_paths[transcript_id] = save_path
-                results[transcript_id] = results_tx
+                save_paths[tx_id] = save_path
+                results[tx_id] = results_tx
                 continue
             else:
                 # Prepare batches for model
                 batch_labels, batch_strs, batch_tokens = batch_converter(data)
                 # Generate embeddings
                 with torch.no_grad():
+                    import time
+                    start_time = time.time()
                     embeddings = model(batch_tokens, 
-                                    repr_layers=repr_layers, 
-                                    return_contacts=False,
-                                    **kwargs)
-                    results[transcript_id] = {
-                        'embeddings':embeddings,
-                        'batch_labels':batch_labels, 
-                        'batch_strs':batch_strs,
-                        'batch_tokens':batch_tokens
-                    }
+                                       repr_layers=repr_layers, 
+                                       return_contacts=False,
+                                       **kwargs)
+                    embed_time = time.time() - start_time
+                    if return_paths_only is False:
+                        results[tx_id] = {
+                            'embeddings':embeddings,
+                            'batch_labels':batch_labels, 
+                            'batch_strs':batch_strs,
+                            'batch_tokens':batch_tokens,
+                            'embed_time':embed_time
+                        }
+                    else:
+                        results[tx_id] = save_path
                 # Save 
-                save_pickle(obj=results[transcript_id],
-                            save_path=save_path,
-                            verbose=verbose>1) 
+                if save_hdf5:
+                    save_esm_res_hdf5(results[tx_id],
+                                    save_path,
+                                    force=force,
+                                    verbose=verbose>1)
+                else:
+                    save_pickle(obj=results[tx_id],
+                                save_path=save_path,
+                                verbose=verbose>1) 
                 # Only add to save_paths if the file was created
-                save_paths[transcript_id] = save_path
+                save_paths[tx_id] = save_path
         except Exception as e: 
             # print(data)
             if error:
                 raise e
             else:
                 if verbose:
-                    print(f"Failed to embed transcript {transcript_id}: {e}")   
-                failed_transcripts.append(transcript_id)
+                    print(f"Failed to embed transcript {tx_id}: {e}")   
+                failed_tx_ids.append(tx_id)
                 continue
 
-    return results, save_paths, failed_transcripts
+    return {'results':results, 
+            'save_paths':save_paths, 
+            'failed_tx_ids':failed_tx_ids}
 
 def get_representations(save_paths=None,
+                        tx_ids=None,
                         save_dir=None, 
                         repr_layers=[33],
                         batches=None,
-                        esm_results=None):
-    from tqdm.auto import tqdm 
-    import pickle
+                        esm_results=None,
+                        suffix=None,
+                        verbose=True):
+    from tqdm.auto import tqdm
     import os
-
+    # Prepare variables
     if isinstance(repr_layers, list):
         repr_layers = repr_layers[0]
     if save_paths is None and save_dir is not None:
         import glob
-        save_paths = glob.glob(f"{save_dir}/*.pkl")
+        save_paths = glob.glob(f"{save_dir}/*.pkl", recursive=True)
     if isinstance(save_paths, dict):
         save_paths = save_paths.values()
     else:
         save_paths = save_paths
-    print(f"Found {len(save_paths)} ESM2 files")
-    
-    def get_sequence_representations(results, 
-                                     data,
-                                     repr_layers):
+    if verbose: 
+        print(f"Found {len(save_paths)} ESM-2 embeddingfiles")
+    # Get sequence representations function
+    def _get_representations_i(results, 
+                                data,
+                                repr_layers,
+                                suffix_final=''):
         batch_labels = results["batch_labels"]
-        return [(batch_labels[i], results["embeddings"]["representations"][repr_layers][i, 1 : len(seq) + 1].mean(0, keepdim=False)) for i,(_,seq) in enumerate(data)]
-    
+        return [(batch_labels[i]+suffix_final, results["embeddings"]["representations"][repr_layers][i, 1 : len(seq) + 1].mean(0, keepdim=False)) for i,(_,seq) in enumerate(data)]
+    # Iterate over save paths
+    tx_ids_final = set()
     seq_reps = []
-    for f in tqdm(save_paths, desc="Extracting sequence representations"):
-        transcript_id = os.path.basename(f).replace('.pkl','')
-        if esm_results is None:
-            with open(f,'rb') as handle:
-                results = pickle.load(handle) 
+    for f in tqdm(save_paths, 
+                  desc="Extracting sequence representations"):
+        fname_split = os.path.basename(f).replace('.pkl','').split('_')
+        tx_id = fname_split[0] 
+        if tx_ids is not None:
+            if tx_id not in tx_ids:
+                continue
+        tx_ids_final.add(tx_id)
+        if suffix is None:
+            suffix_final = ''
         else:
-            results = esm_results[transcript_id]
-        seq_reps += get_sequence_representations(results, 
-                                                 batches[transcript_id],
-                                                 repr_layers)
+            if len(fname_split) == 2:
+                suffix_final = ":".join(['_'+suffix,fname_split[1]])
+            else:
+                suffix_final = suffix
+        
+        if esm_results is None:
+            results = load_pickle(f, verbose=verbose>1)
+        else:
+            if tx_id in esm_results:
+                results = esm_results[tx_id]
+            else:
+                results = esm_results
+        seq_reps += _get_representations_i(
+            results=results, 
+            data=batches[tx_id],
+            repr_layers=repr_layers,
+            suffix_final=suffix_final
+            )
+        if verbose:
+            print(">",tx_id,":",len(seq_reps),'sequence representations extracted.')
+    if verbose:
+        print(f"TOTAL: {len(seq_reps)} sequence representations extracted across {len(tx_ids_final)} transcript(s).")
     return seq_reps
 
 def get_representation_matrix(seq_reps,
-                              save_path = f"1KG/embeddings/esm2_t33_650M_UR50D/sequence_representation_matrix.pt",
-                              force = True):
+                              save_path=None,
+                              force=True):
     import torch
     import os
     # restructure sequence_representations to be a 2D array
-    if not os.path.exists(save_path) or force is True:
-        print("Restructuring sequence representations into 2D array")
-        X = torch.stack([x[1] for x in seq_reps])
-        # Save X
-        torch.save(X, save_path)
+    def _get_representation_matrix(seq_reps):
+        return torch.stack([x[1] for x in seq_reps])
+    
+    if save_path is not None:
+        if not os.path.exists(save_path) or force:
+            print("Saving sequence representations")
+            X = _get_representation_matrix(seq_reps)
+            torch.save(X, save_path)
+        else:
+            print("Loading existing sequence representations") 
+            X = torch.load(save_path)
     else:
-        print("Loading existing sequence representations")
-        X = torch.load(save_path)
+        X = _get_representation_matrix(seq_reps)
     print(X.shape)
     return X
 
-def get_representation_variances(seq_reps, 
-                                 tx_id_sep=":"):
+def _get_representation_variances_i(seq_reps, group,
+                                   tx_id_sep=":"):
     import torch
     from tqdm.auto import tqdm
     transcript_variances = {}
     transcript_variance_means = {}
-    transcript_ids = list(set([x[0].split(tx_id_sep)[0] for x in seq_reps]))
+    tx_ids = list(set([x[0].split(tx_id_sep)[0] for x in seq_reps]))
     # Compute the variance of each transcript embedding acrosss variants
-    for transcript_id in tqdm(transcript_ids, desc="Computing transcript variances"):
-        # print(transcript_id)
-        variant_embeddings = [x[1] for x in seq_reps if x[0].split(tx_id_sep)[0] == transcript_id]
+    for tx_id in tqdm(tx_ids, 
+                      desc=f"Computing transcript variances for {group}"):
+        variant_embeddings = [x[1] for x in seq_reps if x[0].split(tx_id_sep)[0] == tx_id]
         if len(variant_embeddings) == 1:
             # Set variance to 0 when there is only 1 isoform
-            transcript_variances[transcript_id] = torch.zeros(1,variant_embeddings[0].shape[0])
-            transcript_variance_means[transcript_id] = 0.0
+            transcript_variances[tx_id] = torch.zeros(1,variant_embeddings[0].shape[0])
+            transcript_variance_means[tx_id] = 0.0
         else:
-            transcript_variances[transcript_id] = torch.stack([x for i,x in enumerate(variant_embeddings)]).var(dim=0)
-            transcript_variance_means[transcript_id] = transcript_variances[transcript_id].mean()
-        # print(f"> Mean variance: { transcript_variance_means[transcript_id]}")
+            transcript_variances[tx_id] = torch.stack([x for i,x in enumerate(variant_embeddings)]).var(dim=0)
+            transcript_variance_means[tx_id] = transcript_variances[tx_id].mean()
     return transcript_variances, transcript_variance_means
 
-def get_umap_df(seq_reps,
-                embedding=None,
-                nan_indices=None,
-                tx_id_sep=":"):
+def get_representation_variances(seq_reps, 
+                                 tx_id_sep=":",
+                                 groups=['WT', 'Pathogenic','Benign'],
+                                 prefix="_"):
+    
+    variances_by_tx = {}
+    tx_ids = list(set([x[0].split(tx_id_sep)[0] for x in seq_reps]))
+    
+    for tx_id in tx_ids:
+        variances_by_tx[tx_id] = {}
+        
+    if groups is not None:
+        for group in groups:
+            seq_reps_group = [x for x in seq_reps if prefix+group in x[0]]
+            variances, means = _get_representation_variances_i(seq_reps_group, group, tx_id_sep)
+            for tx_id in variances:
+                variances_by_tx[tx_id][group] = (variances[tx_id], means[tx_id])
+        return variances_by_tx
+    else:
+        variances, means = _get_representation_variances_i(seq_reps, "all", tx_id_sep)
+        for tx_id in variances:
+            variances_by_tx[tx_id]["all"] = (variances[tx_id], means[tx_id])
+        return variances_by_tx
+    
+def _count_edits(df, 
+                 col="label_base",
+                 tx_id_sep=":",
+                 count='[<>]'):
+    return df[col].str.split(tx_id_sep).str[1].str.count(count)
+
+def _count_edits_str(lst, 
+                     tx_id_sep=":",
+                     count=['<','>']):
+    return [sum([x.split(tx_id_sep)[1].count(c) for c in count]) for x in lst]
+
+
+def get_reduction_df(seq_reps, 
+                    method=["UMAP","TSVD"][0],
+                    haplotypes=None,
+                    add_freqs=True,
+                    add_tx_id=True,
+                    embedding=None,
+                    nan_indices=None,
+                    tx_id_sep=":",
+                    split="_",
+                    verbose=True):
     import pandas as pd
+        
     if embedding is None or nan_indices is None:
         X = get_representation_matrix(seq_reps)
-        reducer, embedding, nan_indices = run_umap(X)
-    embedding_df = pd.DataFrame(embedding, columns=['UMAP 1', 'UMAP 2'])
-    embedding_df['label'] = [x[0] for i,x in enumerate(seq_reps) if not nan_indices[i]]
-    embedding_df['transcript_id'] = [x.split(tx_id_sep)[0] for x in embedding_df['label']]
-    embedding_df['transcript'] = [x.split(tx_id_sep)[0].split('.')[0] for x in embedding_df['label']]
-    return embedding_df
+        if method == "UMAP":
+            model, embedding, nan_indices = run_umap(X)
+        elif method == "TSVD":
+            model, embedding, nan_indices = run_tsvd(X)
+    df = pd.DataFrame(
+        embedding, 
+        columns=[method+" "+str(i+1) for i in range(embedding.shape[1])]
+        )
+    # Add label and label_base columns
+    df['label'] = [x[0] for i,x in enumerate(seq_reps) if not nan_indices[i]]
+    df['label_base'] = df['label'].str.split(split).str[0] 
+    # Count the number of variants in the label_base (the number of ">" or "<" in the label_base)
+    df['edits'] = _count_edits(df, 
+                               col="label_base",
+                               tx_id_sep=tx_id_sep)
+    # Add group column
+    df['group'] = get_haplotype_group(df, col="label")
+    # Add protein_id column
+    df['protein_id'] = [x.split(tx_id_sep)[0] for x in df['label']]
+    if haplotypes is not None and add_tx_id:
+        df = add_txid(df, haplotypes, verbose=verbose)
+        # Add haplotype frequencies
+    if haplotypes is not None and add_freqs:
+        df = add_haplotype_freqs(df, haplotypes, verbose=verbose)
+    return df
 
-def plot_umap(embedding_df,
-              interact=False,
-              opacity=0.1,
-              facet_col=None,
-              col_wrap=3,
-              color='white',
-              color_palette='tab10',
-              color_col=None,
-              size=None,
-              size_max=None,  
-              sizes=None,
-              sharex=True,
-              sharey=True,
-              highlight_label=None,
-              highlight_color='white',
-              highlight_size=100,
-              highlight_linewidth=2,
-              highlight_marker='D',
-              title=None,
-              **kwargs): 
-    import seaborn as sns
-    if color_col is not None:
-        palette = sns.color_palette(color_palette, n_colors=len(embedding_df[color_col].unique()))
-        color= None
-        color_map = dict(sorted(zip(embedding_df[color_col].unique(), palette)))
+def _get_color_map(df, color_col, color_palette): 
+    import seaborn as sns   
+    palette = sns.color_palette(color_palette, 
+                                n_colors=len(df[color_col].unique())) 
+    color_map = dict(sorted(zip(df[color_col].unique(), palette)))
+    return color_map     
 
-    if interact is True:
+def _infer_xy_cols(df, x, y, 
+                   search_strings=["UMAP","TSVD"]):
+    # Find columns that match the search strings followed by a number
+    # Find which search string has at least 2 matching columns
+    search_strings = as_list(search_strings)
+    search_string = None
+    for s in search_strings:
+        matching_cols = [col for col in df.columns if s.lower() in col.lower()]
+        if len(matching_cols) >= 2:
+            search_string = s
+            break
+    if search_string is None:
+        raise ValueError(f"Could not find at least 2 columns matching any of {search_strings}")
+    # Find the columns that match the search string followed by a number
+    import re
+    # find columns that match the pattern "UMAP (some number)"
+    if x is None:
+        x = [col for col in df.columns if re.match(r"(?i)"+search_string+"\s*\d+", col)][0]
+    if y is None:
+        y = [col for col in df.columns if re.match(r"(?i)"+search_string+"\s*\d+", col)][1]
+    return x, y
+
+def _plot_umap_interactive(df,
+                            x,
+                            y,
+                            opacity,
+                            facet_col,
+                            col_wrap,
+                            color,
+                            color_palette,
+                            color_col,
+                            size,
+                            sizes,
+                            sharex,
+                            sharey,
+                            highlight_label,
+                            highlight_color,
+                            highlight_size,
+                            highlight_linewidth,
+                            highlight_marker,
+                            title,
+                            add_density,
+                            **kwargs):
         import plotly.express as px
-        fig = px.scatter(embedding_df, 
-                         x='UMAP 1', 
-                         y='UMAP 2',
+        # Set size max
+        if sizes is not None:
+            size_max = max(sizes)
+        else:
+            size_max = None
+        # Set color map
+        if color_col is not None:
+            color = None
+            color_map = _get_color_map(df, color_col, color_palette)
+            df['color'] = df[color_col].map(color_map)
+        # Plot
+        fig = px.scatter(df, 
+                         x=x, 
+                         y=y,
                          facet_col=facet_col,
                          facet_col_wrap=col_wrap,
                          hover_data=['label'],
                          size=size, 
                          size_max=size_max,  
                          opacity=opacity,
-                         title=title,  
+                         title=title,
+                         color='color' if color_col is not None else color,
                          **kwargs)
-        # Add px.density_contour underneath the points
-        fig.add_trace(px.density_contour(embedding_df, 
-                                         x='UMAP 1', 
-                                         y='UMAP 2',
-                                         facet_col=facet_col,
-                                         facet_col_wrap=col_wrap,
-                                         **kwargs).data[0]
-                                         )
+        # Add px.density_contour underneath the points if add_density is True
+        if add_density:
+            fig.add_trace(px.density_contour(df, 
+                                             x=x, 
+                                             y=y,
+                                             facet_col=facet_col,
+                                             facet_col_wrap=col_wrap,
+                                             **kwargs).data[0]
+                                             )
         if highlight_label is not None:
             # Add red circles around highlighted points
-            highlight_df = embedding_df[embedding_df['label'].str.contains(highlight_label)]
+            highlight_df = df[df['label'].str.contains(highlight_label)]
             fig.add_trace(px.scatter(highlight_df,
-                                   x='UMAP 1',
-                                   y='UMAP 2',
+                                   x=x,
+                                   y=y,
                                    facet_col=facet_col,
                                    facet_col_wrap=col_wrap).update_traces(
                                        mode='markers',
@@ -371,223 +537,847 @@ def plot_umap(embedding_df,
         if sharey is False:
             fig.update_yaxes(matches=None)
         return fig
+
+def _plot_umap_static(df,
+                    x,
+                    y,
+                    opacity,
+                    facet_col,
+                    col_wrap,
+                    color,
+                    color_palette,
+                    color_col,
+                    size,
+                    sizes,
+                    sharex,
+                    sharey,
+                    highlight_label,
+                    highlight_color,
+                    highlight_size,
+                    highlight_linewidth,
+                    highlight_marker,
+                    title,
+                    add_edges,
+                    add_density,
+                    figsize,
+                    show,
+                    style_col,
+                    **kwargs):
+    
+    import seaborn as sns
+    from matplotlib import pyplot as plt  
+    # Set color map
+    if color_col is not None:
+        color= None
+        color_map = _get_color_map(df, color_col, color_palette)
+    
+    if add_density:
+        legend_bg = 'black'
+        legend_text = 'white'
     else:
-        from matplotlib import pyplot as plt 
-        import seaborn as sns
-        plt.figure(figsize=(12, 12))  # Increase figure size
-        # First plot the density contours
-        # First plot the density contours with dark background matching lowest density
-        # Create a faceted plot by transcript
-        if facet_col is not None:
-            g = sns.FacetGrid(embedding_df, 
-                              col=facet_col,    
-                              col_wrap=col_wrap,
-                              sharex=sharex,
-                              sharey=sharey)
-            # Add KDE plot to each facet
+        legend_bg = 'white'
+        legend_text = 'black' 
+    if highlight_color is not None:
+        highlight_color = legend_text
+    # Plot
+    marker_map = get_marker_map()
+    fig, ax = plt.subplots(figsize=figsize)
+
+    # First plot the density contours
+    # Create a faceted plot by transcript
+    if facet_col is not None:
+        g = sns.FacetGrid(df, 
+                            col=facet_col,    
+                            col_wrap=col_wrap,
+                            sharex=sharex,
+                            sharey=sharey)
+        # Add KDE plot to each facet if add_density is True
+        if add_density:
             g.map_dataframe(sns.kdeplot, 
-                            x='UMAP 1', y='UMAP 2',
+                            x=x, y=y,
                         fill=True,
                         cmap='viridis',
                         **kwargs)
-            # Add scatter points to each facet
-            g.map_dataframe(plt.scatter,
-                        x='UMAP 1', y='UMAP 2', 
-                        alpha=opacity,
-                        s=1,
-                        color=color)
-            
-            # Set background color for each subplot
-            for ax in g.axes.flat:
+        # Add scatter points to each facet
+        g.map_dataframe(plt.scatter,
+                    x=x, y=y, 
+                    alpha=opacity,
+                    s=1,
+                    color=color)
+        
+        # Set background color for each subplot if showing density
+        for ax in g.axes.flat:
+            if add_density:
                 ax.set_facecolor('#2F0154')
-                if highlight_label is not None:
-                    # Add red circles around highlighted points for each facet
-                    highlight_df = embedding_df[embedding_df['label'].str.contains(highlight_label)]
-                    highlight_df_facet = highlight_df[highlight_df[facet_col] == ax.get_title().split(' = ')[1]]
-                    ax.scatter(highlight_df_facet['UMAP 1'], highlight_df_facet['UMAP 2'],
-                             facecolors='none', 
-                             edgecolors=highlight_color, 
-                             s=highlight_size, 
-                             linewidth=highlight_linewidth, 
-                             marker=highlight_marker)
-        else:
+            if highlight_label is not None:
+                # Add red circles around highlighted points for each facet
+                highlight_df = df[df['label'].str.contains(highlight_label)]
+                highlight_df_facet = highlight_df[highlight_df[facet_col] == ax.get_title().split(' = ')[1]]
+                ax.scatter(highlight_df_facet[x], highlight_df_facet[y],
+                            facecolors='none', 
+                            edgecolors=highlight_color, 
+                            s=highlight_size, 
+                            linewidth=highlight_linewidth, 
+                            marker=highlight_marker)
+            if add_edges:
+                draw_haplotype_trio_edges(df,
+                                        x=x,
+                                        y=y,
+                                        palettes=PALETTES,
+                                        connect_pb=False,
+                                        ax=ax)
+    else:
+        if add_density:
             plt.gca().set_facecolor('#2F0154') # Set background to slightly darker than darkest viridis color
-            sns.kdeplot(data=embedding_df, x='UMAP 1', y='UMAP 2', 
+            edge_zorder=1
+            g = sns.kdeplot(data=df, x=x, y=y, 
                         fill=True, 
                         cmap='viridis',
                         **kwargs
                         ) 
-            # Then overlay scatter points with some transparency
-            if color_col is not None:
-                scatter = plt.scatter(data=embedding_df,
-                            x='UMAP 1', y='UMAP 2', 
-                            alpha=opacity, # Make points semi-transparent
-                            s=size, # Small point size
-                            sizes=sizes,
-                            color=embedding_df[color_col].map(color_map))
-                # Add legend mapping labels to colors
-                legend_elements = [plt.scatter([], [], c=color, label=label) 
-                                 for label, color in color_map.items()]
-                
-                # Add highlight label to legend if specified
-                if highlight_label is not None:
-                    legend_elements.append(plt.scatter([], [], 
-                                                    facecolors='none',
-                                                    edgecolors=highlight_color,
-                                                    s=50,
-                                                    linewidth=highlight_linewidth,
-                                                    marker=highlight_marker,
-                                                    label=highlight_label))
-         
-                plt.legend(handles=legend_elements,
-                           title=color_col, 
-                           facecolor='black', edgecolor='black', 
-                           labelcolor='white', title_fontsize=10).get_title().set_color('white')
-            else:
-                plt.scatter(data=embedding_df,
-                            x='UMAP 1', y='UMAP 2', 
-                            alpha=opacity, # Make points semi-transparent
-                            s=size, # Small point size
-                            sizes=sizes,
-                            color=color) # White points
+            plt.scatter(data=df,
+                        x=x, y=y, 
+                        alpha=opacity, 
+                        s=df[size] if isinstance(size,str) else size,
+                        sizes=sizes,
+                        color=df[color_col].map(color_map)
+                        )
             
-            if highlight_label is not None:
-                # Add red circles around highlighted points
-                highlight_df = embedding_df[embedding_df['label'].str.contains(highlight_label)]
-                plt.scatter(highlight_df['UMAP 1'], highlight_df['UMAP 2'],
-                          facecolors='none', 
-                          edgecolors=highlight_color, 
-                          s=highlight_size, 
-                          linewidth=highlight_linewidth, 
-                          marker=highlight_marker)
+        else:
+            edge_zorder=-1
+            g = sns.scatterplot(data=df,
+                        x=x, y=y, 
+                        alpha=opacity,
+                        size=size, 
+                        sizes=sizes,
+                        hue=color_col,
+                        style=style_col,
+                        markers=marker_map,
+                        palette=color_palette,
+                        **kwargs
+                        )
+        # Then overlay scatter points with some transparency
+        # if color_col is not None: 
+        #     # Add legend mapping labels to colors
+        #     legend_elements = [plt.scatter([], [], c=color, label=label) 
+        #                         for label, color in color_map.items()]
             
-            if title is not None:
-                plt.title(title) 
-        plt.show()
-
-def get_patient_tensor(seq_reps,
-                       sample_to_proteoform,
-                       drop_nan=True):
-    import torch
-    from tqdm.auto import tqdm
-
-    # Create empty 3D tensor
-    samples = set([x[1] for x in sample_to_proteoform.keys()])
-    transcripts = set([x[0] for x in sample_to_proteoform.keys()])
-    phases = ['phase1', 'phase2']
-    tensor = torch.zeros((len(samples), 
-                          len(transcripts), 
-                          len(phases),
-                          seq_reps[0][1].shape[0]))
-
-    seq_reps_keys = [x[0] for x in seq_reps]
-    proteoform_ids = set()
-    for (transcript, sample, phase), proteoform_id in tqdm(sample_to_proteoform.items(),
-                                                            desc="Populating patient tensor"):
-        # get indices of sample, transcript, phase
-        sample_idx = list(samples).index(sample)
-        transcript_idx = list(transcripts).index(transcript)
-        phase_idx = phases.index(phase)
-        # seq_rep 
-        if proteoform_id not in seq_reps_keys:
-            continue
-
-        proteoform_ids.add(proteoform_id)
-        seq_rep_idx = seq_reps_keys.index(proteoform_id)
-        seq_rep = seq_reps[seq_rep_idx][1]
-        if drop_nan and torch.isnan(seq_rep).any():
-            continue
-        tensor[sample_idx, transcript_idx, phase_idx, :] = seq_rep
-    # Drop samples with no proteoforms
-    if drop_nan is True:
-        tensor = tensor[~torch.all(torch.all(tensor == 0, dim=-1))][0]
-    return {'tensor':tensor,
-            'samples':samples,
-            'transcripts':transcripts,
-            'phases':phases}
-
-def run_tensor_factorization(patient_tensor,
-                              n_components={'samples':10,
-                                            'transcripts':10,
-                                            'phases':10,
-                                            'features':10},
-                              n_epochs=500,
-                              learning_rate=0.01):
-    import torch
-    import torch.nn as nn
-    import torch.optim as optim
-    from tqdm.auto import tqdm
-
-    # Get tensor dimensions
-    n_samples, n_transcripts, n_phases, n_features = patient_tensor.shape
-
-    # Initialize factor matrices
-    A = nn.Parameter(torch.randn(n_samples, n_components['samples'])) # Sample factors
-    B = nn.Parameter(torch.randn(n_transcripts, n_components['transcripts'])) # Transcript factors  
-    C = nn.Parameter(torch.randn(n_phases, n_components['phases'])) # Phase factors
-    D = nn.Parameter(torch.randn(n_features, n_components['features'])) # Feature factors
-
-    # Define optimizer
-    optimizer = optim.Adam([A, B, C, D], lr=learning_rate)
-
-    # Training loop
-    pbar = tqdm(range(n_epochs), desc="Epochs completed")
-    for epoch in pbar:
-        # Forward pass - reconstruct tensor
-        pred = torch.einsum('ac,bc,dc,ec->abde', A, B, C, D)
+        #     # Add highlight label to legend if specified
+        #     if highlight_label is not None:
+        #         legend_elements.append(plt.scatter([], [], 
+        #                                         facecolors='none',
+        #                                         edgecolors=highlight_color,
+        #                                         s=highlight_size,
+        #                                         linewidth=highlight_linewidth,
+        #                                         marker=highlight_marker,
+        #                                         label=highlight_label))
+        #     plt.legend(handles=legend_elements,
+        #                 title=color_col, 
+        #                 facecolor=legend_bg, 
+        #                 edgecolor=legend_bg, 
+        #                 labelcolor=legend_text, 
+        #                 title_fontsize=10).get_title().set_color(legend_text)
+        # else:
+        #     plt.scatter(data=df,
+        #                 x=x, y=y, 
+        #                 alpha=opacity, # Make points semi-transparent
+        #                 s=size, # Small point size
+        #                 sizes=sizes,
+        #                 color=color) # White points
         
-        # Calculate loss
-        loss = torch.nn.functional.mse_loss(pred, patient_tensor)
-        
-        # Backward pass
-        optimizer.zero_grad()
-        loss.backward()
-        optimizer.step()
-        
-        pbar.set_postfix({'loss': f'{loss.item():.4f}'})
+        if highlight_label is not None:
+            # Add red circles around highlighted points
+            highlight_df = df[df['label'].str.contains(highlight_label)]
+            plt.scatter(highlight_df[x], highlight_df[y],
+                        facecolors='none', 
+                        edgecolors=highlight_color, 
+                        s=highlight_df[size] if isinstance(size,str) else size,
+                        sizes=sizes,
+                        linewidth=highlight_linewidth, 
+                        marker=highlight_marker)
+        if add_edges:
+            draw_haplotype_trio_edges(df,
+                                    x=x,
+                                    y=y,
+                                    palettes=PALETTES,
+                                    connect_pb=False,
+                                    ax=ax,
+                                    zorder=edge_zorder
+                                    ) 
+        # Update legend markers to circles if the legend title matches color_col or size
+        if not add_density:
+            for handle in g.legend_.legendHandles:
+                if not hasattr(handle, 'get_marker') and not hasattr(handle, '_legmarker'):  # Skip non-marker legends
+                    continue
+                legend_title = g.legend_.get_title().get_text()
+                if hasattr(handle, '_legmarker'):  # Size legend
+                    if legend_title == size:
+                        handle._legmarker.set_marker('o')
+                elif legend_title == color_col:
+                    handle.set_marker('o')
+        # Set plot title
+        if title is not None:
+            plt.title(title) 
+        # Show plot
+        if show:
+            plt.show()
 
-    # Store learned factors
-    factors = {
-        'samples': A.detach(),
-        'transcripts': B.detach(), 
-        'phases': C.detach(),
-        'features': D.detach()
-    } 
-    return factors
-
-def get_transcript_contributions(factors, 
-                                 patient_tensor, 
-                                 l2_norm=True):
-    import torch
-    import pandas as pd
-    A = factors['samples']
-    B = factors['transcripts']
-    C = factors['phases']
-    D = factors['features']
-    transcript_contributions = torch.einsum('ac,bc,dc,ec->ab', A, B, C, D)
-    tx_contrib_df = pd.DataFrame(transcript_contributions.numpy(), 
-                            index=patient_tensor['samples'], 
-                            columns=patient_tensor['transcripts'])
-    if l2_norm is True:
-        l2_contrib = torch.norm(transcript_contributions, dim=0)
-        # rescale to 0-1
-        l2_contrib = l2_contrib / torch.max(l2_contrib)
-        l2_contrib_df = pd.DataFrame(l2_contrib.numpy(), 
-             index=patient_tensor['transcripts'],
-             columns=["contribution"]).sort_values(by="contribution", ascending=False)   
+def plot_umap(df,
+              x=None,
+              y=None,
+              interact=False,
+              opacity=0.5,
+              facet_col=None,
+              col_wrap=3,
+              color='white',
+              color_palette='tab10',
+              color_col=None,
+              size=None, 
+              sizes=None,
+              sharex=True,
+              sharey=True,
+              highlight_label=None,
+              highlight_color='white',
+              highlight_size=100,
+              highlight_linewidth=2,
+              highlight_marker='D',
+              title=None,
+              add_density=True,
+              show=True,
+              add_edges=True,
+              figsize=(12, 12),
+              style_col=None,
+              **kwargs):  
+    # Set size 
+    if isinstance(size, list) or isinstance(size, str):
+        if size not in df.columns:
+            print(f"Size column {size} not found in embedding_df")
+            size = None 
+    # Set x and y if not provided
+    x, y = _infer_xy_cols(df, x, y)
+    # Plot interactively
+    if interact is True:
+       fig = _plot_umap_interactive(
+           df=df,
+           x=x,
+           y=y,
+           opacity=opacity,
+           facet_col=facet_col,
+           col_wrap=col_wrap,
+           color=color,
+           color_palette=color_palette,
+           color_col=color_col,
+           size=size, 
+           sizes=sizes,
+           sharex=sharex,
+           sharey=sharey,
+           highlight_label=highlight_label,
+           highlight_color=highlight_color,
+           highlight_size=highlight_size,
+           highlight_linewidth=highlight_linewidth,
+           highlight_marker=highlight_marker,
+           title=title,
+           add_density=add_density,
+           add_edges=add_edges,
+           show=show,
+           figsize=figsize,
+           style_col=style_col,
+           **kwargs
+       )
+       return fig
+    # Plot statically
     else:
-        l2_contrib_df = None
-    return tx_contrib_df, l2_contrib_df
+        _plot_umap_static(
+             df=df,
+           x=x,
+           y=y,
+           opacity=opacity,
+           facet_col=facet_col,
+           col_wrap=col_wrap,
+           color=color,
+           color_palette=color_palette,
+           color_col=color_col,
+           size=size, 
+           sizes=sizes,
+           sharex=sharex,
+           sharey=sharey,
+           highlight_label=highlight_label,
+           highlight_color=highlight_color,
+           highlight_size=highlight_size,
+           highlight_linewidth=highlight_linewidth,
+           highlight_marker=highlight_marker,
+           title=title,
+           add_edges=add_edges,
+           add_density=add_density,
+           show=show,
+           figsize=figsize,
+           style_col=style_col,
+           **kwargs
+        )
+    
 
-def plot_tensor_factorization(factors, 
-                              keys=None):
+def draw_haplotype_trio_edges(df, 
+                             x='UMAP 1',
+                             y='UMAP 2',
+                             palettes=PALETTES, 
+                             connect_pb=True,
+                             alpha=0.2,
+                             linestyle='--',
+                             zorder=-1,
+                             ax=None):
+    """Draw connecting lines between points with same haplotype in a UMAP plot.
+    
+    Args:
+        df: DataFrame containing UMAP coordinates and labels
+        x: Name of x-axis column (default: 'UMAP 1') 
+        y: Name of y-axis column (default: 'UMAP 2')
+        palettes: Dict mapping group names to color palettes
+        connect_pb: Whether to connect Pathogenic-Benign pairs
+        alpha: Transparency of lines
+        linestyle: Style of connecting lines
+        zorder: Z-order of lines (negative to plot under points)
+        
+    Example:
+        # Plot UMAP points and add connecting lines between related haplotypes
+        fig = plot_umap(df, 
+                       x='UMAP 1', 
+                       y='UMAP 2',
+                       color_col='group')
+        draw_haplotype_trio_edges(df,
+                                x='UMAP 1',
+                                y='UMAP 2', 
+                                alpha=0.3,
+                                connect_pb=False)
+    """
     import matplotlib.pyplot as plt
+    import numpy as np
+    
+    if ax is None:
+        ax = plt.gca()
+    
+    # Get unique haplotypes from label_base
+    unique_haplotypes = df['label_base'].unique()
+
+    # Create color palette with same number of colors as haplotypes
+    colors_p = plt.cm.get_cmap(palettes['Pathogenic'])(np.linspace(0, 1, len(unique_haplotypes)))
+    colors_b = plt.cm.get_cmap(palettes['Benign'])(np.linspace(0, 1, len(unique_haplotypes)))
+    
+    for hap, color_p, color_b in zip(unique_haplotypes, colors_p, colors_b):
+        # Get points for this haplotype
+        points = df[df['label_base'] == hap]
+        
+        # Draw lines between points if we have all 3 groups
+        if len(points) == 3:
+            for i in range(len(points)):
+                for j in range(i+1, len(points)):
+                    # Skip connections between Pathogenic and Benign if connect_pb=False
+                    if not connect_pb and ((points.iloc[i]['group'].startswith('Pathogenic') and points.iloc[j]['group'].startswith('Benign')) or
+                                           (points.iloc[i]['group'].startswith('Benign') and points.iloc[j]['group'].startswith('Pathogenic'))):
+                        continue
+                        
+                    # Determine line color based on variant types being connected
+                    if points.iloc[i]['group'].startswith('Pathogenic') or points.iloc[j]['group'].startswith('Pathogenic'):
+                        line_color = color_p
+                    elif points.iloc[i]['group'].startswith('Benign') or points.iloc[j]['group'].startswith('Benign'):
+                        line_color = color_b
+                    else:
+                        line_color = 'gray'
+                        
+                    ax.plot([points.iloc[i][x], points.iloc[j][x]], 
+                            [points.iloc[i][y], points.iloc[j][y]], 
+                            color=line_color, 
+                            alpha=alpha, 
+                            linestyle=linestyle, 
+                            zorder=zorder)
+
+def get_haplotype_group(df,
+                        col="label",
+                        split="_",
+                        default="WT"):
+    import pandas as pd
+    if col=='index':
+        return pd.Series([x[1] if len(x) > 1 else default for x in df.index.str.split(split)])
+    else:
+        return df[col].apply(lambda x: x.split(split)[1] if split in x else default)
+
+def list_embeddings(dir, 
+                    suffix='',
+                    ext="pkl",
+                    recursive=False,
+                    as_dict=True):
+    import glob
+    import os
+    files = glob.glob(f"{dir}/*{suffix}.{ext}", recursive=recursive)
+    if as_dict:
+        return {os.path.basename(f).replace(f".{ext}",""):f for f in files}
+    else:
+        return files
+    
+def check_batch_info(batches,
+                      split="_",
+                      as_df=True,
+                      verbose=True):
+    # Infer ngroups 
+    batch_groups = {k:len(set([x[0].split(split)[1] for x in batches[k]])) for k in batches.keys()}
+    # check batch sizes
+    batch_sizes = {k:len(v) for k,v in batches.items()}
+    # get batch size per group
+    batch_sizes_per_group = {k:v//batch_groups[k] for k,v in batch_sizes.items()}
+    # check that all batch sizes are divible by the number of groups
+    batch_remainders = {k:v%batch_groups[k] for k,v in batch_sizes.items()}
+    # get the number of unique haplotypes per trancript
+    haplotype_counts = {k:len(set([x[0][:x[0].find(split)] for x in batches[k]])) for k in batches.keys()}
+    if as_df:
+        import pandas as pd
+        batch_info =  pd.concat([
+            pd.DataFrame(batch_sizes, index=['size']).T,
+            pd.DataFrame(batch_groups, index=['groups']).T,
+            pd.DataFrame(batch_sizes_per_group, index=['size_per_group']).T,
+            pd.DataFrame(batch_remainders, index=['remainder']).T,
+            pd.DataFrame(haplotype_counts, index=['haplotype_count']).T
+        ], axis=1)
+        if verbose:
+            print(batch_info)
+        return batch_info
+    else:
+        if verbose:
+            print(batch_sizes)
+            print(batch_remainders)
+        return {'sizes':batch_sizes, 
+                'groups':batch_groups,
+                'sizes_per_group':batch_sizes_per_group,
+                'remainders':batch_remainders,
+                'haplotypes':haplotype_counts}
+  
+
+def save_esm_res_hdf5(esm_res, 
+                      file_path, 
+                      compression="gzip",
+                      compression_opts=4,
+                      force=False,
+                      verbose=True):
+    """
+    Save the esm_res dictionary to an HDF5 file with compression.
+
+    Args:
+        esm_res (dict): The esm_res dictionary to save.
+        file_path (str): The path to the HDF5 file.
+        force (bool): Whether to overwrite existing file.
+    """
+    import h5py
+    import numpy as np
+    import torch
+    import os
+
+    if os.path.exists(file_path) and not force:
+        raise ValueError(f"File {file_path} already exists. Set force=True to overwrite.")
+    if not file_path.endswith(".h5"):
+        raise ValueError("File must have a .h5 extension")
+    
+    if verbose:
+        print(f"Saving ESM results to {file_path}")
+    # Create the file
+    with h5py.File(file_path, 'w') as f:
+        # Handle embeddings
+        if verbose:
+            print("> Saving: 'embeddings'")
+        embeddings_group = f.create_group('embeddings')
+        
+        # Check if 'representations' key exists
+        representations = esm_res['embeddings'].get('representations', {})
+        if not representations:
+            raise KeyError("Key 'representations' not found in 'esm_res['embeddings']'.")
+        
+        for layer, tensor in representations.items():
+            # Ensure tensor is a PyTorch tensor
+            if isinstance(tensor, torch.Tensor):
+                embeddings_group.create_dataset(
+                    f'rep_layer_{layer}',
+                    data=tensor.cpu().numpy(),
+                    compression=compression,
+                    compression_opts=compression_opts
+                )
+            else:
+                print(f"Skipping layer {layer}: Not a torch.Tensor")
+        
+        # Save logits if present
+        if 'logits' in esm_res['embeddings']:
+            if isinstance(esm_res['embeddings']['logits'], torch.Tensor):
+                if verbose:
+                    print("> Saving: 'logits'")
+                embeddings_group.create_dataset(
+                    'logits',
+                    data=esm_res['embeddings']['logits'].cpu().numpy(),
+                    compression=compression,
+                    compression_opts=compression_opts
+                )
+            else:
+                print("Skipping 'logits': Not a torch.Tensor")
+        
+        # Save batch_tokens
+        if verbose:
+            print("> Saving: 'batch_tokens'")
+        f.create_dataset(
+            'batch_tokens',
+            data=esm_res['batch_tokens'].cpu().numpy(),
+            compression=compression,
+            compression_opts=compression_opts
+        )
+        
+        # Save batch_labels as variable-length strings
+        dt = h5py.string_dtype(encoding='utf-8')
+        if verbose:
+            print("> Saving: 'batch_labels'")
+        f.create_dataset(
+            'batch_labels',
+            data=np.array(esm_res['batch_labels'], dtype=object),
+            dtype=dt,
+            compression=compression,
+            compression_opts=compression_opts
+        )
+        
+        # Save batch_strs as variable-length strings
+        if verbose:
+            print("> Saving: 'batch_strs'")
+        f.create_dataset(
+            'batch_strs',
+            data=np.array(esm_res['batch_strs'], dtype=object),
+            dtype=dt,
+            compression=compression,
+            compression_opts=compression_opts
+        )
+
+def load_esm_res_hdf5(file_path, verbose=True):
+    """
+    Load the esm_res dictionary from an HDF5 file.
+
+    Args:
+        file_path (str): The path to the HDF5 file.
+        verbose (bool): Whether to print verbose messages.
+
+    Returns:
+        dict: The loaded esm_res dictionary.
+    """
+    import h5py
+    import numpy as np
+    import torch
+    import os
+
+    if not os.path.exists(file_path):
+        raise FileNotFoundError(f"File {file_path} does not exist.")
+    if not file_path.endswith(".h5"):
+        raise ValueError("File must have a .h5 extension")
+
+    if verbose:
+        print(f"Loading ESM results from {file_path}")
+
+    esm_res = {}
+
+    with h5py.File(file_path, 'r') as f:
+        # Load embeddings
+        if 'embeddings' in f:
+            if verbose:
+                print("> Loading: 'embeddings'")
+            embeddings_group = f['embeddings']
+            esm_res['embeddings'] = {}
+
+            # Load representations
+            if 'rep_layer_0' in embeddings_group or any(key.startswith('rep_layer_') for key in embeddings_group):
+                representations = {}
+                for key in embeddings_group:
+                    if key.startswith('rep_layer_'):
+                        layer_num = key.replace('rep_layer_', '')
+                        tensor = torch.tensor(embeddings_group[key][()])
+                        representations[layer_num] = tensor
+                        if verbose:
+                            print(f"  Loaded representation from layer {layer_num}")
+                esm_res['embeddings']['representations'] = representations
+            else:
+                if verbose:
+                    print("  No 'representations' found in 'embeddings'.")
+
+            # Load logits if present
+            if 'logits' in embeddings_group:
+                esm_res['embeddings']['logits'] = torch.tensor(embeddings_group['logits'][()])
+                if verbose:
+                    print("  Loaded 'logits'")
+            else:
+                if verbose:
+                    print("  No 'logits' found in 'embeddings'.")
+        else:
+            if verbose:
+                print("No 'embeddings' group found in the HDF5 file.")
+
+        # Load batch_tokens
+        if 'batch_tokens' in f:
+            if verbose:
+                print("> Loading: 'batch_tokens'")
+            esm_res['batch_tokens'] = torch.tensor(f['batch_tokens'][()])
+        else:
+            if verbose:
+                print("No 'batch_tokens' dataset found in the HDF5 file.")
+
+        # Load batch_labels
+        if 'batch_labels' in f:
+            if verbose:
+                print("> Loading: 'batch_labels'")
+            batch_labels = f['batch_labels'][()]
+            # Decode bytes to strings if necessary
+            if isinstance(batch_labels[0], bytes):
+                batch_labels = [label.decode('utf-8') for label in batch_labels]
+            esm_res['batch_labels'] = batch_labels
+        else:
+            if verbose:
+                print("No 'batch_labels' dataset found in the HDF5 file.")
+
+        # Load batch_strs
+        if 'batch_strs' in f:
+            if verbose:
+                print("> Loading: 'batch_strs'")
+            batch_strs = f['batch_strs'][()]
+            # Decode bytes to strings if necessary
+            if isinstance(batch_strs[0], bytes):
+                batch_strs = [s.decode('utf-8') for s in batch_strs]
+            esm_res['batch_strs'] = batch_strs
+        else:
+            if verbose:
+                print("No 'batch_strs' dataset found in the HDF5 file.")
+
+    return esm_res
+
+def get_seq_names(seq_reps):
+    return [seq_tuple[0] for seq_tuple in seq_reps]
+
+def get_distances(seq_reps,
+                  method="manhattan",
+                  fill_diagonal=True):
+    # Compute pairwise cosine distances between all sequence representations
+    if method=="cosine":
+        from sklearn.metrics.pairwise import cosine_distances as dist_func
+    elif method=="manhattan":
+        from sklearn.metrics.pairwise import manhattan_distances as dist_func
+    import numpy as np
+    # Extract just the tensors from the tuples and convert to numpy arrays
+    seq_tensors = [seq_tuple[1].numpy() for seq_tuple in seq_reps]
+    # Stack into 2D array
+    seq_reps_array = np.vstack(seq_tensors) 
+    # Compute distances
+    distances = dist_func(seq_reps_array)  
+    # Fill the diagonal with NAs
+    if fill_diagonal:
+        np.fill_diagonal(distances, np.nan) 
+    return distances 
+
+def get_paired_distances(seq_reps,  
+                         group1, 
+                         group2, 
+                         distances=None,
+                         split="_", 
+                         by_edits=False,
+                         as_df=True,
+                         verbose=True
+                        ):
+    """
+    Extract distances between two groups of sequences for matching transcript prefixes.
+    
+    Args:
+        seq_names: List of sequence names
+        distances: Distance matrix between all sequences
+        group1_idx: List of indices for first group
+        group2_idx: List of indices for second group
+        
+    Returns:
+        Subset of distance matrix containing only distances between matching transcripts
+    """
+    import numpy as np
+
+    def _get_paired_distances_i(seq_reps,
+                                distances,
+                                group1, 
+                                group2,
+                                split="_",
+                                as_df=True):
+        seq_names = get_seq_names(seq_reps)
+        group1_idx = [i for i,x in enumerate(seq_names) if x.find(group1)>0]
+        group2_idx = [i for i,x in enumerate(seq_names) if x.find(group2)>0]
+        # Get transcript prefixes for each group
+        group1_prefixes = [seq_names[i].split(split)[0] for i in group1_idx]
+        group2_prefixes = [seq_names[i].split(split)[0] for i in group2_idx]
+
+        # Get indices where prefixes match
+        matching_group1_idx = [i for i,x in enumerate(group1_idx) 
+                            if seq_names[group1_idx[i]].split(split)[0] == group2_prefixes[i]]
+        matching_group2_idx = [i for i,x in enumerate(group2_idx)
+                            if seq_names[group2_idx[i]].split(split)[0] == group1_prefixes[i]]
+
+        idx_final = ([group1_idx[i] for i in matching_group1_idx],
+                     [group2_idx[i] for i in matching_group2_idx])
+        # Extract distance matrix subset
+        distances_subset = distances[np.ix_(*idx_final)] 
+        if as_df:
+            import pandas as pd
+            df = pd.DataFrame(
+                {'sample1':[seq_names[i] for i in idx_final[0]],
+                'sample2':[seq_names[i] for i in idx_final[1]],
+                'comparison':f"{group1.strip('_')}_vs_{group2.strip('_')}",
+                'distance':np.diag(distances_subset)}
+                )
+            # Add a column for the haplotype
+            df['haplotype'] = df['sample1'].str.split('_').str[0]
+            # Add a column for the sample type
+            df['group1'] = df['sample1'].str.split('_').str[1]
+            df['group2'] = df['sample2'].str.split('_').str[1]
+            # Variants
+            df['variants'] = df['group2'].str.split(':').str[1]
+            # Add a column for the protein_id
+            df['protein_id'] = df['sample1'].str.split(':').str[0]
+            # Add a column for the number of edits
+            df['sample1_edits'] = _count_edits(df, 
+                              col="sample1")
+            df['sample2_edits'] = _count_edits(df, 
+                              col="sample2")
+            df['max_edits'] = df[['sample1_edits', 'sample2_edits']].max(axis=1)
+            return df
+        else:
+            return distances_subset
+    
+    if by_edits:
+        edits = _count_edits_str(get_seq_names(seq_reps))
+        distances_subset_dict = {}
+        seq_reps_ref = [seq_reps[i] for i,x in enumerate(edits) if x==0]
+        # Reference sequence is 0 edits, always want to include it to compare to
+        for n_edits in set(edits) - set([0]):
+            if verbose:
+                print(f"Processing {n_edits} edits") 
+            seq_reps_i = [seq_reps[i] for i,x in enumerate(edits) if x==n_edits]
+            if len(seq_reps_i)==0:
+                continue
+            else:
+                seq_reps_i = as_list(seq_reps_ref) + seq_reps_i
+            if verbose:
+                print(f"Found {len(seq_reps_i)} sequences")
+            distances_i = get_distances(seq_reps_i)
+            distances_subset_dict[n_edits] = _get_paired_distances_i(
+                seq_reps=seq_reps_i,
+                distances=distances_i,
+                group1=group1, 
+                group2=group2,
+                split=split,
+                as_df=as_df
+                ) 
+            if as_df:
+                distances_subset_dict[n_edits]['edits_group'] = n_edits
+
+        if as_df:
+            import pandas as pd
+            return pd.concat([distances_subset_dict[i] for i in distances_subset_dict.keys()], axis=0)
+        else:
+            return distances_subset_dict
+    else:
+        # Group by edit distance too
+        if distances is None:
+            distances = get_distances(seq_reps)
+        return _get_paired_distances_i(seq_reps=seq_reps,
+                                       distances=distances,
+                                       group1=group1, 
+                                       group2=group2,
+                                       split=split,
+                                       as_df=as_df
+                                       )
+                                 
+    
+# def paired_distance_to_df(seq_reps,
+#                           dist_wt_vs_p=None,
+#                           dist_wt_vs_b=None):
+#     import pandas as pd
+#     def _paired_distance_to_df_i(seq_reps,
+#                                  dist_wt_vs_p=None,
+#                                  dist_wt_vs_b=None):
+    
+#         # Get distances if needed
+#         if dist_wt_vs_p is None or dist_wt_vs_b is None:
+#             distances = get_distances(seq_reps)
+#         # Get paired distances if not provided
+#         if dist_wt_vs_p is None:
+#             dist_wt_vs_p = get_paired_distances(seq_reps,
+#                                                 distances,
+#                                                 group1="_WT",
+#                                                 group2="_Pathogenic")
+#         if dist_wt_vs_b is None:
+#             dist_wt_vs_b = get_paired_distances(seq_reps,
+#                                                 distances,
+#                                                 group1="_WT",
+#                                                 group2="_Benign")
+#         # Get sequence names
+#         seq_names = get_seq_names(seq_reps)
+#         # Get indices of WT haplotypes
+#         wt_idx = [i for i,x in enumerate(seq_names) if x.find("_WT")>0]
+#         # Get indices of Pathogenic haplotypes
+#         pathogenic_idx = [i for i,x in enumerate(seq_names) if x.find("_Pathogenic")>0]
+#         # Get indices of Benign haplotypes
+#         benign_idx = [i for i,x in enumerate(seq_names) if x.find("_Benign")>0]
+#         # Create dataframe with distances
+#         distances_df = pd.concat([
+#             pd.DataFrame(
+#                 {'sample1':[seq_names[i] for i in wt_idx],
+#                 'sample2':[seq_names[i] for i in benign_idx],
+#                 'comparison':"WT_vs_Benign",
+#                 'distance':dist_wt_vs_b}),
+#             pd.DataFrame(
+#                 {'sample1':[seq_names[i] for i in wt_idx],
+#                 'sample2':[seq_names[i] for i in pathogenic_idx],
+#                 'comparison':"WT_vs_Pathogenic", 
+#                 'distance':dist_wt_vs_p})
+#         ], axis=0) 
+#         # Add a column for the haplotype
+#         distances_df['haplotype'] = distances_df['sample1'].str.split('_').str[0]
+#         # Add a column for the sample type
+#         distances_df['group1'] = distances_df['sample1'].str.split('_').str[1]
+#         distances_df['group2'] = distances_df['sample2'].str.split('_').str[1]
+#         # Variants
+#         distances_df['variant_id'] = distances_df['group2'].str.split(':').str[1]
+#         # Add a column for the protein_id
+#         distances_df['protein_id'] = distances_df['sample1'].str.split(':').str[0]
+#         return distances_df
+    
+#     if isinstance(dist_wt_vs_p, dict):
+#         distances_df = pd.DataFrame()
+#         for n_edits, dist_wt_vs_p in dist_wt_vs_p.items():
+#             distances_df_i = _paired_distance_to_df_i(seq_reps,
+#                                                      dist_wt_vs_p=dist_wt_vs_p[n_edits],
+#                                                      dist_wt_vs_b=dist_wt_vs_b[n_edits])
+#             distances_df_i['edits'] = n_edits
+#             distances_df = pd.concat([distances_df, distances_df_i], axis=0)
+#     else:
+#         distances_df = _paired_distance_to_df_i(seq_reps,
+#                                                 dist_wt_vs_p=dist_wt_vs_p,
+#                                                 dist_wt_vs_b=dist_wt_vs_b)
+#     return distances_df
+
+def plot_paired_distances(dist_df,
+                          x='max_edits',
+                          y='distance',
+                          hue='comparison',
+                          **kwargs):
+
+    # Create a seaborn violin plot of the distances
     import seaborn as sns
-    if keys is None:
-        keys = factors.keys()
-    for factor_name in keys:
-        factor_matrix = factors[factor_name]
-        plt.figure(figsize=(10, 6))
-        sns.heatmap(factor_matrix.T, annot=True, cmap='viridis', fmt='.2f')
-        plt.title(f'Learned {factor_name} matrix')
-        plt.show()
+    import matplotlib.pyplot as plt
+    from scipy import stats
+    # Perform t-test between WT vs Benign and WT vs Pathogenic distances
+    wt_benign = dist_df[dist_df['comparison']=='WT_vs_Benign']['distance']
+    wt_pathogenic = dist_df[dist_df['comparison']=='WT_vs_Pathogenic']['distance']
+    t_stat, p_value = stats.ttest_ind(wt_benign, wt_pathogenic)
+
+    # Create violin plot
+    sns.violinplot(data=dist_df,
+                   x=x,
+                   y=y,
+                   hue=hue,
+                   linewidth=.5,  # Remove outline
+                   saturation=1.0,  # Full color saturation
+                   **kwargs)
+    plt.title(f't-test p-value: {p_value:.2e}')
+    plt.show()
+
+    

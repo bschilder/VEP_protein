@@ -11,7 +11,8 @@ import seqpro as sp
 import pooch
 from tqdm.auto import tqdm
 
-def prepare_example(save_dir="/grid/koo/home/schilder/projects/GenomeEncoder/data/gvl"):
+def prepare_example(save_dir="/grid/koo/home/schilder/projects/GenomeEncoder/data/gvl",
+                    bgzip_exec = "~/.conda/envs/genome-loader/bin/bgzip"):
     import os
     os.chdir(save_dir)
     # GRCh38 chromosome 22 sequence
@@ -19,8 +20,7 @@ def prepare_example(save_dir="/grid/koo/home/schilder/projects/GenomeEncoder/dat
         url="https://ftp.ensembl.org/pub/release-112/fasta/homo_sapiens/dna/Homo_sapiens.GRCh38.dna.chromosome.22.fa.gz",
         known_hash="sha256:974f97ac8ef7ffae971b63b47608feda327403be40c27e391ee4a1a78b800df5",
         progressbar=True,
-    )
-    bgzip_exec = "~/.conda/envs/genome-loader/bin/bgzip"
+    ) 
     os.system(f"gzip -dc {reference} | {bgzip_exec} > {reference[:-3]}.bgz")
     reference = reference[:-3] + ".bgz"
     

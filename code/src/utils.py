@@ -183,16 +183,101 @@ def filter_matrix(X):
 def run_umap(X,
              verbose = True,
              filter=True,
+             random_state=42,
              **kwargs):
     if filter is True:
         X, nan_indices = filter_matrix(X)
-    print("Running UMAP")
+    else:
+        nan_indices = None
+    if verbose:
+        print("Running UMAP")
     import umap
-    reducer = umap.UMAP(verbose=verbose,
-                        **kwargs)
-    reducer.fit(X)
-    embedding = reducer.transform(X)
-    return reducer, embedding, nan_indices
+    model = umap.UMAP(verbose=verbose,
+                       random_state=random_state,
+                       **kwargs)
+    model.fit(X)
+    embedding = model.transform(X)
+    return model, embedding, nan_indices
+
+def run_tsvd(X,
+             n_components=2,
+             filter=True,
+             verbose=True,
+             **kwargs):
+    
+    if filter is True:
+        X, nan_indices = filter_matrix(X)
+    else:
+        nan_indices = None
+    if verbose:
+        print("Running TSVD")
+    import sklearn
+    model = sklearn.decomposition.TruncatedSVD(n_components=n_components,
+                                              **kwargs)
+    model.fit(X)
+    embedding = model.transform(X)
+    return model, embedding, nan_indices
+
+def run_lda(X,
+            n_components=2,
+            filter=True,
+            verbose=True,
+            **kwargs):
+    
+    if filter is True:
+        X, nan_indices = filter_matrix(X)
+    else:
+        nan_indices = None
+    if verbose:
+        print("Running LDA")
+    import sklearn
+    model = sklearn.decomposition.LatentDirichletAllocation(n_components=n_components,
+                                                            **kwargs)
+    model.fit(X)
+    embedding = model.transform(X)
+    return model, embedding, nan_indices
+
+def run_ica(X,
+            n_components=2,
+            filter=True,
+            verbose=True,
+            **kwargs):
+    if filter is True:
+        X, nan_indices = filter_matrix(X)
+    else:
+        nan_indices = None
+    if verbose:
+        print("Running ICA")
+    import sklearn
+    model = sklearn.decomposition.FastICA(n_components=n_components,
+                                            **kwargs)
+    model.fit(X)
+    embedding = model.transform(X)
+    return model, embedding, nan_indices
+
+### The rpca package is currently broken due to incompatibility an python 3.9.5 version of numpy version...
+## Also causes A LOT of problems with the environment when you try to install it.
+## Downgrading to numpy 1.22.4 fixes the issue:
+#### pip uninstall numpy -y
+#### pip install numpy==1.22.4
+
+# def run_rpca(X,
+#              n_components=2,
+#              filter=True,
+#              verbose=True,
+#              **kwargs):
+#     if filter is True:
+#         X, nan_indices = filter_matrix(X)
+#     else:
+#         nan_indices = None
+#     if verbose:
+#         print("Running RPCA")
+#     import rpca
+#     model = rpca.RobustPCA(n_components=n_components,
+#                            **kwargs)
+#     model.fit(X)
+#     embedding = model.transform(X)
+#     return model, embedding, nan_indices
 
 def plot_density(df,
                  x='UMAP_1',
@@ -426,4 +511,92 @@ def index_vcf(save_path,
     pysam.tabix_index(filename=save_path, 
                       preset="vcf", force=force,
                       index=save_path+".tbi")
+    
+def invert_dict(d):
+    return {v:k for k,v in d.items()}
+
+def _create_polygon_marker(n_sides, equal_edges=True):
+    """Create a custom polygon marker with n sides
+    
+    Args:
+        n_sides: Number of sides for the polygon
+        equal_edges: If True, creates a regular polygon with equal edge lengths.
+                    If False, creates a polygon with vertices evenly spaced around circle.
+    """
+    from matplotlib.path import Path
+    import matplotlib.path as mpath
+    import numpy as np
+
+    if equal_edges:
+        # Create regular polygon vertices with equal edge lengths
+        theta = np.linspace(0, 2*np.pi, n_sides+1)[:-1]  # n points + close
+        radius = 1.0  # Unit circle
+        verts = radius * np.column_stack((np.cos(theta), np.sin(theta)))
+    else:
+        # Create polygon vertices evenly spaced around circle
+        theta = np.linspace(0, 2*np.pi, n_sides, endpoint=False)
+        radius = 1.0
+        verts = radius * np.column_stack((np.cos(theta), np.sin(theta)))
+    
+    # Add closing vertex
+    verts = np.vstack((verts, verts[0]))  # Close the polygon
+    codes = [Path.MOVETO] + [Path.LINETO]*(n_sides-1) + [Path.CLOSEPOLY]
+    return mpath.Path(verts, codes)
+
+def _create_donut_marker(thickness=0.6):
+    """Create a donut marker
+    
+    Args:
+        thickness: Float between 0 and 1 controlling the thickness of the donut.
+                  Higher values = thicker donut (smaller inner circle).
+                  Default is 0.6.
+    """
+    from matplotlib.path import Path
+    import matplotlib.path as mpath
+    import numpy as np
+    
+    # Create outer circle vertices
+    theta = np.linspace(0, 2*np.pi, 100)
+    outer_verts = np.column_stack((np.cos(theta), np.sin(theta)))
+    
+    # Create inner circle vertices (smaller radius)
+    inner_verts = (1-thickness) * np.column_stack((np.cos(theta), np.sin(theta)))
+    
+    # Combine vertices - go around outer circle then inner circle in reverse
+    verts = np.vstack((outer_verts, inner_verts[::-1]))
+    
+    # Create path codes
+    codes = ([Path.MOVETO] + [Path.LINETO]*(len(outer_verts)-1) + 
+            [Path.MOVETO] + [Path.LINETO]*(len(inner_verts)-1))
+    
+    return mpath.Path(verts, codes)
+
+def _create_semicircle_marker():
+    """Create a semicircle marker"""
+    from matplotlib.path import Path
+    import matplotlib.path as mpath
+    import numpy as np
+
+    theta = np.linspace(0, np.pi, 100)
+    verts = np.column_stack((np.cos(theta), np.sin(theta)))
+    codes = [Path.MOVETO] + [Path.LINETO]*(len(verts)-2) + [Path.CLOSEPOLY]
+    return mpath.Path(verts, codes)
+
+def get_marker_map(n=8):
+    """Get a map of markers for a given range of integers"""
+    marker_map = {0:_create_donut_marker(), 
+                  1:'o', 
+                #   2:_create_semicircle_marker(), 
+                2:'X',
+                  3:'^', 
+                  4:'D', 
+                  5:'p', 
+                  6:'H', 
+                  7:_create_polygon_marker(7), 
+                  8:'8'
+                  }
+    if n > 8:
+        for i in range(10, n):
+            marker_map[i] = _create_polygon_marker(i)
+    return marker_map
     
