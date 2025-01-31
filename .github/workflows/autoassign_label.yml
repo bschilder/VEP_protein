@@ -10,17 +10,17 @@ jobs:
     steps:
       - name: Add Koo lab label if bschilder is assigned
         if: contains(github.event.issue.assignees.*.login, 'bschilder')
-        run: gh issue edit "$NUMBER" --add-label "koo lab"
+        run: |
+          gh issue edit "$NUMBER" --add-label ":us: Team CSHL: Koo Lab :us:"
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GH_REPO: ${{ github.repository }}
           NUMBER: ${{ github.event.issue.number }}
-          LABELS: ':us: Team CSHL: Koo Lab :us:'
       - name: Add McCandlish lab label if mengysun is assigned
         if: contains(github.event.issue.assignees.*.login, 'mengysun')
-        run: gh issue edit "$NUMBER" --add-label "mccandlish lab"
+        run: |
+          gh issue edit "$NUMBER" --add-label ":us: Team CSHL: McCandlish Lab :us:"
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GH_REPO: ${{ github.repository }}
           NUMBER: ${{ github.event.issue.number }}
-          LABELS: ':us: Team CSHL: McCandlish Lab :us:'
