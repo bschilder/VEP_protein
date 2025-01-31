@@ -1,0 +1,20 @@
+name: Label Issue Based on Assignee
+on:
+  issues:
+    types: [opened, assigned]
+jobs:
+  label_issue:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/github-script@v6
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const assignee = github.issue.assignee.login;
+            if (assignee === 'bschilder') {
+              github.issues.addLabels({ issue_number: github.context.issue.number, labels: [':us: Team CSHL: Koo Lab :us:'] });
+            } else if (assignee === 'mengysun') {
+              github.issues.addLabels({ issue_number: github.context.issue.number, labels: [':us: Team CSHL: McCandlish Lab :us:'] });
+            }

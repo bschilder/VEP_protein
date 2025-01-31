@@ -1,0 +1,3 @@
+[submodule "ProteinGym"]
+	path = ProteinGym
+	url = https://github.com/bschilder/ProteinGym.git
