@@ -4,6 +4,9 @@ on:
     types: [opened, assigned]
 jobs:
   label_issue:
+    permissions:
+      contents: read
+      issues: write
     runs-on: ubuntu-latest
     steps:
       - uses: actions/github-script@v6
