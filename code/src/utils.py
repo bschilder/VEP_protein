@@ -31,9 +31,15 @@ def as_list(x,
         return list(x)
     if type(x) != list:
         x = [x]
+    if type(x) == set:
+        x = list(x)
     if type_func != None:
         x = [type_func(y) for y in x]
     return x
+
+def one_only(lst):
+    lst = as_list(lst)
+    return lst[0]
 
 def intersect(x,y):
     return list(set(x) & set(y))
@@ -393,7 +399,6 @@ def load_pickle(save_path,
                 return None
     return None
 
-
 def save_json(obj,
               save_path,
               verbose=True,
@@ -599,4 +604,3 @@ def get_marker_map(n=8):
         for i in range(10, n):
             marker_map[i] = _create_polygon_marker(i)
     return marker_map
-    

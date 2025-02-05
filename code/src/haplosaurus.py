@@ -3,6 +3,7 @@ sys.path.append("code")
 from src.utils import as_list, intersect, load_pickle, save_pickle, load_json, save_json, invert_dict
 from src.config import PARAMS_VEP, PARAMS_HAPLOTYPES, set_params_vep, set_params_haplotypes, get_params_vep, get_params_haplotypes, PARAMS_VARIATION
 from src.onekg import get_sample_metadata
+from src.ontologies import get_sequence_ontology, get_descendants
 # https://ensemblrest.readthedocs.io/en/latest/
  
 def get_ensembl_client(client=None,
@@ -288,6 +289,7 @@ def _check_vep(varp,
 def get_variant_sets(tx_ids,
                      so_term = 'SO:0001583',
                      consequence_type = ['missense_variant'],
+                     include_descendants = True,
                      pathogenic_variant_set = 'clin_assoc',
                      benign_variant_set = 'ClinVar',
                      nagative_variant_set = '1kg_3',  # '1kg_3_com'
@@ -298,13 +300,30 @@ def get_variant_sets(tx_ids,
                      save_dir_variant_sets="data/haplosaurus/variant_sets",
                      save_dir_vep="data/haplosaurus/vep",
                      force=False,
+                     exact={'pathogenic':False,
+                            'benign':False,
+                            'negative':True},
                      client=None,
                      cache_only=False,
+                     error=True,
                      verbose=True):
+
     from tqdm.auto import tqdm
     # Gather pathogenic/benign variants
     variant_sets = {}
+    consequence_type = as_list(consequence_type)
     client = get_ensembl_client(client=client)
+    # Include descendants of consequence type
+    if include_descendants:
+        so = get_sequence_ontology()
+        consequence_type = get_descendants(label_or_id=consequence_type,
+                                            ont=so, 
+                                            return_as="label",
+                                            verbose=verbose)
+        so_term = get_descendants(label_or_id=so_term,
+                                  ont=so,
+                                  return_as="id",
+                                  verbose=verbose) 
     if cache_only:
         force = False
     # Iterate over transcripts
@@ -323,7 +342,7 @@ def get_variant_sets(tx_ids,
                                                 save_dir_vep=save_dir_vep,
                                                 client=client,
                                                 consequence_type=consequence_type,
-                                                verbose=verbose)  
+                                                verbose=verbose>1)  
                 if varb_vep is None or varp_vep is None:
                     continue
             if add_vep:
@@ -334,88 +353,100 @@ def get_variant_sets(tx_ids,
         elif cache_only:
             continue
         ## Get pathogenic variants
-        variant_sets_tx = {}
-        varp = get_variants(
-            tx_id=tx_id,
-            client=client,
-            params_query={'feature':'variation',
-                          'so_term': so_term,
-                          'variant_set': pathogenic_variant_set
-                          },
-            params_filter={'clinical_significance':['pathogenic'],
-                            'consequence_type': consequence_type}, 
-            exact=True
-            )
-        if len(varp)==0: 
-            continue
-        else:
-            variant_sets_tx['variants_pathogenic'] = varp
-        ## Get benign variants
-        varb = get_variants(
-            tx_id=tx_id,
-            save_dir=save_dir_variants,
-            params_query={'feature':'variation',
-                          'so_term': so_term,
-                          'variant_set': benign_variant_set
-                          },
-            params_filter={'clinical_significance':['benign'], 
-                           'consequence_type': consequence_type},
-            exact=True
-            )
-        if len(varb)==0:
-            continue
-        else:
-            variant_sets_tx['variants_benign'] = varb
-        ## Get negative variant set (e.g. 1KG variants)
-        varn = get_variants(
-            tx_id=tx_id,
-            client=client,
-            params_query={'feature':'variation',
-                          'so_term': so_term,
-                          'variant_set': nagative_variant_set
-                        }
-            )
-        if len(varn)>0:
-            variant_sets_tx['variants_negative'] = varn
-            ids_neg = [x['id'] for x in varn]
-            # Remove pathogenic variants present in 1KG
-            varp = filter_variants(varp, 
-                                    params={'id':ids_neg},
-                                    reverse=True,
-                                    verbose=False,
-                                    leave=False
-                                    )
-            if len(varp)==0:
+        try:
+            variant_sets_tx = {}
+            varp = get_variants(
+                tx_id=tx_id,
+                client=client,
+                params_query={'feature':'variation',
+                              'so_term': so_term,
+                              'variant_set': pathogenic_variant_set
+                            },
+                params_filter={'clinical_significance':['pathogenic'],
+                               'consequence_type': consequence_type}, 
+                exact=exact['pathogenic'],
+                verbose=verbose>1
+                )
+            if len(varp)==0: 
                 continue
-            # Remove benign variants present in 1KG
-            varb = filter_variants(varb, 
-                                    params={'id':ids_neg},
-                                    reverse=True,
-                                    verbose=False,
-                                    leave=False
-                                    )
+            else:
+                variant_sets_tx['variants_pathogenic'] = varp
+            ## Get benign variants
+            varb = get_variants(
+                tx_id=tx_id,
+                save_dir=save_dir_variants,
+                params_query={'feature':'variation',
+                              'so_term': so_term,
+                              'variant_set': benign_variant_set
+                            },
+                params_filter={'clinical_significance':['benign'], 
+                               'consequence_type': consequence_type},
+                exact=exact['benign'],
+                verbose=verbose>1
+                )
             if len(varb)==0:
                 continue
-        # Annotate pathogenic/benign variants with VEP
-        if check_vep:
-            varp_vep, varb_vep = _check_vep(varp,
-                                            varb,
-                                            tx_id=tx_id,
-                                            save_dir_vep=save_dir_vep,
-                                            client=client,
-                                            consequence_type=consequence_type,
-                                            verbose=verbose)  
-            if varb_vep is None or varp_vep is None:
+            else:
+                variant_sets_tx['variants_benign'] = varb
+            ## Get negative variant set (e.g. 1KG variants)
+            varn = get_variants(
+                tx_id=tx_id,
+                client=client,
+                params_query={'feature':'variation',
+                              'so_term': so_term,
+                              'variant_set': nagative_variant_set
+                            },
+                exact=exact['negative'],
+                verbose=verbose>1
+                )
+            if len(varn)>0:
+                variant_sets_tx['variants_negative'] = varn
+                ids_neg = [x['id'] for x in varn]
+                # Remove pathogenic variants present in 1KG
+                varp = filter_variants(varp, 
+                                        params={'id':ids_neg},
+                                        reverse=True,
+                                        verbose=verbose>1,
+                                        leave=False
+                                        )
+                if len(varp)==0:
+                    continue
+                # Remove benign variants present in 1KG
+                varb = filter_variants(varb, 
+                                        params={'id':ids_neg},
+                                        reverse=True,
+                                        verbose=verbose>1,
+                                        leave=False
+                                        )
+                if len(varb)==0:
+                    continue
+            # Annotate pathogenic/benign variants with VEP
+            if check_vep:
+                varp_vep, varb_vep = _check_vep(varp,
+                                                varb,
+                                                tx_id=tx_id,
+                                                save_dir_vep=save_dir_vep,
+                                                client=client,
+                                                consequence_type=consequence_type,
+                                                verbose=verbose>1)  
+                if varb_vep is None or varp_vep is None:
+                    continue
+            if add_vep:
+                variant_sets_tx['variants_pathogenic_vep'] = varp_vep
+                variant_sets_tx['variants_benign_vep'] = varb_vep
+            # Only add to variant_sets if it made it through all the filters
+            variant_sets[tx_id] = variant_sets_tx
+            # save results as pickle 
+            save_json(obj=variant_sets_tx,
+                    save_path=save_path,
+                    verbose=verbose>1)
+        except Exception as e:
+            if error:
+                raise e
+            else:
+                if verbose:
+                    print(f"Error getting variant sets for {tx_id}: {e}")
                 continue
-        if add_vep:
-            variant_sets_tx['variants_pathogenic_vep'] = varp_vep
-            variant_sets_tx['variants_benign_vep'] = varb_vep
-        # Only add to variant_sets if it made it through all the filters
-        variant_sets[tx_id] = variant_sets_tx
-        # save results as pickle 
-        save_json(obj=variant_sets_tx,
-                  save_path=save_path,
-                  verbose=verbose>1)
     return variant_sets
     
 def filter_vep(variant_vep,

@@ -65,18 +65,19 @@ def download_resources(resources_df=get_resources_df(),
                        desc='Downloading resources', disable=progressbar<1): 
         try:
             fpath = os.path.join(path, row['Version'])
-            if row['Filename'].endswith('.zip'):
-                unzipped_name = os.path.basename(row['URL']).removesuffix('.zip')
-                processor = pooch.Unzip(extract_dir=unzipped_name)
+            unzipped_name = os.path.basename(row['URL']).removesuffix('.zip')
+            processor = pooch.Unzip(extract_dir=unzipped_name)
+            if row['Filename'].endswith('.zip') and remove_zip:
                 if os.path.exists(unzipped_name) and remove_zip:
-                    file_dict[row['Filename']] = os.listdir(unzipped_name)
+                    file_dict[unzipped_name] = []
+                    for root, dirs, files in os.walk(unzipped_name):
+                        for file in files:
+                            file_dict[unzipped_name].append(os.path.join(root, file))
                     print(f"Skipping {unzipped_name} because it already exists")
                     if remove_zip:
                         _rm_zip(row, fpath)
                     continue
-            else: 
-                processor = None
-            file_dict[row['Filename']] = pooch.retrieve(url=row['URL'], 
+            file_dict[unzipped_name] = pooch.retrieve(url=row['URL'], 
                                                         fname=os.path.basename(row['URL']),
                                                         known_hash=None if pd.isna(row['Hash']) else row['Hash'], 
                                                         path=fpath,
@@ -90,3 +91,16 @@ def download_resources(resources_df=get_resources_df(),
             else:
                 print(f"Error downloading {row['Filename']}: {e}")
     return file_dict
+
+# Read and concatenate all clinical substitution files
+def concat_csvs(pg_resources,
+                fkey='clinical_ProteinGym_substitutions'):
+    from tqdm.auto import tqdm
+    clinical_subs_dfs = []
+    for csv_path in tqdm(pg_resources[fkey],
+                        desc="Reading files in " + fkey):
+        df = pd.read_csv(csv_path, index_col=0)
+        # Add source file name as column
+        df['source_file'] = os.path.basename(csv_path)
+        clinical_subs_dfs.append(df)
+    return pd.concat(clinical_subs_dfs, ignore_index=True)

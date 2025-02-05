@@ -278,24 +278,3 @@ def select_variants(recs,
             print(f"Selected {len(recs_selected)} transcripts with {n_variants} variants.")
     return transcripts_selected, recs_selected
 
-def get_sequence_ontology(**kwargs):
-    # Import SO ontology
-    import owlready2
-    so_url = "http://purl.obolibrary.org/obo/so.owl"
-    return owlready2.get_ontology(so_url, **kwargs).load()
-
-def get_sequence_ontology_descendants(ancestor_label,
-                                      so=None,
-                                      include_self=True,
-                                      as_str=False,
-                                      verbose=True):
-    if so is None:
-        so = get_sequence_ontology()
-    # get all descendant terms of 'coding_sequence_variant'
-    ancestor = so.search_one(label=ancestor_label)
-    descendants = ancestor.descendants(include_self=include_self)
-    if verbose:
-        print(f"Found {len(descendants)} descendants of '{ancestor_label}'")
-    if as_str:
-        return [f"{x.name.replace('_', ':')}|{x.label[0]}" for x in descendants]
-    return descendants
