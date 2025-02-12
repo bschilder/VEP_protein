@@ -7,6 +7,18 @@ try:
 except:
     print("Could not import utils")
 
+import os
+import random
+import numpy as np
+import torch
+
+ 
+def list_models(prefix='esm'):
+    import esm
+    for model_name in dir(esm.pretrained):
+        if model_name.startswith(prefix):
+            print(f"- {model_name}")
+
 
 def get_torch_data_i(transcript_id, 
                      results, 
@@ -138,7 +150,27 @@ def get_torch_data(results_all=None,
     # Return vars
     return seq_to_proteoform, transcript_to_proteoform, sample_to_proteoform, proteoform_to_stopcodons, samples, batches
 
+def set_seeds(seed, deterministic=True):
+    """Set random seeds for reproducibility across different libraries.
+    
+    Args:
+        seed (int): Random seed value
+        deterministic (bool): Whether to enforce deterministic behavior in PyTorch
+    """ 
+    import torch
+    import random
+    import numpy as np
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
+    # Ensure deterministic behavior in PyTorch
+    torch.backends.cudnn.deterministic = deterministic
+    torch.backends.cudnn.benchmark = not deterministic
+
 def get_embeddings(batches,
+                   seed=42,
                    model=None,
                    alphabet=None,
                    repr_layers=[33],
@@ -151,11 +183,22 @@ def get_embeddings(batches,
                    desc=f"Embedding transcript proteoforms",
                    return_paths_only=False,
                    save_hdf5=True,
+                   deterministic=True,
                    **kwargs): 
                    
+  
+        
+    # Import required libraries
     import os
+    import torch
     from tqdm.auto import tqdm
-    import torch 
+    
+    # Set seeds
+    set_seeds(seed, deterministic)
+    
+    if verbose:
+        print(f"Random seed set to {seed}")
+    
     if model is None:
         if verbose:
             print(f"Using model: esm2_t33_650M_UR50D")
@@ -656,34 +699,6 @@ def _plot_umap_static(df,
                         palette=color_palette,
                         **kwargs
                         )
-        # Then overlay scatter points with some transparency
-        # if color_col is not None: 
-        #     # Add legend mapping labels to colors
-        #     legend_elements = [plt.scatter([], [], c=color, label=label) 
-        #                         for label, color in color_map.items()]
-            
-        #     # Add highlight label to legend if specified
-        #     if highlight_label is not None:
-        #         legend_elements.append(plt.scatter([], [], 
-        #                                         facecolors='none',
-        #                                         edgecolors=highlight_color,
-        #                                         s=highlight_size,
-        #                                         linewidth=highlight_linewidth,
-        #                                         marker=highlight_marker,
-        #                                         label=highlight_label))
-        #     plt.legend(handles=legend_elements,
-        #                 title=color_col, 
-        #                 facecolor=legend_bg, 
-        #                 edgecolor=legend_bg, 
-        #                 labelcolor=legend_text, 
-        #                 title_fontsize=10).get_title().set_color(legend_text)
-        # else:
-        #     plt.scatter(data=df,
-        #                 x=x, y=y, 
-        #                 alpha=opacity, # Make points semi-transparent
-        #                 s=size, # Small point size
-        #                 sizes=sizes,
-        #                 color=color) # White points
         
         if highlight_label is not None:
             # Add red circles around highlighted points
@@ -872,7 +887,8 @@ def draw_haplotype_trio_edges(df,
                 for j in range(i+1, len(points)):
                     # Skip connections between Pathogenic and Benign if connect_pb=False
                     if not connect_pb and ((points.iloc[i]['group'].startswith('Pathogenic') and points.iloc[j]['group'].startswith('Benign')) or
-                                           (points.iloc[i]['group'].startswith('Benign') and points.iloc[j]['group'].startswith('Pathogenic'))):
+                                           (points.iloc[i]['group'].startswith('Benign') and points.iloc[j]['group'].startswith('Pathogenic'))
+                                           ):
                         continue
                         
                     # Determine line color based on variant types being connected
@@ -1286,74 +1302,6 @@ def get_paired_distances(seq_reps,
                                        )
                                  
     
-# def paired_distance_to_df(seq_reps,
-#                           dist_wt_vs_p=None,
-#                           dist_wt_vs_b=None):
-#     import pandas as pd
-#     def _paired_distance_to_df_i(seq_reps,
-#                                  dist_wt_vs_p=None,
-#                                  dist_wt_vs_b=None):
-    
-#         # Get distances if needed
-#         if dist_wt_vs_p is None or dist_wt_vs_b is None:
-#             distances = get_distances(seq_reps)
-#         # Get paired distances if not provided
-#         if dist_wt_vs_p is None:
-#             dist_wt_vs_p = get_paired_distances(seq_reps,
-#                                                 distances,
-#                                                 group1="_WT",
-#                                                 group2="_Pathogenic")
-#         if dist_wt_vs_b is None:
-#             dist_wt_vs_b = get_paired_distances(seq_reps,
-#                                                 distances,
-#                                                 group1="_WT",
-#                                                 group2="_Benign")
-#         # Get sequence names
-#         seq_names = get_seq_names(seq_reps)
-#         # Get indices of WT haplotypes
-#         wt_idx = [i for i,x in enumerate(seq_names) if x.find("_WT")>0]
-#         # Get indices of Pathogenic haplotypes
-#         pathogenic_idx = [i for i,x in enumerate(seq_names) if x.find("_Pathogenic")>0]
-#         # Get indices of Benign haplotypes
-#         benign_idx = [i for i,x in enumerate(seq_names) if x.find("_Benign")>0]
-#         # Create dataframe with distances
-#         distances_df = pd.concat([
-#             pd.DataFrame(
-#                 {'sample1':[seq_names[i] for i in wt_idx],
-#                 'sample2':[seq_names[i] for i in benign_idx],
-#                 'comparison':"WT_vs_Benign",
-#                 'distance':dist_wt_vs_b}),
-#             pd.DataFrame(
-#                 {'sample1':[seq_names[i] for i in wt_idx],
-#                 'sample2':[seq_names[i] for i in pathogenic_idx],
-#                 'comparison':"WT_vs_Pathogenic", 
-#                 'distance':dist_wt_vs_p})
-#         ], axis=0) 
-#         # Add a column for the haplotype
-#         distances_df['haplotype'] = distances_df['sample1'].str.split('_').str[0]
-#         # Add a column for the sample type
-#         distances_df['group1'] = distances_df['sample1'].str.split('_').str[1]
-#         distances_df['group2'] = distances_df['sample2'].str.split('_').str[1]
-#         # Variants
-#         distances_df['variant_id'] = distances_df['group2'].str.split(':').str[1]
-#         # Add a column for the protein_id
-#         distances_df['protein_id'] = distances_df['sample1'].str.split(':').str[0]
-#         return distances_df
-    
-#     if isinstance(dist_wt_vs_p, dict):
-#         distances_df = pd.DataFrame()
-#         for n_edits, dist_wt_vs_p in dist_wt_vs_p.items():
-#             distances_df_i = _paired_distance_to_df_i(seq_reps,
-#                                                      dist_wt_vs_p=dist_wt_vs_p[n_edits],
-#                                                      dist_wt_vs_b=dist_wt_vs_b[n_edits])
-#             distances_df_i['edits'] = n_edits
-#             distances_df = pd.concat([distances_df, distances_df_i], axis=0)
-#     else:
-#         distances_df = _paired_distance_to_df_i(seq_reps,
-#                                                 dist_wt_vs_p=dist_wt_vs_p,
-#                                                 dist_wt_vs_b=dist_wt_vs_b)
-#     return distances_df
-
 def plot_paired_distances(dist_df,
                           x='max_edits',
                           y='distance',
@@ -1380,4 +1328,36 @@ def plot_paired_distances(dist_df,
     plt.title(f't-test p-value: {p_value:.2e}')
     plt.show()
 
-    
+def batches_to_df(batches):
+    from tqdm import tqdm
+    import pandas as pd
+    df = pd.DataFrame()
+    for tx_id, batch in tqdm(batches.items()):
+        # add a new row to df for each tx_id
+        wt_idx = [i for i, x in enumerate(batch) if x[0].endswith("_WT")]
+        pathogenic_idx = [i for i, x in enumerate(batch) if "_Pathogenic" in x[0]]
+        benign_idx = [i for i, x in enumerate(batch) if "_Benign" in x[0]]
+        
+        for i in wt_idx:
+            wt_seq = batch[wt_idx[i]][1]
+            wt_name = batch[wt_idx[i]][0]
+            base_name = wt_name.split("_")[0]
+            pathogenic_seq = batch[pathogenic_idx[i]][1]
+            pathogenic_name = batch[pathogenic_idx[i]][0]
+            benign_seq = batch[benign_idx[i]][1]
+            benign_name = batch[benign_idx[i]][0]
+            assert pathogenic_name.split("_")[0] == base_name
+            assert benign_name.split("_")[0] == base_name
+            row = pd.DataFrame({
+                'tx_id': tx_id,
+                'name': base_name,
+                'WT_seq': wt_seq,
+                'Pathogenic_seq': pathogenic_seq,
+                'Pathogenic_variants': pathogenic_name.split("_")[1].split(":")[1],
+                'Benign_seq': benign_seq,
+                'Benign_variants': benign_name.split("_")[1].split(":")[1]
+            }, 
+            index=[i]
+            )
+        df = pd.concat([df, row], ignore_index=True, axis=0)
+    return df

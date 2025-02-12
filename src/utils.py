@@ -41,8 +41,11 @@ def one_only(lst):
     lst = as_list(lst)
     return lst[0]
 
-def intersect(x,y):
-    return list(set(x) & set(y))
+def intersect(x, y, as_list=True):
+    if as_list:
+        return list(set(x) & set(y))
+    else:
+        return set(x) & set(y)
 
 def list_vcf(dir='/grid/koo/home/schilder/projects/GenomeEncoder/data/1KG/vcf_formatted/*.vcf.gz', 
              as_dict=False):
@@ -440,6 +443,7 @@ def save_json(obj,
                 json.dump(obj, f, separators=(',', ':'))
 
 def load_json(save_path,
+              error=True,
               verbose=True,
               force=False):
     """
@@ -478,9 +482,11 @@ def load_json(save_path,
             with open_func(save_path, mode, encoding='utf-8') as f:
                 return json.load(f)
         except Exception as e:
-            print(f"Failed to load JSON file: {e}")
-            return None
-
+            if error:
+                raise e
+            else:
+                print(f"Failed to load JSON file: {e}")
+                return None
     return None
 
 def save_vcf(recs, save_path, header, mode="wb", index=True):

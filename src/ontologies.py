@@ -131,3 +131,16 @@ def is_label_or_id(label_or_id, ont=None):
     if label_or_id in so_labels:
         return 'label'
     return None
+
+def map_terms(terms,
+                    ont=None,
+                    return_as=['entity','label','id','id|label'],
+                    verbose=True):
+    if ont is None:
+        ont = default_ontology()
+    # Get entity
+    if is_label_or_id(terms, ont) == 'label':
+        entity = ont.search_one(label=label_or_id)
+    else:
+        entity = ont.search_one(id=label_or_id)
+    return _return_as(entity, return_as)

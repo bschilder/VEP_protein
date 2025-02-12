@@ -1,3 +1,5 @@
+DATA_DIR = "/grid/koo/home/schilder/projects/data/"
+
 PARAMS_VARIATION = {
     'genotypes': 1,
     # 'genotyping_chips': 1,

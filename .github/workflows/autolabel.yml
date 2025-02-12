@@ -1,4 +1,4 @@
-name: Label issues
+name: Autolabel issues based on assignees
 on:
   issues:
     types: [opened, reopened, assigned]
@@ -8,18 +8,29 @@ jobs:
     permissions:
       issues: write
     steps:
-      - name: Add Koo lab label if bschilder is assigned
-        if: contains(github.event.issue.assignees.*.login, 'bschilder')
+      
+      - name: Add Koo lab label
+        if: contains(github.event.issue.assignees.*.login, 'bschilder') || contains(github.event.issue.assignees.*.login, 'MasayukiNagai')
         run: |
           gh issue edit "$NUMBER" --add-label ":us: Team CSHL: Koo Lab :us:"
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GH_REPO: ${{ github.repository }}
           NUMBER: ${{ github.event.issue.number }}
-      - name: Add McCandlish lab label if mengysun is assigned
+
+      - name: Add McCandlish lab label
         if: contains(github.event.issue.assignees.*.login, 'mengysun')
         run: |
           gh issue edit "$NUMBER" --add-label ":us: Team CSHL: McCandlish Lab :us:"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          NUMBER: ${{ github.event.issue.number }}
+
+      - name: Add UCSD label
+        if: contains(github.event.issue.assignees.*.login, 'd-laub ')
+        run: |
+          gh issue edit "$NUMBER" --add-label ":us: Team UCSD :us:"
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GH_REPO: ${{ github.repository }}
