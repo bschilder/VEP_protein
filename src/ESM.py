@@ -1,7 +1,5 @@
 try:
-    import sys
-    sys.path.append("code")
-    from src.utils import create_proteoform_id, load_pickle, save_pickle, intersect, run_umap, run_tsvd, as_list, get_marker_map
+    from src.utils import create_proteoform_id, load_pickle, save_pickle, intersect, run_umap, run_tsvd, as_list, get_marker_map, count_variants
     from src.haplosaurus import add_haplotype_freqs, add_txid
     from src.config import PALETTES
 except:
@@ -425,18 +423,7 @@ def get_representation_variances(seq_reps,
         for tx_id in variances:
             variances_by_tx[tx_id]["all"] = (variances[tx_id], means[tx_id])
         return variances_by_tx
-    
-def _count_edits(df, 
-                 col="label_base",
-                 tx_id_sep=":",
-                 count='[<>]'):
-    return df[col].str.split(tx_id_sep).str[1].str.count(count)
-
-def _count_edits_str(lst, 
-                     tx_id_sep=":",
-                     count=['<','>']):
-    return [sum([x.split(tx_id_sep)[1].count(c) for c in count]) for x in lst]
-
+     
 
 def get_reduction_df(seq_reps, 
                     method=["UMAP","TSVD"][0],
@@ -464,8 +451,7 @@ def get_reduction_df(seq_reps,
     df['label'] = [x[0] for i,x in enumerate(seq_reps) if not nan_indices[i]]
     df['label_base'] = df['label'].str.split(split).str[0] 
     # Count the number of variants in the label_base (the number of ">" or "<" in the label_base)
-    df['edits'] = _count_edits(df, 
-                               col="label_base",
+    df['edits'] = count_variants(df['label_base'], 
                                tx_id_sep=tx_id_sep)
     # Add group column
     df['group'] = get_haplotype_group(df, col="label")
@@ -1189,6 +1175,7 @@ def get_paired_distances(seq_reps,
                          group2, 
                          distances=None,
                          split="_", 
+                         tx_id_sep=":",
                          by_edits=False,
                          as_df=True,
                          verbose=True
@@ -1212,7 +1199,9 @@ def get_paired_distances(seq_reps,
                                 group1, 
                                 group2,
                                 split="_",
+                                tx_id_sep=":",
                                 as_df=True):
+        
         seq_names = get_seq_names(seq_reps)
         group1_idx = [i for i,x in enumerate(seq_names) if x.find(group1)>0]
         group2_idx = [i for i,x in enumerate(seq_names) if x.find(group2)>0]
@@ -1248,17 +1237,18 @@ def get_paired_distances(seq_reps,
             # Add a column for the protein_id
             df['protein_id'] = df['sample1'].str.split(':').str[0]
             # Add a column for the number of edits
-            df['sample1_edits'] = _count_edits(df, 
-                              col="sample1")
-            df['sample2_edits'] = _count_edits(df, 
-                              col="sample2")
+            df['sample1_edits'] = count_variants(df['sample1'], 
+                                                 tx_id_sep=tx_id_sep)
+            df['sample2_edits'] = count_variants(df['sample2'], 
+                                                 tx_id_sep=tx_id_sep)
             df['max_edits'] = df[['sample1_edits', 'sample2_edits']].max(axis=1)
             return df
         else:
             return distances_subset
     
     if by_edits:
-        edits = _count_edits_str(get_seq_names(seq_reps))
+        edits = count_variants(get_seq_names(seq_reps), 
+                               tx_id_sep=tx_id_sep)
         distances_subset_dict = {}
         seq_reps_ref = [seq_reps[i] for i,x in enumerate(edits) if x==0]
         # Reference sequence is 0 edits, always want to include it to compare to
@@ -1299,8 +1289,7 @@ def get_paired_distances(seq_reps,
                                        group2=group2,
                                        split=split,
                                        as_df=as_df
-                                       )
-                                 
+                                       )             
     
 def plot_paired_distances(dist_df,
                           x='max_edits',
@@ -1361,3 +1350,272 @@ def batches_to_df(batches):
             )
         df = pd.concat([df, row], ignore_index=True, axis=0)
     return df
+
+
+
+def plot_vep_violin(vep_df, 
+                    model_location = None,                
+                    bar_width = 0.5,
+                    violin_alpha = 0.25,
+                    point_size = 4,
+                    point_alpha = 0.5,
+                    palette = {'Benign': 'blue', 
+                               'Pathogenic': 'red'}
+                    ):
+    
+    import seaborn as sns
+    import matplotlib.pyplot as plt
+    import numpy as np
+    from scipy import stats  
+
+    if model_location is None:
+        if "model_location" in vep_df.columns:
+            model_location = vep_df['model_location'].unique()[0]
+            print(f"Using model_location: {model_location}")
+        else:
+            raise ValueError("model_location is not specified")
+    vep_df = vep_df.copy()
+    # Remove NA rows from model_location column
+    nrows_before = len(vep_df)
+    vep_df = vep_df[vep_df[model_location].notna()]
+    nrows_after = len(vep_df)
+    if nrows_before - nrows_after > 0:
+        print(f"Removed {nrows_before - nrows_after} rows with NA values in {model_location}")
+    # Create figure with subplots for each protein
+    proteins = vep_df['protein'].unique()
+    fig, axes = plt.subplots(len(proteins), 1, figsize=(10, 6*len(proteins)))
+    if len(proteins) == 1:
+        axes = [axes]
+
+    for ax, protein in zip(axes, proteins):
+        # Get data for this protein
+        protein_data = vep_df[vep_df['protein'] == protein]
+        
+        # Create violin plots for each mutant, grouped by DMS_bin_score
+        for mutant in protein_data[~protein_data['is_ref']]['mutant'].unique():
+            mutant_data = protein_data[~protein_data['is_ref'] & (protein_data['mutant'] == mutant)]
+            
+            # Plot violin for benign
+            benign_data = mutant_data[mutant_data['DMS_bin_score'] == 'Benign']
+            if not benign_data.empty:
+                sns.violinplot(data=benign_data,
+                            x='DMS_bin_score', y=model_location,
+                            ax=ax, color=palette['Benign'], alpha=violin_alpha)
+                
+            # Plot violin for pathogenic    
+            pathogenic_data = mutant_data[mutant_data['DMS_bin_score'] == 'Pathogenic']
+            if not pathogenic_data.empty:
+                sns.violinplot(data=pathogenic_data,
+                            x='DMS_bin_score', y=model_location,
+                            ax=ax, color=palette['Pathogenic'], alpha=violin_alpha)
+        
+        # Add individual points
+        sns.stripplot(data=protein_data[~protein_data['is_ref']], 
+                    x='DMS_bin_score', y=model_location,
+                    ax=ax, color='black', alpha=point_alpha, size=point_size)
+        
+        # Plot horizontal lines for ref samples by DMS score
+        ref = protein_data[protein_data['is_ref']] 
+        
+        if not ref.empty:
+            ref_benign = ref[ref['DMS_bin_score'] == 'Benign']
+            ref_pathogenic = ref[ref['DMS_bin_score'] == 'Pathogenic']
+            
+            # Get x-axis category positions
+            categories = ['Benign', 'Pathogenic']
+            category_positions = {cat: i for i, cat in enumerate(categories)}
+            
+            # Store y-positions for label placement
+            benign_y_positions = []
+            pathogenic_y_positions = []
+            
+            if not ref_benign.empty:
+                for _, ref_row in ref_benign.iterrows():
+                    ref_benign_score = ref_row[model_location]
+                    ref_mutation = ref_row['mutant']
+                    # Only compare against scores for the same mutation
+                    benign_scores = protein_data[
+                        ~protein_data['is_ref'] & 
+                        (protein_data['DMS_bin_score'] == 'Benign') &
+                        (protein_data['mutant'] == ref_mutation)
+                    ][model_location]
+                    benign_percentile = int(100 * (benign_scores < ref_benign_score).mean())
+                    
+                    # Draw horizontal reference line
+                    ax.hlines(y=ref_benign_score, 
+                            xmin=category_positions['Benign'] - bar_width, 
+                            xmax=category_positions['Benign'] + bar_width,
+                            color=palette['Benign'], linestyle='--')
+                    
+                    benign_y_positions.append((ref_benign_score, f'Benign {ref_mutation}\n(Percentile={benign_percentile})'))
+                
+            if not ref_pathogenic.empty:
+                for _, ref_row in ref_pathogenic.iterrows():
+                    ref_pathogenic_score = ref_row[model_location]
+                    ref_mutation = ref_row['mutant']
+                    # Only compare against scores for the same mutation
+                    pathogenic_scores = protein_data[
+                        ~protein_data['is_ref'] & 
+                        (protein_data['DMS_bin_score'] == 'Pathogenic') &
+                        (protein_data['mutant'] == ref_mutation)
+                    ][model_location]
+                    pathogenic_percentile = int(100 * (pathogenic_scores < ref_pathogenic_score).mean())
+                    
+                    # Draw horizontal reference line
+                    ax.hlines(y=ref_pathogenic_score,
+                            xmin=category_positions['Pathogenic'] - bar_width,
+                            xmax=category_positions['Pathogenic'] + bar_width,
+                            color=palette['Pathogenic'], linestyle='--')
+                    
+                    pathogenic_y_positions.append((ref_pathogenic_score, f'Pathogenic {ref_mutation}\n(Percentile={pathogenic_percentile})'))
+            
+            def sort_positions(positions):
+                return sorted(positions, key=lambda x: x[0])
+            
+            # Improved label positioning with dynamic spacing
+            def adjust_positions(positions, y_range):
+                if not positions:
+                    return []
+                positions = sort_positions(positions)
+                min_gap = y_range * 0.1  # Dynamic gap based on plot range
+                adjusted = [positions[0]]
+                for i in range(1, len(positions)):
+                    prev_y = adjusted[-1][0]
+                    curr_y = positions[i][0]
+                    if curr_y - prev_y < min_gap:
+                        curr_y = prev_y + min_gap
+                    adjusted.append((curr_y, positions[i][1]))
+                return adjusted
+            
+            y_range = ax.get_ylim()[1] - ax.get_ylim()[0]
+            benign_y_positions_labels = adjust_positions(benign_y_positions, y_range)
+            pathogenic_y_positions_labels = adjust_positions(pathogenic_y_positions, y_range)
+            
+            # Add labels with angled connecting lines
+            for i, (y_pos, label) in enumerate(benign_y_positions_labels):
+                # Calculate control points for curved line
+                x_start = -1
+                x_end = category_positions['Benign'] - bar_width
+                # Draw angled line from label to reference line
+                ax.plot([x_start, x_end], [y_pos, sort_positions(benign_y_positions)[i][0]],
+                    color=palette['Benign'], linestyle=':', alpha=0.6)
+                ax.text(x_start - 0.1, y_pos, label, ha='right', va='center', 
+                    color=palette['Benign'])
+                
+            for i, (y_pos, label) in enumerate(pathogenic_y_positions_labels):
+                x_start = category_positions['Pathogenic'] + bar_width
+                x_end = 2
+                # Draw angled line from label to reference line
+                ax.plot([x_start, x_end], [sort_positions(pathogenic_y_positions)[i][0], y_pos],
+                    color=palette['Pathogenic'], linestyle=':', alpha=0.6)
+                ax.text(x_end + 0.1, y_pos, label, ha='left', va='center',
+                    color=palette['Pathogenic'])
+        
+        # Add connecting lines between haplotypes
+        non_ref_data = protein_data[~protein_data['is_ref']]
+        haplotypes = non_ref_data['haplotype'].unique()
+        
+        for hap in haplotypes:
+            hap_data = non_ref_data[non_ref_data['haplotype'] == hap]
+            if len(hap_data) > 1:  # Only connect if we have multiple variants
+                benign_scores = hap_data[hap_data['DMS_bin_score'] == 'Benign'][model_location].values
+                pathogenic_scores = hap_data[hap_data['DMS_bin_score'] == 'Pathogenic'][model_location].values
+                
+                for benign_score in benign_scores:
+                    for pathogenic_score in pathogenic_scores:
+                        ax.plot([0, 1], [benign_score, pathogenic_score],
+                            color='gray', alpha=0.3, linestyle='--', linewidth=1)
+        
+        # Add statistical test and significance brackets
+        benign_vals = protein_data[~protein_data['is_ref'] & (protein_data['DMS_bin_score'] == 'Benign')][model_location]
+        pathogenic_vals = protein_data[~protein_data['is_ref'] & (protein_data['DMS_bin_score'] == 'Pathogenic')][model_location]
+        
+        stat, pval = stats.ttest_ind(benign_vals, pathogenic_vals)
+        
+        y_max = max(benign_vals.max(), pathogenic_vals.max())
+        y_min = min(benign_vals.min(), pathogenic_vals.min())
+        y_range = y_max - y_min
+        y_bracket = y_max + 0.03 * y_range  # Reduced spacing
+        
+        if pval < 0.001:
+            pval_text = 'p < 0.001'
+        else:
+            pval_text = f'p = {pval:.3f}'
+        ax.text(0.5, y_bracket+0.5*y_range*0.03, pval_text, ha='center', va='bottom')
+        
+        ax.plot([0, 1], [y_bracket, y_bracket], 'k:', linewidth=1, alpha=0.8)
+        ax.plot([0, 0], [y_bracket-30, y_bracket], 'k:', linewidth=1, alpha=0.8)
+        ax.plot([1, 1], [y_bracket-30, y_bracket], 'k:', linewidth=1, alpha=0.8)
+        
+        ax.set_title(f'Protein: {protein}, Model: {model_location}, Haplotypes: {protein_data["haplotype"].nunique()}, Variants: {protein_data["mutant"].nunique()}')
+        ax.set_ylabel(f'{", ".join(vep_df["scoring_strategy"].unique())}')
+        ax.set_xlabel('Clinical classification')
+        
+        # Adjust plot margins to accommodate labels while maintaining reasonable dimensions
+        ax.set_xlim(-2, 3)
+        ax.set_ylim(y_min - 0.05*y_range, y_max + 0.15*y_range)
+
+    plt.tight_layout()
+    plt.show()
+
+
+def merge_vep(save_dir,
+              scoring_strategy = ["wt-marginals", "masked-marginals", "pseudo-ppl"],
+              add_model_location=True,
+              add_variant_set=True,
+              add_filename=False
+              ):
+    """
+    Merge VEP results from multiple files into a single dataframe.
+    
+    Args:
+        save_dir (str): Directory containing the VEP results
+        scoring_strategy (str or list): Scoring strategy to use
+        add_model_location (bool): Whether to add the model location to the dataframe
+        add_filename (bool): Whether to add the filename to the dataframe
+
+    Returns:
+        merged_df (pd.DataFrame): Merged dataframe containing all VEP results
+    """
+    import pandas as pd
+    import glob
+    import os
+    from tqdm import tqdm
+    
+    save_dir = os.path.expanduser(save_dir)
+    if isinstance(scoring_strategy, str):
+        scoring_strategy = [scoring_strategy]
+    # Create empty list to store dataframes
+    dfs = []
+    for ss in scoring_strategy:
+        # Find all csv.gz files recursively
+        all_files = glob.glob(
+            os.path.join(save_dir, "**", f"{ss}.csv.gz"), 
+                         recursive=True)
+        print("Found", len(all_files), ss, "files") 
+        # Read each file and append to list
+        for filename in tqdm(all_files, desc="Reading files"):
+            try: 
+                # Read the CSV
+                df = pd.read_csv(filename, index_col=[0,1])
+                df.insert(0, 'haplotype', os.path.dirname(filename).split(os.sep)[-2])
+                df['scoring_strategy'] = os.path.basename(filename).split('.')[0]  
+                df['is_ref'] = df['haplotype'].str.endswith('REF')
+                if add_model_location:
+                    df['model_location'] = os.path.dirname(filename).split(os.sep)[-4]
+                if add_variant_set:
+                    df['variant_set'] = os.path.dirname(filename).split(os.sep)[-1]
+                if add_filename:
+                    df['filename'] = filename 
+                dfs.append(df) 
+            except Exception as e:
+                print(f"Error reading {filename}: {str(e)}")
+                continue
+        
+    # Concatenate all dataframes
+    if dfs:
+        merged_df = pd.concat(dfs, ignore_index=True)
+        return merged_df
+    else:
+        print("No files were successfully read")
+        return None 

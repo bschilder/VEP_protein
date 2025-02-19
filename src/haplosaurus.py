@@ -1,6 +1,4 @@
 import os
-import sys
-sys.path.append("code")
 from src.utils import as_list, intersect, load_pickle, save_pickle, load_json, save_json, invert_dict
 from src.config import PARAMS_VEP, PARAMS_HAPLOTYPES, set_params_vep, set_params_haplotypes, get_params_vep, get_params_haplotypes, PARAMS_VARIATION
 from src.onekg import get_sample_metadata
@@ -587,10 +585,12 @@ def list_haplotypes(save_dir=DIR_DICT["haplotypes"],
 def get_haplotypes(tx_ids=None,
                    save_dir=DIR_DICT["haplotypes"],
                    species="homo_sapiens",
-                   params=PARAMS_HAPLOTYPES,
+                   params=PARAMS_HAPLOTYPES, 
+                   use_protein_ids=False,
                    client=None,
                    force = False,
                    cache_only=False,
+                   error=False,
                    verbose=True):
     from tqdm.auto import tqdm
     client = get_ensembl_client(client=client)
@@ -624,13 +624,21 @@ def get_haplotypes(tx_ids=None,
                           save_path=save_path,
                           verbose=verbose>1)
             except Exception as e:
-                if verbose:
-                    print(f"Error getting haplotypes for {tx_id}: {e}")
-                continue 
+                if error:
+                    raise e
+                else:
+                    if verbose:
+                        print(f"Error getting haplotypes for {tx_id}: {e}")
+                    continue 
+    if use_protein_ids:
+        haplotypes = _as_protein_ids(haplotypes)
     return haplotypes
 
+def _as_protein_ids(haplotypes):
+    return dict(zip(get_haplotype_protein_ids(haplotypes, add_self=True).values(), haplotypes.values()))
+
 def get_haplotype_seqs(haplotypes,
-                       aligned=True,
+                       aligned=1,
                        return_missing=False,
                        use_protein_ids=False,
                        add_haplotype_names=False,
@@ -641,12 +649,22 @@ def get_haplotype_seqs(haplotypes,
     for tx_id in tqdm(haplotypes.keys(),
                        desc="Getting haplotype sequences"):
         if isinstance(haplotypes[tx_id], dict) and 'protein_haplotypes' in haplotypes[tx_id].keys():
-            hap_seqs[tx_id] = [x['aligned_sequences'][1] if aligned else x['seq'] for x in haplotypes[tx_id]['protein_haplotypes']]
+            if aligned==1:
+                hap_seqs[tx_id] = [x['aligned_sequences'][1] for x in haplotypes[tx_id]['protein_haplotypes']]
+            elif aligned==2:
+                hap_seqs[tx_id] = [x['aligned_sequences'] for x in haplotypes[tx_id]['protein_haplotypes']]
+            else:
+                hap_seqs[tx_id] = [x['seq'] for x in haplotypes[tx_id]['protein_haplotypes']]
         else:
             if len(haplotypes[tx_id])>0:
-                if aligned:
+                if aligned==1:
+                    # Return aligned haplotype sequence only
                     hap_seqs[tx_id] = haplotypes[tx_id][0]['aligned_sequences'][1] 
+                elif aligned==2:
+                    # Return both sequences (aligned reference and haplotype)
+                    hap_seqs[tx_id] = haplotypes[tx_id][0]['aligned_sequences']
                 else:
+                    # Return unaligned haplotype sequence only
                     hap_seqs[tx_id] = haplotypes[tx_id][0]['seq']
             else:
                 if verbose:
@@ -658,7 +676,7 @@ def get_haplotype_seqs(haplotypes,
         haplotype_names = get_haplotype_names(haplotypes) # list of haplotype names
         hap_seqs = {tx_id:list(zip(haplotype_names[tx_id], tx_seqs)) for tx_id,tx_seqs in hap_seqs.items()}
     if use_protein_ids:
-        hap_seqs = dict(zip(get_haplotype_protein_ids(haplotypes).values(), hap_seqs.values()))
+        hap_seqs = _as_protein_ids(hap_seqs)
     if return_missing:
         return hap_seqs, missing_seqs
     else:
@@ -772,28 +790,55 @@ def get_haplotype_names(haplotypes):
         hap_names[tx_id] = [x['name'].split('_')[0] for x in haplotypes[tx_id]['protein_haplotypes']]
     return hap_names
 
-def get_haplotype_protein_ids(haplotypes):
+def get_haplotype_protein_ids(haplotypes, 
+                              add_self=False):
     """
-    Get the protein ID from the haplotype entry,
-        or a dict of haplotype entries indexed by transcript ID.
+    Get the protein ID from the haplotype entry or a dict of haplotype entries.
+
+    Args:
+        haplotypes: A single haplotype entry containing 'protein_haplotypes' key,
+            or a dict of haplotype entries indexed by transcript ID.
+        add_self: If True, add the protein ID to the dict of haplotype entries in addition to the transcript ID.
+
+    Returns:
+        str: The protein ID if input is a single haplotype entry
+        dict: Mapping of transcript IDs to protein IDs if input is a dict
     """
     if 'protein_haplotypes' in haplotypes.keys():
         return haplotypes['protein_haplotypes'][0]['name'].split(':')[0]
     from tqdm.auto import tqdm
     hap_protein_ids = {}
     for tx_id in tqdm(haplotypes.keys()):
-        hap_protein_ids[tx_id] = haplotypes[tx_id]['protein_haplotypes'][0]['name'].split(':')[0]
+        protein_id = haplotypes[tx_id]['protein_haplotypes'][0]['name'].split(':')[0]
+        hap_protein_ids[tx_id] = protein_id
+        if add_self:
+            hap_protein_ids[protein_id] = protein_id 
     return hap_protein_ids
 
-def get_haplotype_ref(haplotypes):
+def get_haplotype_ref(haplotypes,
+                      verbose=True):
     from tqdm.auto import tqdm
     if isinstance(haplotypes, list):
-        hap_ref = [x for x in haplotypes if ":REF" in tqdm(x['name'])]
+        if isinstance(haplotypes[0], dict):
+            hap_ref = [x for x in haplotypes if ":REF" in tqdm(x['name'],
+                                                            disable=not verbose,
+                                                            leave=False)]
+        elif isinstance(haplotypes[0], tuple):
+            hap_ref = [x for x in haplotypes if ":REF" in tqdm(x[0],
+                                                            disable=not verbose,
+                                                            leave=False)]
+        elif isinstance(haplotypes[0], str):
+            hap_ref = [x for x in haplotypes if ":REF" in tqdm(x,
+                                                            disable=not verbose,
+                                                            leave=False)]
     elif 'protein_haplotypes' in haplotypes.keys():
         hap_ref = [x for x in haplotypes['protein_haplotypes'] if ":REF" in tqdm(x['name'])]
     else:
         hap_ref = {}
-        for tx_id in tqdm(haplotypes.keys(),"Processing transcripts"):
+        for tx_id in tqdm(haplotypes.keys(),
+                          desc="Processing transcripts",
+                          disable=not verbose,
+                          leave=False):
             hap_ref[tx_id] = [x for x in haplotypes[tx_id]['protein_haplotypes'] if ":REF" in x['name']]
             if isinstance(hap_ref[tx_id], list) and len(hap_ref[tx_id])>0:
                 hap_ref[tx_id] = hap_ref[tx_id]
@@ -1230,3 +1275,56 @@ def add_variant_freqs(df,
     variation = {id:get_variation(id) for id in df[variant_col].unique()}
     variation_df = pd.concat([variation_to_dfs(x)[field].assign(variant_id=k) for k,x in variation.items()], axis=0)
     return df.merge(variation_df, on=variant_col, how='left')
+
+def align_pairwise(hap_seqs):
+    # convert hap_seqs to a MSA
+    from Bio.Align import PairwiseAligner
+    from tqdm.auto import tqdm
+
+    msa_dict = {}
+    for protein_id, tx_hap_seqs in tqdm(hap_seqs.items(),
+                                        desc="Processing proteins",
+                                        leave=False):
+        
+        ref_seq = get_haplotype_ref(tx_hap_seqs, verbose=False)[0][1][0]
+        msa_dict[protein_id]  = []
+        for seq_name, seqs in tx_hap_seqs:
+            aligner = PairwiseAligner() 
+            alignments = aligner.align(ref_seq.replace("-", ""),
+                                       seqs[1].replace("-", ""))
+            msa_dict[protein_id].append(alignments[0])
+
+    return msa_dict
+
+
+
+def get_offset_length(seq_name, base_offset=1):
+    """Calculate the offset needed to account for insertions and deletions in a sequence.
+    
+    Args:
+        seq_name (str): Name of the sequence containing mutation information.
+            Format: "{protein_id}:{mutation1},{mutation2},...". 
+            Example: "ENSP00000261556:565S>N,696insTA,699delELQ"
+        base_offset (int, optional): Base offset to start from. Defaults to 1.
+    
+    Returns:
+        int: Total offset after accounting for insertions and deletions.
+            For reference sequences (ending in "REF"), returns base_offset.
+            For variant sequences, returns base_offset + total_insertions - total_deletions.
+    
+    Example:
+        get_offset("ENSP00000261556:565S>N,696insTA,699delELQ") 
+    """
+    if not seq_name.endswith("REF"):
+        mutations = seq_name.split(":")[1].split(",")
+        insertion_offsets = []
+        deletion_offsets = []
+        for mut in mutations:
+            if 'ins' in mut:
+                insertion_offsets += [len(mut.split('ins')[1])]
+            elif 'del' in mut:
+                deletion_offsets += [len(mut.split('del')[1])]
+
+        return base_offset + sum(insertion_offsets) - sum(deletion_offsets)
+    else:
+        return base_offset

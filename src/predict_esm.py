@@ -17,15 +17,34 @@ from Bio import SeqIO
 import itertools
 from typing import List, Tuple
 import numpy as np
+import os
+
+from src.utils import query_msa, as_msa, is_msa
+
+def to_stop(sequence,
+            stop_str='*'):
+    return sequence if sequence.find(stop_str)==-1 else sequence[:sequence.find(stop_str)]
+
+def _get_sequence(sequence,
+                  i=-1):
+    if is_msa(sequence):
+        sequence = str(sequence[i].seq)
+    return sequence
 
 def preprocess_sequence(sequence: str,
                         strip: list = ['*'],
-                        replace: list = ['.', '-']) -> str:
+                        replace: list = ['.', '-'],
+                        truncate: bool = True) -> str:
+    
     processed = sequence
+    processed = _get_sequence(processed)
     for s in strip:
         processed = processed.strip(s)
     for r in replace:
         processed = processed.replace(r, '')
+    # Truncate protein if "*" is in the sequence
+    if truncate:
+        processed = to_stop(processed)
     return processed
 
 def remove_insertions(sequence: str) -> str:
@@ -117,6 +136,12 @@ def create_parser():
         default=False,
         help="Whether the sequence is a reference genome sequence"
     )
+    parser.add_argument(
+        "--force",
+        type=bool,
+        default=False,
+        help="Rerun the prediction even if the results already exist"
+    )
     # fmt: on
     parser.add_argument(
         "--nogpu", 
@@ -128,68 +153,122 @@ def check_sequence(sequence,
                    idx, 
                    expected,
                    type="wildtype",
+                   invert=False,
                    is_ref=True):
-    if is_ref:
-        assert sequence[idx] == expected, f"The listed {type} does not match the provided sequence: {sequence[idx]} != {expected} in {sequence}"
+    
+    if is_msa(sequence):
+        query = 0 if type == "wildtype" else 1
+        subseq = query_msa(sequence, 
+                           pos=idx+1, 
+                           ref=0, 
+                           query=query,
+                           join_str="")
+        if invert:
+            if subseq == expected:
+                print(f"Warning: The listed {type} is already present in the provided sequence: {subseq} == {expected} in {sequence}")
+        else:
+            assert subseq == expected, f"The listed {type} does not match the provided sequence: {subseq} != {expected} in {sequence}"
+    else:
+        if is_ref:
+            assert sequence[idx] == expected, f"The listed {type} does not match the provided sequence: {sequence[idx]} != {expected} in {sequence}"
 
-def label_row(row, 
+def _parse_mutation_row(mutation_row,
+                        offset_idx):
+    # parses "G195S" into wt="G", idx=195, mt="S"
+    """
+    Example:
+        parse_mutation_row("G195S") -> ("G", 195, "S")
+    """
+    wt, idx, mt = mutation_row[0], int(mutation_row[1:-1]) - offset_idx, mutation_row[-1]
+    return wt, idx, mt
+
+def label_row(mutation_row, 
               sequence, 
               token_probs, 
               alphabet, 
               offset_idx,
               is_ref):
+    
     # parses "G195S" into wt="G", idx=195, mt="S"
-    wt, idx, mt = row[0], int(row[1:-1]) - offset_idx, row[-1]
-    check_sequence(sequence, idx, wt, "wildtype", is_ref)
+    wt, idx, mt = _parse_mutation_row(mutation_row, offset_idx)
+
+    # Check the wildtype sequence
+    check_sequence(sequence=sequence, 
+                   idx=idx, 
+                   expected=wt, 
+                   type="wildtype", 
+                   is_ref=is_ref)
 
     wt_encoded, mt_encoded = alphabet.get_idx(wt), alphabet.get_idx(mt)
 
-    # add 1 for BOS
+    # add 1 for BOS and check bounds
+    seq_len = token_probs.size(1) - 1  # -1 for BOS token
+    if idx >= seq_len:
+        print(f"Mutation position {idx} is out of bounds for sequence length {seq_len}")
+        return None
     score = token_probs[0, 1 + idx, mt_encoded] - token_probs[0, 1 + idx, wt_encoded]
     return score.item()
 
-def mutate_sequence(sequence, 
-                    mutation_row, 
-                    offset_idx, 
-                    is_ref):
-    # parses "G195S" into wt="G", idx=195, mt="S"
-    wt, idx, mt = mutation_row[0], int(mutation_row[1:-1]) - offset_idx, mutation_row[-1]
-    check_sequence(sequence, idx, wt, "wildtype", is_ref)
-
-    # modify the sequence
-    sequence = sequence[:idx] + mt + sequence[(idx + 1) :]
-    check_sequence(sequence, idx, mt, "mutant", is_ref)
-    return wt, idx, mt, sequence
+def mutate_sequence(mutation_row,
+                    sequence, 
+                    offset_idx=1, 
+                    is_ref=True):
     
-def compute_pppl(row, 
+    # Check the wildtype sequence
+    wt, idx, mt = _parse_mutation_row(mutation_row, offset_idx)
+    check_sequence(sequence=sequence, 
+                   idx=idx, 
+                   expected=wt, 
+                   type="wildtype", 
+                   is_ref=is_ref)
+
+    # Mutate the sequence
+    sequence_str = _get_sequence(sequence)
+    sequence_mut = sequence_str[:idx] + mt + sequence_str[(idx + 1) :]
+    if is_msa(sequence):
+        sequence_mut = as_msa([sequence[0].seq,
+                               sequence_str])
+        
+    # Check the mutant sequence
+    check_sequence(sequence=sequence_mut, 
+                   idx=idx, 
+                   expected=mt, 
+                   type="mutant", 
+                   invert=True,
+                   is_ref=is_ref)
+
+    return wt, idx, mt, sequence_mut
+    
+def compute_pppl(mutation_row, 
                  sequence, 
                  model, 
                  alphabet, 
                  offset_idx, 
                  is_ref):
 
-    wt, idx, mt, sequence = mutate_sequence(sequence, row, offset_idx, is_ref)
-
+    wt, idx, mt, sequence = mutate_sequence(mutation_row, sequence, offset_idx, is_ref)
+ 
+    sequence_str = preprocess_sequence(sequence)
     # encode the sequence
     data = [
-        ("protein1", preprocess_sequence(sequence)),
-    ]
+        ("protein1", sequence_str),
+    ] 
 
     batch_converter = alphabet.get_batch_converter()
 
     batch_labels, batch_strs, batch_tokens = batch_converter(data)
 
-    wt_encoded, mt_encoded = alphabet.get_idx(wt), alphabet.get_idx(mt)
+    wt_encoded, mt_encoded = alphabet.get_idx(wt), alphabet.get_idx(mt) 
 
     # compute probabilities at each position
     log_probs = []
     device = next(model.parameters()).device
-    for i in range(1, len(sequence) - 1):
+    for i in range(1, len(sequence_str) - 1):
         batch_tokens_masked = batch_tokens.clone()
         batch_tokens_masked[0, i] = alphabet.mask_idx
         with torch.no_grad():
             token_probs = torch.log_softmax(model(batch_tokens_masked.to(device))["logits"], dim=-1)
-        log_probs.append(token_probs[0, i, alphabet.get_idx(sequence[i])].item())  # vocab size
+        log_probs.append(token_probs[0, i, alphabet.get_idx(sequence_str[i])].item())  # vocab size
     return sum(log_probs)
 
 def main(
@@ -204,6 +283,7 @@ def main(
     msa_samples: int = None,
     nogpu: bool = False,
     is_ref: bool = False,
+    force: bool = False
 ):
     """Run ESM model predictions on mutation data.
     
@@ -228,7 +308,15 @@ def main(
         nogpu: Whether to disable GPU usage even if available
         is_ref: Whether the sequence is a reference genome sequence
             Example: False
+        force: Whether to force the prediction even if the model has already been downloaded
+            Example: False
     """
+
+    # Check if results already exist
+    if os.path.exists(dms_output) and not force:
+        print(f"Results already exist for {dms_output}. Use --force True to re-run.")
+        return
+
     # Load the deep mutational scan
     df = pd.read_csv(dms_input)
 
@@ -237,6 +325,10 @@ def main(
 
     if isinstance(model_location, str):
         model_location = [model_location]
+    if isinstance(scoring_strategy, list):
+        scoring_strategy = scoring_strategy[0]
+        print(f">1 scoring_strategy provided. Using only: '{scoring_strategy}'")
+
 
     # inference for each model
     for model_loc in model_location:
@@ -278,6 +370,7 @@ def main(
                     )
                 all_token_probs.append(token_probs[:, 0, i])  # vocab size
             token_probs = torch.cat(all_token_probs, dim=0).unsqueeze(0)
+
             df[model_loc] = df.apply(
                 lambda row: label_row(
                     row[mutation_col], sequence, token_probs, alphabet, offset_idx
@@ -320,6 +413,7 @@ def main(
                         )
                     all_token_probs.append(token_probs[:, i])  # vocab size
                 token_probs = torch.cat(all_token_probs, dim=0).unsqueeze(0)
+
                 df[model_loc] = df.apply(
                     lambda row: label_row(
                         row[mutation_col],
@@ -333,12 +427,13 @@ def main(
                 )
             elif scoring_strategy == "pseudo-ppl":
                 # Update compute_pppl to use device
-                def compute_pppl_with_device(row):
-                    return compute_pppl(
+                tqdm.pandas(desc=f"Computing 'pseudo-ppl' for {model_loc}")
+                df[model_location] = df.progress_apply(
+                    lambda row: compute_pppl(
                         row[mutation_col], sequence, model, alphabet, offset_idx, is_ref
-                    )
-                tqdm.pandas()
-                df[model_loc] = df.progress_apply(compute_pppl_with_device, axis=1)
+                    ),
+                    axis=1,
+                )
 
     df.to_csv(dms_output)
 

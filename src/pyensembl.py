@@ -1,6 +1,6 @@
 import sys
 sys.path.append("code")
-from src.utils import as_list, intersect, add_codon_buffer, is_VariantFile, save_pickle, load_pickle
+from src.utils import as_list, intersect, add_codon_buffer, is_VariantFile, save_pickle, load_pickle, as_seq
 from src.variant_annotation import filter_variants
 
 from concurrent.futures import ThreadPoolExecutor, ProcessPoolExecutor
@@ -886,11 +886,6 @@ def get_translated_seq(tx,
     # return translate_seq(tx.coding_sequence, **kwargs)
     return tx.protein_sequence
 
-def as_seq(seq):
-    from Bio.Seq import Seq
-    if isinstance(seq, list):
-        seq = "".join(seq)
-    return Seq(seq)
 
 def clean_seq(seq, 
               replace=["-", ".", "="],

@@ -610,3 +610,165 @@ def get_marker_map(n=8):
         for i in range(10, n):
             marker_map[i] = _create_polygon_marker(i)
     return marker_map
+
+def count_variants(lst,
+                   tx_id_sep=":",
+                   count=['<','>','del','ins']):
+    
+    lst = as_list(lst)
+    return [sum([x.split(tx_id_sep)[1].count(c) for c in count]) for x in lst]
+
+
+def as_seq(seq):
+    from Bio.Seq import Seq
+    if isinstance(seq, Seq):
+        return seq
+    if isinstance(seq, list):
+        seq = "".join(seq)
+    return Seq(seq)
+
+def as_seqrecord(seq):
+    from Bio.SeqRecord import SeqRecord
+    if isinstance(seq, SeqRecord):
+        return seq
+    return SeqRecord(as_seq(seq))
+
+def is_msa(seqs):
+    from Bio.Align import MultipleSeqAlignment
+    return isinstance(seqs, MultipleSeqAlignment)
+
+def as_msa(seqs: list[str],
+            **kwargs):
+    """
+    Convert a list of sequences to a MultipleSeqAlignment object.
+    """
+    from Bio.Align import MultipleSeqAlignment
+    
+    if is_msa(seqs):
+        return seqs
+    # Check if seqs is a list
+    if not isinstance(seqs, list):
+        raise ValueError("seqs must be a list")
+    # Check if seqs contains at least 2 sequences
+    if len(seqs) < 2:
+        raise ValueError("seqs must contain at least 2 sequences")
+    # Convert to Seq objects
+    seqs = [as_seqrecord(seq) for seq in seqs]
+    # Create MSA
+    return MultipleSeqAlignment(seqs, **kwargs)
+
+def query_msa(msa,
+              pos,
+              ref=0,
+              query=1,
+              join_str=None):
+    """
+    Query a MultipleSeqAlignment at a specific reference genome coordinates.
+    
+    Parameters
+    ----------
+    msa : Bio.Align.MultipleSeqAlignment
+        Multiple sequence alignment object
+    pos : int
+        Position in the reference sequence to query (starts from 0)
+    ref : int, optional
+        Index of the reference sequence in the MSA, by default 0
+    query : int, optional
+        Index of the query sequence in the MSA to compare against reference, by default 1
+        
+    Returns
+    -------
+    list
+        List of characters from the query sequence that align to the reference position.
+        Returns None if no match is found at the specified position.
+    """
+    if ref > len(msa)-1:
+        raise ValueError(f"Reference index out of range. Maximum index is {len(msa)-1}.")
+    if query > len(msa)-1:
+        raise ValueError(f"Query index out of range. Maximum index is {len(msa)-1}.")
+    
+    idx = msa.alignment.indices[ref] == (pos-1)
+    if sum(idx) == 0:
+        print(f"No matching sequence found at position {pos} for reference.")
+        return None
+    subseqs = [x for i,x in enumerate(msa[query].seq) if idx[i] == True]
+    # Return 
+    if join_str is not None:
+        return join_str.join(subseqs)
+    else:
+        return subseqs
+
+def get_aa_tokens(as_dict=False):
+    import esm
+    toks = esm.pretrained.esm.constants.proteinseq_toks['toks']
+    if as_dict:
+        return {tok:i for i,tok in enumerate(toks)}
+    else:
+        return toks
+
+def as_checksum(text, algorithm='md5'):
+  """
+    Generates a checksum for a given string using the specified algorithm.
+
+    Args:
+        text: The string to generate the checksum for.
+        algorithm: The hashing algorithm to use (e.g., 'md5', 'sha256'). Defaults to 'md5'.
+
+    Returns:
+        The checksum as a hexadecimal string.
+  """
+  import hashlib
+  encoded_text = text.encode('utf-8')
+    
+  if algorithm == 'md5':
+    checksum = hashlib.md5(encoded_text).hexdigest()
+  elif algorithm == 'sha256':
+      checksum = hashlib.sha256(encoded_text).hexdigest()
+  else:
+    raise ValueError("Unsupported algorithm. Choose 'md5' or 'sha256'.")
+  return checksum
+
+
+def encode_haplotype_name(seq_name, include_counts=True):
+    """
+    Encode haplotype names that are far too long.
+
+    Example:
+        seq_name=  'ENSP00000382423:906V>I,948T>N,949del{12},962del{20},983delLS,986del{17},1004del{13},1018del{14},1033C>G,1034del{5},1040del{16},1057del{4},1062delPS,1065P>Q,1068del{5},1074delGDP,1078del{27},1106del{7},1114delTPV,1118del{4},1123del{5},1129delN,1131S>F,1133del{6},1140delMP,1143del{6},1150del{8},1159E>I,1160delKAE,1164del{7},1172del{24},1197delA,1199delQDA,1203delPI,1206del{6},1213del{11},1225ET>FF,1227del{27},1255delSSC,1259del{45},1305delN,1307I>C,1308del{5},1314delCEK,1318del{7},1326del{7},1334del{96},1431del{19},1451del{31},1483del{5},1490del{23}'
+        encode_haplotype_name(seq_name)
+    """ 
+    # Encode entire sequence name
+    checksum = as_checksum(seq_name)
+
+    if include_counts:
+        # Split the sequence name by ':'
+        tx_id, mut_str = seq_name.split(":")
+        # Create a dictionary to store the mutation positions
+        del_count = mut_str.count("del")
+        ins_count = mut_str.count("ins")
+        sub_count = mut_str.count(">") 
+    
+        # Construct the encoded name
+        return f"{tx_id}:{del_count}del|{ins_count}ins|{sub_count}sub|md5:{checksum}"
+    else:
+        return f"{tx_id}:md5:{checksum}"
+ 
+
+def get_candidate_proteins():
+    import io
+    import pandas as pd
+    candidate_proteins = pd.read_csv(io.StringIO("""Gene	Protein Common Name	RefSeq Protein	RefSeq Transcript	ENSP
+    G6PD	Glucose-6-phosphate 1-dehydrogenase	NP_001346945.1	NM_001360016.2	ENSP00000377192
+    HFE	Homeostatic Iron Regulator	NP_000401.1	NM_000410.4	ENSP00000417404
+    CFTR	Cystic Fibrosis Transmembrane Conductance Regulator	NP_000483.3	NM_000492.4	ENSP00000003084 
+    BRCA1	Breast Cancer Type 1 Susceptibility Protein	NP_009225.1	NM_007294.4	ENSP00000350283
+    BRCA2	Breast Cancer Type 2 Susceptibility Protein	NP_000050.3	NM_000059.4	ENSP00000369497
+    F5	Coagulation Factor V	NP_000121.2	NM_000130.5	ENSP00000356771
+    HBB	Hemoglobin Subunit Beta	NP_000509.1	NM_000518.5	ENSP00000333994
+    SERPINA1	Alpha-1 Antitrypsin	NP_000286.3	NM_000295.5	ENSP00000376802
+    LDLR	Low-Density Lipoprotein Receptor	NP_000518.1	NM_000527.5	ENSP00000454071
+    KCNQ1	Potassium Voltage-Gated Channel Subfamily Q Member 1	NP_000209.2	NM_000218.3	ENSP00000155840
+    KCNH2	Potassium Voltage-Gated Channel Subfamily H Member 2	NP_000229.1	NM_000238.4	ENSP00000262186
+    """), sep='\t')
+    candidate_proteins['RefSeq Protein Stable'] = candidate_proteins['RefSeq Protein'].str.split(".").str[0]
+    return candidate_proteins
