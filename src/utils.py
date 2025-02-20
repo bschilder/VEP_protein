@@ -729,7 +729,8 @@ def as_checksum(text, algorithm='md5'):
   return checksum
 
 
-def encode_haplotype_name(seq_name, include_counts=True):
+def encode_haplotype_name(seq_name, 
+                          include_counts=True):
     """
     Encode haplotype names that are far too long.
 
@@ -772,3 +773,15 @@ def get_candidate_proteins():
     """), sep='\t')
     candidate_proteins['RefSeq Protein Stable'] = candidate_proteins['RefSeq Protein'].str.split(".").str[0]
     return candidate_proteins
+
+
+
+def _make_palette(values,
+                  palette):
+    # sample 4 colors from a palette that goes from hot to cold
+    import seaborn as sns
+    return dict(zip(values, sns.color_palette(palette, len(values)).as_hex()))
+
+def get_clinsig_palette(values=['path', 'likely_path', 'likely_benign', 'benign'],
+                         palette='bwr_r'):
+    return _make_palette(values, palette) 

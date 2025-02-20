@@ -776,6 +776,14 @@ def add_haplotype_freqs(df,
                 df['top_superpop'].fillna('N/A', inplace=True) 
     return df
 
+def filter_haplotype_freqs(df,
+                           freq_filters={}):
+    if freq_filters is not None and len(freq_filters)>0:
+        for freq_col, freq_val in freq_filters.items():
+            if freq_val is not None:
+                df = df.loc[df[freq_col] >= freq_val]
+    return df
+
 
 def get_haplotype_names(haplotypes):
     """

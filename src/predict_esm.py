@@ -26,18 +26,20 @@ def to_stop(sequence,
     return sequence if sequence.find(stop_str)==-1 else sequence[:sequence.find(stop_str)]
 
 def _get_sequence(sequence,
-                  i=-1):
+                  i = -1):
+    from copy import deepcopy
     if is_msa(sequence):
-        sequence = str(sequence[i].seq)
+        sequence = str(deepcopy(sequence[i].seq))
     return sequence
 
 def preprocess_sequence(sequence: str,
                         strip: list = ['*'],
                         replace: list = ['.', '-'],
-                        truncate: bool = True) -> str:
+                        truncate: bool = True,
+                        i: int = -1) -> str:
     
     processed = sequence
-    processed = _get_sequence(processed)
+    processed = _get_sequence(processed, i)
     for s in strip:
         processed = processed.strip(s)
     for r in replace:
@@ -201,11 +203,13 @@ def label_row(mutation_row,
 
     wt_encoded, mt_encoded = alphabet.get_idx(wt), alphabet.get_idx(mt)
 
-    # add 1 for BOS and check bounds
+    # Check if the mutation position is out of bounds
     seq_len = token_probs.size(1) - 1  # -1 for BOS token
     if idx >= seq_len:
         print(f"Mutation position {idx} is out of bounds for sequence length {seq_len}")
         return None
+    # Compute the log probability of the mutation vs the wildtype
+    # add 1 for BOS token
     score = token_probs[0, 1 + idx, mt_encoded] - token_probs[0, 1 + idx, wt_encoded]
     return score.item()
 
@@ -258,16 +262,13 @@ def compute_pppl(mutation_row,
 
     batch_labels, batch_strs, batch_tokens = batch_converter(data)
 
-    wt_encoded, mt_encoded = alphabet.get_idx(wt), alphabet.get_idx(mt) 
-
     # compute probabilities at each position
     log_probs = []
-    device = next(model.parameters()).device
     for i in range(1, len(sequence_str) - 1):
         batch_tokens_masked = batch_tokens.clone()
         batch_tokens_masked[0, i] = alphabet.mask_idx
         with torch.no_grad():
-            token_probs = torch.log_softmax(model(batch_tokens_masked.to(device))["logits"], dim=-1)
+            token_probs = torch.log_softmax(model(batch_tokens_masked.cuda())["logits"], dim=-1)
         log_probs.append(token_probs[0, i, alphabet.get_idx(sequence_str[i])].item())  # vocab size
     return sum(log_probs)
 
@@ -317,7 +318,7 @@ def main(
         print(f"Results already exist for {dms_output}. Use --force True to re-run.")
         return
 
-    # Load the deep mutational scan
+    # Load the deep mutational scan or clinical variants
     df = pd.read_csv(dms_input)
 
     # Set device
@@ -386,12 +387,16 @@ def main(
             (batch_labels, 
              batch_strs, 
              batch_tokens) = batch_converter(data)
-            batch_tokens = batch_tokens.to(device)
+            
 
             if scoring_strategy == "wt-marginals":
+                # batch_tokens = batch_tokens.to(device)
+                # Compute the log probabilities of the wildtype sequence
                 with torch.no_grad():
-                    token_probs = torch.log_softmax(model(batch_tokens)["logits"], dim=-1)
-                df[model_loc] = df.apply(
+                    token_probs = torch.log_softmax(model(batch_tokens.cuda())["logits"], dim=-1)
+                
+                tqdm.pandas(desc=f"Computing 'wt-marginals' for {model_loc}")
+                df[model_loc] = df.progress_apply(
                     lambda row: label_row(
                         row[mutation_col],
                         sequence,
@@ -403,13 +408,15 @@ def main(
                     axis=1,
                 )
             elif scoring_strategy == "masked-marginals":
+
                 all_token_probs = []
-                for i in tqdm(range(batch_tokens.size(1))):
+                for i in tqdm(range(batch_tokens.size(1)),
+                              desc=f"Computing 'masked-marginals' for {model_loc}"):
                     batch_tokens_masked = batch_tokens.clone()
                     batch_tokens_masked[0, i] = alphabet.mask_idx
                     with torch.no_grad():
                         token_probs = torch.log_softmax(
-                            model(batch_tokens_masked)["logits"], dim=-1
+                            model(batch_tokens_masked.cuda())["logits"], dim=-1
                         )
                     all_token_probs.append(token_probs[:, i])  # vocab size
                 token_probs = torch.cat(all_token_probs, dim=0).unsqueeze(0)

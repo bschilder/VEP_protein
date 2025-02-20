@@ -6,6 +6,7 @@ def get_id_map(ids,
                drop_na=['incoming','converted'],
                rename_converted=False,
                keep_cols=None,
+               rows_per_id=None,
                as_dict=False,
                verbose=True,
                **kwargs):
@@ -42,16 +43,21 @@ def get_id_map(ids,
                 query=query,
                 target_namespace=target_namespace,
                 **kwargs)
+    # Filter and process df
     if drop_na is not None:
         id_map = id_map.dropna(subset=drop_na)
+    if keep_cols is not None:
+        id_map = id_map[keep_cols].drop_duplicates()
+    if rows_per_id is not None:
+        id_map = id_map.groupby('incoming').head(rows_per_id)
+    # Return a dictionary
     if as_dict is not False:
         if as_dict == -1:
             id_dict = dict(zip(id_map['converted'], id_map['incoming']))
         elif as_dict == 1:
             id_dict = dict(zip(id_map['incoming'], id_map['converted']))
         return id_dict
-    if keep_cols is not None:
-        id_map = id_map[keep_cols].drop_duplicates()
+    # Rename cols
     if rename_converted:
         id_map.rename(columns={'converted': target_namespace}, inplace=True)
     return id_map
@@ -59,16 +65,35 @@ def get_id_map(ids,
 def map_ids(df, 
             id_map=None,
             target_namespace='ENSP',
+            rows_per_id=None,
             on_left='protein',
             on_right='incoming',
             keep_cols=['incoming','converted','name'],
             how='left',
             **kwargs):
+    """
+    Map IDs to a target namespace.
+
+    Args:
+        df: pandas DataFrame with IDs to map
+        id_map: pandas DataFrame with ID mapping
+        target_namespace: namespace to map to
+        on_left: column name to map from
+        on_right: column name to map to
+        keep_cols: columns to keep in the ID mapping
+        how: how to merge the DataFrame
+        **kwargs: additional arguments passed to pandas.merge
+
+    Returns:
+        pandas DataFrame with the mapped IDs
+    """
     if id_map is None:
         id_map = get_id_map(ids=df[on_left].unique().tolist(), 
                             target_namespace=target_namespace,
                             keep_cols=keep_cols,
-                            rename_converted=True) 
+                            rename_converted=True,
+                            rows_per_id=rows_per_id,
+                            ) 
         id_map.rename(columns={on_right: on_left,
                                'name':'HGNC'}, 
                       inplace=True)  

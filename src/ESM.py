@@ -1,6 +1,6 @@
 try:
-    from src.utils import create_proteoform_id, load_pickle, save_pickle, intersect, run_umap, run_tsvd, as_list, get_marker_map, count_variants
-    from src.haplosaurus import add_haplotype_freqs, add_txid
+    from src.utils import create_proteoform_id, load_pickle, save_pickle, intersect, run_umap, run_tsvd, as_list, get_marker_map, count_variants, get_clinsig_palette
+    from src.haplosaurus import add_haplotype_freqs, add_txid, filter_haplotype_freqs
     from src.config import PALETTES
 except:
     print("Could not import utils")
@@ -1351,16 +1351,20 @@ def batches_to_df(batches):
         df = pd.concat([df, row], ignore_index=True, axis=0)
     return df
 
-
-
 def plot_vep_violin(vep_df, 
-                    model_location = None,                
+                    model_location = None, 
+                    clinsig_col='clinsig',               
                     bar_width = 0.5,
                     violin_alpha = 0.25,
                     point_size = 4,
                     point_alpha = 0.5,
-                    palette = {'Benign': 'blue', 
-                               'Pathogenic': 'red'}
+                    palette = get_clinsig_palette(),
+                    add_connections = False, 
+                    connection_alpha = 0.3,
+                    connection_linewidth = 1,
+                    title_y = 1,
+                    freq_filters = {'freq_1000GENOMES:phase_3:ALL':None},
+                    add_side_labels = False
                     ):
     
     import seaborn as sns
@@ -1374,13 +1378,20 @@ def plot_vep_violin(vep_df,
             print(f"Using model_location: {model_location}")
         else:
             raise ValueError("model_location is not specified")
+            
     vep_df = vep_df.copy()
+    
     # Remove NA rows from model_location column
     nrows_before = len(vep_df)
     vep_df = vep_df[vep_df[model_location].notna()]
     nrows_after = len(vep_df)
     if nrows_before - nrows_after > 0:
         print(f"Removed {nrows_before - nrows_after} rows with NA values in {model_location}")
+
+    # Get unique categories
+    categories = sorted(vep_df[clinsig_col].unique())
+    category_positions = {cat: i for i, cat in enumerate(categories)}
+    
     # Create figure with subplots for each protein
     proteins = vep_df['protein'].unique()
     fig, axes = plt.subplots(len(proteins), 1, figsize=(10, 6*len(proteins)))
@@ -1389,181 +1400,231 @@ def plot_vep_violin(vep_df,
 
     for ax, protein in zip(axes, proteins):
         # Get data for this protein
-        protein_data = vep_df[vep_df['protein'] == protein]
+        protein_data = vep_df[vep_df['protein'] == protein].sort_values(by=clinsig_col)
+        protein_data = filter_haplotype_freqs(protein_data, freq_filters)
         
-        # Create violin plots for each mutant, grouped by DMS_bin_score
+        # Create violin plots for each mutant, grouped by clinsig category
         for mutant in protein_data[~protein_data['is_ref']]['mutant'].unique():
             mutant_data = protein_data[~protein_data['is_ref'] & (protein_data['mutant'] == mutant)]
             
-            # Plot violin for benign
-            benign_data = mutant_data[mutant_data['DMS_bin_score'] == 'Benign']
-            if not benign_data.empty:
-                sns.violinplot(data=benign_data,
-                            x='DMS_bin_score', y=model_location,
-                            ax=ax, color=palette['Benign'], alpha=violin_alpha)
-                
-            # Plot violin for pathogenic    
-            pathogenic_data = mutant_data[mutant_data['DMS_bin_score'] == 'Pathogenic']
-            if not pathogenic_data.empty:
-                sns.violinplot(data=pathogenic_data,
-                            x='DMS_bin_score', y=model_location,
-                            ax=ax, color=palette['Pathogenic'], alpha=violin_alpha)
+            # Plot violin for each category
+            for category in categories:
+                cat_data = mutant_data[mutant_data[clinsig_col] == category]
+                if not cat_data.empty:
+                    sns.violinplot(data=cat_data,
+                                x=clinsig_col, y=model_location,
+                                ax=ax, color=palette[category], alpha=violin_alpha)
         
         # Add individual points
         sns.stripplot(data=protein_data[~protein_data['is_ref']], 
-                    x='DMS_bin_score', y=model_location,
+                    x=clinsig_col, y=model_location,
                     ax=ax, color='black', alpha=point_alpha, size=point_size)
         
-        # Plot horizontal lines for ref samples by DMS score
-        ref = protein_data[protein_data['is_ref']] 
+        # Plot horizontal lines for ref samples by category
+        ref = protein_data[protein_data['is_ref']]
         
         if not ref.empty:
-            ref_benign = ref[ref['DMS_bin_score'] == 'Benign']
-            ref_pathogenic = ref[ref['DMS_bin_score'] == 'Pathogenic']
-            
-            # Get x-axis category positions
-            categories = ['Benign', 'Pathogenic']
-            category_positions = {cat: i for i, cat in enumerate(categories)}
-            
             # Store y-positions for label placement
-            benign_y_positions = []
-            pathogenic_y_positions = []
+            y_positions = {cat: [] for cat in categories}
             
-            if not ref_benign.empty:
-                for _, ref_row in ref_benign.iterrows():
-                    ref_benign_score = ref_row[model_location]
-                    ref_mutation = ref_row['mutant']
-                    # Only compare against scores for the same mutation
-                    benign_scores = protein_data[
-                        ~protein_data['is_ref'] & 
-                        (protein_data['DMS_bin_score'] == 'Benign') &
-                        (protein_data['mutant'] == ref_mutation)
-                    ][model_location]
-                    benign_percentile = int(100 * (benign_scores < ref_benign_score).mean())
-                    
-                    # Draw horizontal reference line
-                    ax.hlines(y=ref_benign_score, 
-                            xmin=category_positions['Benign'] - bar_width, 
-                            xmax=category_positions['Benign'] + bar_width,
-                            color=palette['Benign'], linestyle='--')
-                    
-                    benign_y_positions.append((ref_benign_score, f'Benign {ref_mutation}\n(Percentile={benign_percentile})'))
+            for category in categories:
+                ref_cat = ref[ref[clinsig_col] == category]
+                if not ref_cat.empty:
+                    for _, ref_row in ref_cat.iterrows():
+                        ref_score = ref_row[model_location]
+                        ref_mutation = ref_row['mutant']
+                        
+                        # Only compare against scores for the same mutation and category
+                        cat_scores = protein_data[
+                            ~protein_data['is_ref'] & 
+                            (protein_data[clinsig_col] == category) &
+                            (protein_data['mutant'] == ref_mutation)
+                        ][model_location]
+                        
+                        percentile = int(100 * (cat_scores < ref_score).mean())
+                        
+                        # Draw horizontal reference line
+                        ax.hlines(y=ref_score, 
+                                xmin=category_positions[category] - bar_width, 
+                                xmax=category_positions[category] + bar_width,
+                                color=palette[category], linestyle='--')
+                        
+                        y_positions[category].append((ref_score, f'{category} {ref_mutation}\n(Percentile={percentile})'))
+            
+            if add_side_labels:
+                # Improved label positioning with dynamic spacing
+                y_range = ax.get_ylim()[1] - ax.get_ylim()[0]
                 
-            if not ref_pathogenic.empty:
-                for _, ref_row in ref_pathogenic.iterrows():
-                    ref_pathogenic_score = ref_row[model_location]
-                    ref_mutation = ref_row['mutant']
-                    # Only compare against scores for the same mutation
-                    pathogenic_scores = protein_data[
-                        ~protein_data['is_ref'] & 
-                        (protein_data['DMS_bin_score'] == 'Pathogenic') &
-                        (protein_data['mutant'] == ref_mutation)
-                    ][model_location]
-                    pathogenic_percentile = int(100 * (pathogenic_scores < ref_pathogenic_score).mean())
-                    
-                    # Draw horizontal reference line
-                    ax.hlines(y=ref_pathogenic_score,
-                            xmin=category_positions['Pathogenic'] - bar_width,
-                            xmax=category_positions['Pathogenic'] + bar_width,
-                            color=palette['Pathogenic'], linestyle='--')
-                    
-                    pathogenic_y_positions.append((ref_pathogenic_score, f'Pathogenic {ref_mutation}\n(Percentile={pathogenic_percentile})'))
-            
-            def sort_positions(positions):
-                return sorted(positions, key=lambda x: x[0])
-            
-            # Improved label positioning with dynamic spacing
-            def adjust_positions(positions, y_range):
-                if not positions:
-                    return []
-                positions = sort_positions(positions)
-                min_gap = y_range * 0.1  # Dynamic gap based on plot range
-                adjusted = [positions[0]]
-                for i in range(1, len(positions)):
-                    prev_y = adjusted[-1][0]
-                    curr_y = positions[i][0]
-                    if curr_y - prev_y < min_gap:
-                        curr_y = prev_y + min_gap
-                    adjusted.append((curr_y, positions[i][1]))
-                return adjusted
-            
-            y_range = ax.get_ylim()[1] - ax.get_ylim()[0]
-            benign_y_positions_labels = adjust_positions(benign_y_positions, y_range)
-            pathogenic_y_positions_labels = adjust_positions(pathogenic_y_positions, y_range)
-            
-            # Add labels with angled connecting lines
-            for i, (y_pos, label) in enumerate(benign_y_positions_labels):
-                # Calculate control points for curved line
-                x_start = -1
-                x_end = category_positions['Benign'] - bar_width
-                # Draw angled line from label to reference line
-                ax.plot([x_start, x_end], [y_pos, sort_positions(benign_y_positions)[i][0]],
-                    color=palette['Benign'], linestyle=':', alpha=0.6)
-                ax.text(x_start - 0.1, y_pos, label, ha='right', va='center', 
-                    color=palette['Benign'])
+                def sort_positions(positions):
+                    return sorted(positions, key=lambda x: x[0])
                 
-            for i, (y_pos, label) in enumerate(pathogenic_y_positions_labels):
-                x_start = category_positions['Pathogenic'] + bar_width
-                x_end = 2
-                # Draw angled line from label to reference line
-                ax.plot([x_start, x_end], [sort_positions(pathogenic_y_positions)[i][0], y_pos],
-                    color=palette['Pathogenic'], linestyle=':', alpha=0.6)
-                ax.text(x_end + 0.1, y_pos, label, ha='left', va='center',
-                    color=palette['Pathogenic'])
+                def adjust_positions(positions, y_range):
+                    if not positions:
+                        return []
+                    positions = sort_positions(positions)
+                    min_gap = y_range * 0.1  # Dynamic gap based on plot range
+                    adjusted = [positions[0]]
+                    for i in range(1, len(positions)):
+                        prev_y = adjusted[-1][0]
+                        curr_y = positions[i][0]
+                        if curr_y - prev_y < min_gap:
+                            curr_y = prev_y + min_gap
+                        adjusted.append((curr_y, positions[i][1]))
+                    return adjusted
+                
+                # Add labels with connecting lines for each category
+                for category in categories:
+                    adjusted_positions = adjust_positions(y_positions[category], y_range)
+                    original_positions = sort_positions(y_positions[category])
+                    
+                    if category_positions[category] == 0:  # First category
+                        x_text = -1
+                        ha = 'right'
+                        x_start, x_end = -1, category_positions[category] - bar_width
+                    else:  # Last category
+                        x_text = len(categories)
+                        ha = 'left'
+                        x_start, x_end = category_positions[category] + bar_width, len(categories)
+                    
+                    for i, (y_pos, label) in enumerate(adjusted_positions):
+                        ax.plot([x_start, x_end], [original_positions[i][0], y_pos],
+                            color=palette[category], linestyle=':', alpha=0.6)
+                        ax.text(x_text, y_pos, label, ha=ha, va='center',
+                            color=palette[category])
         
         # Add connecting lines between haplotypes
-        non_ref_data = protein_data[~protein_data['is_ref']]
-        haplotypes = non_ref_data['haplotype'].unique()
+        if add_connections:
+            non_ref_data = protein_data[~protein_data['is_ref']]
+            haplotypes = non_ref_data['haplotype'].unique()
+            
+            for hap in haplotypes:
+                hap_data = non_ref_data[non_ref_data['haplotype'] == hap]
+                if len(hap_data) > 1:  # Only connect if we have multiple variants
+                    # Connect all pairs of categories
+                    for i, cat1 in enumerate(categories[:-1]):
+                        for cat2 in categories[i+1:]:
+                            scores1 = hap_data[hap_data[clinsig_col] == cat1][model_location].values
+                            scores2 = hap_data[hap_data[clinsig_col] == cat2][model_location].values
+                            
+                            for score1 in scores1:
+                                for score2 in scores2:
+                                    ax.plot([i, i+1], [score1, score2],
+                                        color='gray', 
+                                        alpha=connection_alpha, 
+                                        linestyle='--', 
+                                        linewidth=connection_linewidth)
         
-        for hap in haplotypes:
-            hap_data = non_ref_data[non_ref_data['haplotype'] == hap]
-            if len(hap_data) > 1:  # Only connect if we have multiple variants
-                benign_scores = hap_data[hap_data['DMS_bin_score'] == 'Benign'][model_location].values
-                pathogenic_scores = hap_data[hap_data['DMS_bin_score'] == 'Pathogenic'][model_location].values
-                
-                for benign_score in benign_scores:
-                    for pathogenic_score in pathogenic_scores:
-                        ax.plot([0, 1], [benign_score, pathogenic_score],
-                            color='gray', alpha=0.3, linestyle='--', linewidth=1)
+        # Add statistical test
+        # Perform one-way ANOVA if more than 2 categories, t-test if exactly 2
+        category_vals = [protein_data[~protein_data['is_ref'] & (protein_data[clinsig_col] == cat)][model_location] 
+                        for cat in categories]
         
-        # Add statistical test and significance brackets
-        benign_vals = protein_data[~protein_data['is_ref'] & (protein_data['DMS_bin_score'] == 'Benign')][model_location]
-        pathogenic_vals = protein_data[~protein_data['is_ref'] & (protein_data['DMS_bin_score'] == 'Pathogenic')][model_location]
+        if len(categories) == 2:
+            stat, pval = stats.ttest_ind(*category_vals)
+        else:
+            stat, pval = stats.f_oneway(*category_vals)
         
-        stat, pval = stats.ttest_ind(benign_vals, pathogenic_vals)
-        
-        y_max = max(benign_vals.max(), pathogenic_vals.max())
-        y_min = min(benign_vals.min(), pathogenic_vals.min())
+        y_max = max(val.max() for val in category_vals)
+        y_min = min(val.min() for val in category_vals)
         y_range = y_max - y_min
-        y_bracket = y_max + 0.03 * y_range  # Reduced spacing
+        y_bracket = y_max + 0.03 * y_range
         
         if pval < 0.001:
             pval_text = 'p < 0.001'
         else:
             pval_text = f'p = {pval:.3f}'
-        ax.text(0.5, y_bracket+0.5*y_range*0.03, pval_text, ha='center', va='bottom')
+            
+        ax.text(len(categories)/2 - 0.5, y_bracket+0.5*y_range*0.03, pval_text, ha='center', va='bottom')
         
-        ax.plot([0, 1], [y_bracket, y_bracket], 'k:', linewidth=1, alpha=0.8)
+        # Draw significance bracket
+        ax.plot([0, len(categories)-1], [y_bracket, y_bracket], 'k:', linewidth=1, alpha=0.8)
         ax.plot([0, 0], [y_bracket-30, y_bracket], 'k:', linewidth=1, alpha=0.8)
-        ax.plot([1, 1], [y_bracket-30, y_bracket], 'k:', linewidth=1, alpha=0.8)
+        ax.plot([len(categories)-1, len(categories)-1], [y_bracket-30, y_bracket], 'k:', linewidth=1, alpha=0.8)
         
-        ax.set_title(f'Protein: {protein}, Model: {model_location}, Haplotypes: {protein_data["haplotype"].nunique()}, Variants: {protein_data["mutant"].nunique()}')
+        n_haplotypes = protein_data['haplotype'].nunique()
+        n_mutants = protein_data.groupby(clinsig_col)['mutant'].nunique()
+        mutant_counts = [f"{cat}: {n_mutants[cat]}" for cat in categories]
+        
+        ax.set_title(f'Protein: {protein} / {protein_data["ENST"].iloc[0]} / {protein_data["HGNC"].iloc[0]}\n'
+                     f'Haplotypes: {n_haplotypes}, Variants ({", ".join(mutant_counts)})', 
+                     y=title_y)
         ax.set_ylabel(f'{", ".join(vep_df["scoring_strategy"].unique())}')
         ax.set_xlabel('Clinical classification')
         
-        # Adjust plot margins to accommodate labels while maintaining reasonable dimensions
-        ax.set_xlim(-2, 3)
+        # Adjust plot margins
+        ax.set_xlim(-2, len(categories)+1)
         ax.set_ylim(y_min - 0.05*y_range, y_max + 0.15*y_range)
 
     plt.tight_layout()
     plt.show()
 
+def _summarise_mutants(vep_df,
+                       clinsig_col='clinsig'):
+    mutant_summary = vep_df.groupby(clinsig_col)['mutant'].nunique() 
+    mutant_summary_str = ', '.join([f"{k}: {v}" for k,v in mutant_summary.items()]) 
+    return mutant_summary_str
+
+def plot_vep_density(vep_df):
+    np_id='NP_000509.1'
+
+    import seaborn as sns
+    # Get filtered data
+    vep_df = vep_df.copy().sort_values(['clinsig']) 
+    clinsig_col = 'clinsig'
+
+    # Create facet grid
+    g = sns.FacetGrid(data=vep_df, 
+                    col='scoring_strategy',
+                    height=4,
+                    sharex=False,
+                    sharey=False,
+                    aspect=1)
+
+    # Plot KDE
+    g.map_dataframe(sns.kdeplot, 
+                    x='esm1v_t33_650M_UR90S_1',
+                    hue=clinsig_col,
+                    fill=True,
+                    palette=get_clinsig_palette(), 
+                    alpha=.75,
+                    legend=True)
+    
+    # Get summary of unique mutants per clinical significance
+    mutant_summary_str = _summarise_mutants(vep_df, clinsig_col)
+    
+    # Add title with protein, haplotype and mutant counts
+    n_haplotypes = vep_df['haplotype'].nunique()
+    g.fig.suptitle(f'Protein: {np_id} / {vep_df["ENST"].iloc[0]} / {vep_df["HGNC"].iloc[0]}, Haplotypes: {n_haplotypes},\n{mutant_summary_str}', y=1.1)
+
+
+    # Add vertical lines for REF haplotypes
+    # for ax in g.axes.flat:
+    #     ref_data = esm_vep[(esm_vep['protein'] == np_id) & 
+    #                        (esm_vep['is_ref'] == True)]
+    #     for _, row in ref_data.iterrows():
+    #         ax.axvline(x=row['esm1v_t33_650M_UR90S_1'], 
+    #                   color='black', 
+    #                   linestyle='--', 
+    #                   alpha=0.5)
+
+
+
+def _reformat_mutant(mutant):
+    """
+    Reformat a mutant string to the format "poswt>mt"
+    Example:
+       _reformat_mutant("S223I") in "ENSP00000261556:223S>I,565S>N"
+       # True
+    """
+    wt, pos, mt = mutant[0], int(mutant[1:-1]), mutant[-1]
+    return f"{pos}{wt}>{mt}" 
 
 def merge_vep(save_dir,
               scoring_strategy = ["wt-marginals", "masked-marginals", "pseudo-ppl"],
               add_model_location=True,
               add_variant_set=True,
-              add_filename=False
+              add_filename=False,
+              col_map= {'mutant': 'mutant'}
               ):
     """
     Merge VEP results from multiple files into a single dataframe.
@@ -1615,6 +1676,8 @@ def merge_vep(save_dir,
     # Concatenate all dataframes
     if dfs:
         merged_df = pd.concat(dfs, ignore_index=True)
+        # Check if reformatted mutant is in haplotype string
+        merged_df['mutant_in_haplotype'] = merged_df.apply(lambda x: _reformat_mutant(x[col_map['mutant']]) in x['haplotype'], axis=1)
         return merged_df
     else:
         print("No files were successfully read")
