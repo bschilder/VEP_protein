@@ -647,7 +647,8 @@ def get_haplotype_seqs(haplotypes,
     hap_seqs = {}
     missing_seqs = []
     for tx_id in tqdm(haplotypes.keys(),
-                       desc="Getting haplotype sequences"):
+                      desc="Getting haplotype sequences"):
+        
         if isinstance(haplotypes[tx_id], dict) and 'protein_haplotypes' in haplotypes[tx_id].keys():
             if aligned==1:
                 hap_seqs[tx_id] = [x['aligned_sequences'][1] for x in haplotypes[tx_id]['protein_haplotypes']]

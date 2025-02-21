@@ -11,12 +11,16 @@ import numpy as np
 import torch
 
  
-def list_models(prefix='esm'):
-    import esm
-    for model_name in dir(esm.pretrained):
-        if model_name.startswith(prefix):
-            print(f"- {model_name}")
-
+def list_models(prefix='esm',
+                return_list=False):
+    import esm 
+    models = [model_name for model_name in dir(esm.pretrained) if model_name.startswith(prefix)]
+    if return_list:
+        return models
+    else:
+        print(f"Available models:")
+        for model in models:
+            print(f"- {model}")
 
 def get_torch_data_i(transcript_id, 
                      results, 
@@ -1682,3 +1686,33 @@ def merge_vep(save_dir,
     else:
         print("No files were successfully read")
         return None 
+
+def report_vep(vep_df,
+               haplotype_col='haplotype',
+               clinsig_col='clinsig'):
+    """
+    Report on the VEP dataframe
+    """
+    import pandas as pd 
+    clinsig_counts = vep_df['clinsig'].value_counts().to_frame(name='clinsig_count')
+    seq_check_df = pd.merge(vep_df.groupby(clinsig_col).apply(lambda x: sum(x['protein_sequence_length'] != x['mutated_sequence_length'])).to_frame(name='mismatched_length').reset_index(),
+                            vep_df.groupby(clinsig_col).apply(lambda x: sum(x['protein_sequence'] == x['mutated_sequence'])).to_frame(name='identical_sequences').reset_index(),
+                            on=clinsig_col)
+
+    # Get variant counts
+    mutant_in_haplotype = vep_df.groupby(['mutant_in_haplotype',clinsig_col])['mutant'].nunique().to_frame(name='variant_count').reset_index()
+    mutant_in_haplotype = mutant_in_haplotype.merge(mutant_in_haplotype.groupby(clinsig_col).sum().rename(columns={'variant_count':f'variant_count_by_{clinsig_col}'}).reset_index().drop(columns=['mutant_in_haplotype']),
+            on=clinsig_col,
+            how='left').fillna(0) 
+    mutant_in_haplotype['variant_proportion'] = mutant_in_haplotype['variant_count'] / mutant_in_haplotype[f'variant_count_by_{clinsig_col}']
+    # Get haplotype counts
+    haplotype_counts = vep_df.groupby(['mutant_in_haplotype',clinsig_col])[haplotype_col].nunique().to_frame(name='haplotype_count').reset_index()
+    haplotype_counts = haplotype_counts.merge(haplotype_counts.groupby(clinsig_col).sum().rename(columns={'haplotype_count':f'haplotype_count_by_{clinsig_col}'}).reset_index().drop(columns=['mutant_in_haplotype']),
+            on=clinsig_col,
+            how='left').fillna(0)
+    haplotype_counts['haplotype_proportion'] = haplotype_counts['haplotype_count'] / haplotype_counts[f'haplotype_count_by_{clinsig_col}']
+    # Merge variant and haplotype counts
+    mutant_in_haplotype = mutant_in_haplotype.merge(haplotype_counts, 
+                                                    on=['mutant_in_haplotype',clinsig_col], 
+                                                    how='left').fillna(0)
+    return seq_check_df, clinsig_counts, mutant_in_haplotype
