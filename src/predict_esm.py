@@ -182,6 +182,9 @@ def _parse_mutation_row(mutation_row,
         parse_mutation_row("G195S") -> ("G", 195, "S")
     """
     wt, idx, mt = mutation_row[0], int(mutation_row[1:-1]) - offset_idx, mutation_row[-1]
+    assert isinstance(wt, str)
+    assert isinstance(idx, int)
+    assert isinstance(mt, str)
     return wt, idx, mt
 
 def label_row(mutation_row, 

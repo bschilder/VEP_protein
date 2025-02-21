@@ -22,6 +22,15 @@ def list_models(prefix='esm',
         for model in models:
             print(f"- {model}")
 
+def list_scoring_strategies(model: str = None,
+                            options: list = ["wt-marginals", "masked-marginals", "pseudo-ppl"]):
+    models = list_models(return_list=True)
+    scoring_strategies = {} 
+    for m in models:
+        if model is None or m == model:
+            scoring_strategies[m] = options
+    return scoring_strategies
+
 def get_torch_data_i(transcript_id, 
                      results, 
                      alphabet,

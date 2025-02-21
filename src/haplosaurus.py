@@ -575,10 +575,10 @@ def list_haplotypes(save_dir=DIR_DICT["haplotypes"],
     import glob
     files = glob.glob(f"{save_dir}/*.json.gz")
     if len(files)==0:
-        raise ValueError(f"No haplotypes found in {save_dir}")
+        raise ValueError(f"No haplotypes found in: '{save_dir}'")
     else:
         if verbose:
-            print(f"Found {len(files)} haplotypes in {save_dir}")
+            print(f"Found {len(files)} haplotypes in: '{save_dir}'")
         return [x.split('/')[-1].split('.')[0] for x in files]
     
 

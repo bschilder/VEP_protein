@@ -11,21 +11,59 @@ import src.haplosaurus as hs
 import src.predict_esm as ESMp
 import src.ESM as ESM
 import src.gprofiler as gp
-
-import sys
-sys.path.append('ProteinGym')
-import proteingym.utils.download as pgd # Local version
+import src.proteingym as pg
 
 
+def list_models():
+    """Get available ESM models.
+
+    This function returns a list of available ESM models that can be used for variant effect prediction.
+    It uses the ESM.list_models() function to get models with the 'esm' prefix.
+
+    Returns:
+        list: List of available ESM model names as strings.
+            For example: ['esm1v_t33_650M_UR90S_1', 'esm1b_t36_3B_UR50D', ...]
+    """
+    models = []
+    # ESM models
+    models += ESM.list_models(return_list=True)
+    # Other models TBD...
+    # ....
+
+    return models
 
 
-def vep_pipeline(id_df: pd.DataFrame, 
+def list_scoring_strategies(models: list[str] = None):
+    """Get available scoring strategies for each available model.
+
+    This function returns a dictionary mapping each model to its available scoring strategies.
+
+    Returns:
+        dict: Dictionary mapping model names to lists of available scoring strategies.
+            For example:
+            {
+                "esm1v_t33_650M_UR90S_1": ["wt-marginals", "masked-marginals", "pseudo-ppl"],
+                "esm1b_t36_3B_UR50D": ["wt-marginals", "masked-marginals", "pseudo-ppl"]
+            }
+    """
+    scoring_strategies = {}
+    # ESM models
+    scoring_strategies.update(ESM.list_scoring_strategies())
+    # Other models TBD...
+    # ....
+
+    # Filter by models if provided
+    if models is not None:
+        scoring_strategies = {k:v for k,v in scoring_strategies.items() if k in models}
+    return scoring_strategies   
+
+def vep_pipeline(prot_df: pd.DataFrame = None, 
                  models: list[str] = ["esm1v_t33_650M_UR90S_1"],
                  scoring_strategies: dict[str, list[str]] = None,
-                 protein_ids: list[str] | None = None,
-                 source_types: list[str] | None = None,
-                 haplotypes: dict[str, dict[str, str]] | None = None, 
-                 hap_dir: str = os.path.join(DATA_DIR,"1KG","haplotypes"),
+                 protein_ids: list[str] = None,
+                 source_types: list[str] = None,
+                 haplotypes: dict[str, dict[str, str]] = None, 
+                 hap_dir: str = hs.DIR_DICT["haplotypes"],
                  save_dir: str = os.path.join(DATA_DIR,"1KG","vep"), 
                  force: bool = False,
                  encode_haplotype_name_threshold: int = 10,
@@ -48,7 +86,7 @@ def vep_pipeline(id_df: pd.DataFrame,
               {scoring_strategy3}.csv.gz
 
     Args:
-        id_df (pd.DataFrame): DataFrame containing protein IDs and metadata. If not provided, the function will download a default DataFrame from ProteinGym.
+        prot_df (pd.DataFrame): DataFrame containing protein IDs and paths to their respective variant files. If not provided, the function will download a default DataFrame from ProteinGym.
         models (list, optional): List of models to use. Defaults to ["esm1v_t33_650M_UR90S_1"].
         scoring_strategies (dict, optional): Dictionary of scoring strategies for each model. Defaults to None, which will use the default scoring strategies in `list_scoring_strategies`.
         protein_ids (list, optional): List of protein IDs to process. Defaults to None.
@@ -89,8 +127,7 @@ def vep_pipeline(id_df: pd.DataFrame,
     scoring_strategies = _check_scoring_strategies(scoring_strategies, models)
 
     # Get mutation data (even if not provided)
-    id_df = _check_id_df(id_df=id_df, 
-                         mutation_col=mutation_col) 
+    prot_df = _check_prot_df(prot_df=prot_df) 
 
     # Get haplotypes (even if not provided)
     haplotypes = _check_haplotypes(haplotypes=haplotypes,  
@@ -101,8 +138,8 @@ def vep_pipeline(id_df: pd.DataFrame,
     hap_seqs = _check_hap_seqs(haplotypes=haplotypes,  
                                verbose=verbose)
     
-    # Filter id_df
-    id_df = _filter_id_df(id_df=id_df, 
+    # Filter prot_df
+    prot_df = filter_prot_df(prot_df=prot_df, 
                           protein_ids=protein_ids, 
                           source_types=source_types, 
                           haplotypes=haplotypes)
@@ -118,21 +155,22 @@ def vep_pipeline(id_df: pd.DataFrame,
         _check_scoring_strategy(scoring_strategy, verbose=verbose)
         
         # Iterate over proteins
-        for pid in tqdm(id_df['protein'].unique().tolist(),
+        for pid in tqdm(prot_df['protein'].unique().tolist(),
                          desc="Processing proteins"):
             
-            assert 'protein' in id_df.columns
-            id_df_i = id_df.loc[id_df['protein']==pid]
-            assert len(id_df_i)>0
+            assert 'protein' in prot_df.columns
+            prot_df_i = prot_df.loc[prot_df['protein']==pid]
+            assert len(prot_df_i)>0
             
             # Map protein id to ensp_id
-            enst_id = id_df_i['ENST_haplosaurus'].tolist()[0]
+            enst_id = prot_df_i['ENST_haplosaurus'].tolist()[0]
             assert len(enst_id)>0
-            ensp_id = id_df_i['ENSP_haplosaurus'].tolist()[0]
+            ensp_id = prot_df_i['ENSP_haplosaurus'].tolist()[0]
             assert len(ensp_id)>0
 
             # Iterate over variant types (eg. substitutions, indels)
-            for _, row in id_df_i.iterrows():
+            for _, row in prot_df_i.iterrows():
+                # print(prot_df_i)
 
                 # Get path to variant file
                 variants_path = row['source_file']
@@ -145,6 +183,9 @@ def vep_pipeline(id_df: pd.DataFrame,
                 for seq_name, seqs in tqdm(hap_seqs[enst_id], 
                                         desc="Processing haplotypes", 
                                         leave=False):
+                    print(seq_name)
+                    print(seqs)
+
                     is_ref = seq_name.endswith('REF')
                     assert len(seq_name)>0
                     assert len(seqs)>0
@@ -160,6 +201,7 @@ def vep_pipeline(id_df: pd.DataFrame,
                     
                     # Convert to MultipleSequenceAlignment so we can inject mutations at the correct positions
                     msa = utils.as_msa(seqs) 
+                    assert len(msa)>0
                     
                     # Iterate over scoring strategies
                     for ss in tqdm(scoring_strategy,
@@ -198,8 +240,6 @@ def vep_pipeline(id_df: pd.DataFrame,
                         else:
                             raise ValueError(f"Model {model_location} not supported")
     return save_paths
-
-
 
 
 def _check_models(models: list[str],
@@ -265,29 +305,24 @@ def _check_scoring_strategy(scoring_strategy: list[str],
         print("Warning: scoring_strategy='pseudo-ppl' can take significant compute for large protein sequences, as it considers the entire sequence at once.") 
 
 
-def _check_id_df(id_df: pd.DataFrame | None,
-                 mutation_col: str) -> pd.DataFrame:
+def _check_prot_df(prot_df) -> pd.DataFrame:
     # Get mutation data
-    if id_df is None:
-        id_df = pgd.merge_resources()
-        id_df = gp.map_ids(id_df, target_namespace='ENSP')
-        id_df = gp.map_ids(id_df, target_namespace='ENST')
-        id_df = gp.map_ids(id_df, target_namespace='REFSEQ_PEPTIDE') 
+    if prot_df is None:
+        prot_df = pg.merge_resources()
     
-    assert isinstance(id_df, pd.DataFrame)
-    assert len(id_df)>0
-    assert mutation_col in id_df.columns
-    assert 'source_file' in id_df.columns
-    assert 'source_type' in id_df.columns
-    assert 'protein' in id_df.columns
-    assert 'ENST_haplosaurus' in id_df.columns
-    assert 'ENSP_haplosaurus' in id_df.columns
-    return id_df
+    assert isinstance(prot_df, pd.DataFrame)
+    assert len(prot_df)>0
+    assert 'source_file' in prot_df.columns
+    assert 'source_type' in prot_df.columns
+    assert 'protein' in prot_df.columns
+    return prot_df
 
-def _check_haplotypes(haplotypes: dict[str, dict[str, str]] | None,
-                      hap_dir: str,
+def _check_haplotypes(haplotypes: dict[str, dict[str, str]],
+                      hap_dir: str = os.path.join(DATA_DIR,"1KG","haplotypes"),
                       verbose: bool = True):
     if haplotypes is None:
+        if hap_dir is None:
+            raise ValueError(" When `haplotypes` is not provided, `hap_dir` must be set.")
         if verbose:
             print(f"`haplotypes` not provided. Importing haplotype sequences from '{hap_dir}'")
         haplotypes = hs.get_haplotypes(save_dir=hap_dir,
@@ -305,15 +340,15 @@ def _check_hap_seqs(haplotypes,
     assert len(hap_seqs)>0
     return hap_seqs
 
-def _filter_id_df(id_df: pd.DataFrame,
-                  protein_ids: list[str] | None,
-                  source_types: list[str] | None,
-                  haplotypes: dict[str, dict[str, str]] | None) -> pd.DataFrame:
+def filter_prot_df(prot_df: pd.DataFrame,
+                  protein_ids: list[str] = None,
+                  source_types: list[str] = None,
+                  haplotypes: dict[str, dict[str, str]] = None) -> pd.DataFrame:
     
     # Filter by protein ids if provided
     if protein_ids is not None:
-        id_df = id_df.loc[id_df['protein'].isin(protein_ids)]
-    assert len(id_df)>0
+        prot_df = prot_df.loc[prot_df['protein'].isin(protein_ids)]
+    assert len(prot_df)>0
 
     # Filter by haplotypes if provided
     if haplotypes is not None:
@@ -323,23 +358,29 @@ def _filter_id_df(id_df: pd.DataFrame,
                                         target_namespace='ENST',
                                         as_dict=-1)
         
-        id_df['ENST_haplosaurus'] = id_df['ENST'].map(hap_seqs_id_map)
+        # Map prot_df
+        prot_df = pg.map_resources(prot_df)
+        # Map ENST to ENSP
+        prot_df.loc[:,'ENST_haplosaurus'] = prot_df['ENST'].map(hap_seqs_id_map)
         enst_to_ensp = hs.get_haplotype_protein_ids(haplotypes)
-        id_df['ENSP_haplosaurus'] = id_df['ENST_haplosaurus'].map(enst_to_ensp)
+        prot_df.loc[:,'ENSP_haplosaurus'] = prot_df['ENST_haplosaurus'].map(enst_to_ensp)
 
-        # Filter the id_df
-        id_df = id_df.loc[id_df['ENST_haplosaurus'].notna()]  
+        # Filter the prot_df
+        prot_df = prot_df.loc[prot_df['ENST_haplosaurus'].notna()]  
         if source_types is not None:
-            id_df = id_df.loc[id_df['source_type'].isin(source_types)]
+            prot_df = prot_df.loc[prot_df['source_type'].isin(source_types)]
         
         # Only keep the first occurence of each experiment_id (to avoid artifacts of ID mapping)
-        id_df = id_df.drop_duplicates(subset=['experiment_id']) 
+        prot_df = prot_df.drop_duplicates(subset=['experiment_id']) 
         
         # Report the number of unique proteins 
-        print(len(id_df['protein'].unique()),"unique proteins") 
-    # Return the filtered id_df
-    assert len(id_df)>0
-    return id_df
+        print(len(prot_df['protein'].unique()),"unique proteins") 
+    
+    assert 'ENST_haplosaurus' in prot_df.columns
+    assert 'ENSP_haplosaurus' in prot_df.columns
+    # Return the filtered prot_df
+    assert len(prot_df)>0
+    return prot_df
 
 
 def _parse_scoring_strategies(scoring_strategies):
@@ -380,14 +421,14 @@ def _check_scoring_strategies(scoring_strategies,
 
 def _parse_args():
     parser = argparse.ArgumentParser(description="Run ESM variant effect prediction pipeline on protein haplotype sequences.")
-    parser.add_argument("--id_df", 
+    parser.add_argument("--prot_df", 
                         type=pathlib.Path, 
                         required=True,
                         help="Path to CSV file containing protein IDs and metadata. Will be imported with `pandas.read_csv`.")
     parser.add_argument("--protein_ids",
                         type=str, 
                         required=False,
-                        help="Comma-separated list of protein IDs to process. If not provided, all protein IDs in id_df will be processed."
+                        help="Comma-separated list of protein IDs to process. If not provided, all protein IDs in prot_df will be processed."
                         )
     parser.add_argument("--hap_dir",
                         type=pathlib.Path,
@@ -425,11 +466,11 @@ if __name__ == "__main__":
 
     # Parse arguments
     args = _parse_args()
-    id_df = pd.read_csv(args.id_df)
+    prot_df = pd.read_csv(args.prot_df)
     scoring_strategies = _parse_scoring_strategies(args.scoring_strategies)
     
     # Run pipeline
-    vep_pipeline(id_df, 
+    vep_pipeline(prot_df, 
                  models = args.models,
                  scoring_strategies = scoring_strategies,
                  hap_dir = args.hap_dir,

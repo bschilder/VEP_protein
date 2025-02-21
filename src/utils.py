@@ -1,3 +1,8 @@
+import io
+import pandas as pd
+import glob
+import os
+
 def is_pd(x):
     """
     Check if the input object is a pandas DataFrame.
@@ -8,7 +13,6 @@ def is_pd(x):
     Returns:
     bool: True if the object is a pandas DataFrame, False otherwise.
     """
-    import pandas as pd
     return isinstance(x, pd.DataFrame)
 
 def as_list(x,
@@ -42,6 +46,9 @@ def one_only(lst):
     return lst[0]
 
 def intersect(x, y, as_list=True):
+    """
+    Intersect two lists or sets.
+    """
     if as_list:
         return list(set(x) & set(y))
     else:
@@ -49,9 +56,7 @@ def intersect(x, y, as_list=True):
 
 def list_vcf(dir='/grid/koo/home/schilder/projects/GenomeEncoder/data/1KG/vcf_formatted/*.vcf.gz', 
              as_dict=False):
-    # List all VCF files in the 1KG directory
-    import glob
-    import os
+    # List all VCF files in the 1KG directory 
     vcf_files = glob.glob(dir)
     print(len(vcf_files),"VCF files found.")
     if as_dict:
@@ -661,7 +666,8 @@ def query_msa(msa,
               pos,
               ref=0,
               query=1,
-              join_str=None):
+              join_str=None,
+              error=True):
     """
     Query a MultipleSeqAlignment at a specific reference genome coordinates.
     
@@ -689,14 +695,22 @@ def query_msa(msa,
     
     idx = msa.alignment.indices[ref] == (pos-1)
     if sum(idx) == 0:
-        print(f"No matching sequence found at position {pos} for reference.")
-        return None
+        txt = f"No matching sequence found at position {pos} for reference: '{msa[ref].seq}'"
+        if error:
+            raise ValueError(txt)
+        else:
+            print("Warning:",txt)
+            return None
     subseqs = [x for i,x in enumerate(msa[query].seq) if idx[i] == True]
     # Return 
     if join_str is not None:
-        return join_str.join(subseqs)
-    else:
-        return subseqs
+        subseqs = join_str.join(subseqs)
+    
+    assert len(subseqs)>0
+    assert isinstance(subseqs, str)
+    assert subseqs is not None
+
+    return subseqs
 
 def get_aa_tokens(as_dict=False):
     import esm
@@ -756,8 +770,6 @@ def encode_haplotype_name(seq_name,
  
 
 def get_candidate_proteins():
-    import io
-    import pandas as pd
     candidate_proteins = pd.read_csv(io.StringIO("""Gene	Protein Common Name	RefSeq Protein	RefSeq Transcript	ENSP
     G6PD	Glucose-6-phosphate 1-dehydrogenase	NP_001346945.1	NM_001360016.2	ENSP00000377192
     HFE	Homeostatic Iron Regulator	NP_000401.1	NM_000410.4	ENSP00000417404
@@ -785,3 +797,10 @@ def _make_palette(values,
 def get_clinsig_palette(values=['path', 'likely_path', 'likely_benign', 'benign'],
                          palette='bwr_r'):
     return _make_palette(values, palette) 
+
+
+def list_to_df(lst,
+               cols=None):
+    if cols is None:
+        cols = ['item']
+    return pd.DataFrame(lst, columns=cols)
