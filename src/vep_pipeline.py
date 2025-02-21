@@ -43,7 +43,9 @@ def vep_pipeline(id_df: pd.DataFrame,
         {protein_id}/
           {haplotypes}/
             {source_type}/
-              {scoring_strategy}.csv.gz
+              {scoring_strategy1}.csv.gz
+              {scoring_strategy2}.csv.gz
+              {scoring_strategy3}.csv.gz
 
     Args:
         id_df (pd.DataFrame): DataFrame containing protein IDs and metadata. If not provided, the function will download a default DataFrame from ProteinGym.
@@ -64,7 +66,7 @@ def vep_pipeline(id_df: pd.DataFrame,
 
     Example:
         vep_pipeline(models = ["esm1v_t33_650M_UR90S_1"],
-                     scoring_strategies = {"esm1v_t33_650M_UR90S_1":["wt-marginals", "masked-marginals", "pseudo-ppl"]},
+                     scoring_strategies = {"esm1v_t33_650M_UR90S_1":["wt-marginals", "masked-marginals"]},
                      protein_ids = ["NP_000509.1"],
                      source_types = ["clinical_ProteinGym_substitutions"],
                      )
@@ -73,6 +75,11 @@ def vep_pipeline(id_df: pd.DataFrame,
     # Check models
     models = _check_models(models)
     
+    # Check protein ids
+    if protein_ids is not None:
+        if isinstance(protein_ids, str):
+            protein_ids = [protein_ids]
+
     # Check source types
     if source_types is not None:
         if isinstance(source_types, str):
@@ -111,7 +118,8 @@ def vep_pipeline(id_df: pd.DataFrame,
         _check_scoring_strategy(scoring_strategy, verbose=verbose)
         
         # Iterate over proteins
-        for pid in tqdm(protein_ids, desc="Processing proteins"):
+        for pid in tqdm(id_df['protein'].unique().tolist(),
+                         desc="Processing proteins"):
             
             assert 'protein' in id_df.columns
             id_df_i = id_df.loc[id_df['protein']==pid]
