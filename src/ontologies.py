@@ -1,6 +1,4 @@
-import sys
-sys.path.append("code")
-from src.utils import as_list, one_only
+import src.utils as utils
 
 def get_ontology(url, **kwargs):
     # Import SO ontology
@@ -24,7 +22,7 @@ def _multi_handler(lst, multi, sep="."):
 
 def _return_as(x, return_as, multi=["join","first","all"][0]):  
     import owlready2
-    multi = one_only(multi)
+    multi = utils.one_only(multi)
     if not isinstance(x, owlready2.entity.ThingClass):
         raise ValueError(f"Entity must be an owlready2.entity.ThingClass, got {type(x)}")
     if return_as == 'entity':
@@ -45,8 +43,8 @@ def _get_kin(label_or_id,
             return_as=['entity','label','id','id|label'],
             verbose=True):
     from functools import partial
-    kin_type = one_only(kin_type) 
-    return_as = one_only(return_as)
+    kin_type = utils.one_only(kin_type) 
+    return_as = utils.one_only(return_as)
     # recursion
     if isinstance(label_or_id, list) and len(label_or_id)==1:
         label_or_id = label_or_id[0]
@@ -140,7 +138,7 @@ def map_terms(terms,
         ont = default_ontology()
     # Get entity
     if is_label_or_id(terms, ont) == 'label':
-        entity = ont.search_one(label=label_or_id)
+        entity = ont.search_one(label=terms)
     else:
-        entity = ont.search_one(id=label_or_id)
+        entity = ont.search_one(id=terms)
     return _return_as(entity, return_as)

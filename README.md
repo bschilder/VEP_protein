@@ -12,7 +12,7 @@ Using protein sequence models to compute Variant Effect Predictions (VEP) across
 1. Clone this repo to your machine and open it as a project in your code editor (e.g. VSCode), or simply `cd` into the folder from the Terminal.  
 `git clone https://github.com/bschilder/VEP_protein.git && cd VEP_protein`
 
-2. [Optional] Construct and activate the conda environment which should include all necessary dependencies:
+2. [Optional] Construct the conda environment which should include all necessary dependencies:
 `conda env create -f conda/conda.yml`
 
 3. Adjust `DATA_DIR` variable in the [`config.py` file](https://github.com/bschilder/VEP_protein/blob/main/src/config.py) to the on-disk location where you'd like to store files.  

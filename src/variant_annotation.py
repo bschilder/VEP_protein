@@ -1,6 +1,4 @@
-import sys
-sys.path.append("code")
-from src.utils import as_list, save_pickle, load_pickle, save_vcf, sort_variants
+from src.utils import as_list, save_vcf, sort_variants
 
 def get_myvariant_db():
     import myvariant
