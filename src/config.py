@@ -1,4 +1,6 @@
-DATA_DIR = "/grid/koo/home/schilder/projects/data/"
+import os
+
+DATA_DIR = os.path.expanduser("~/projects/data/")
 
 PARAMS_VARIATION = {
     'genotypes': 1,

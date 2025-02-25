@@ -1618,7 +1618,7 @@ def _filter_vep_df(vep_df,
     vep_df = vep_df.loc[vep_df[model_location].notna()]
     rows_after = len(vep_df)
     if verbose:
-        print(f"Filtered {((rows_before-rows_after)/rows_before)*100:.1f}% of rows with model location {model_location}")
+        print(f"Filtered {((rows_before-rows_after)/rows_before)*100:.1f}% of rows with NAs in model location {model_location}")
     return vep_df
 
 
