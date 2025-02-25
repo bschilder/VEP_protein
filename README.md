@@ -18,3 +18,6 @@ Using protein sequence models to compute Variant Effect Predictions (VEP) across
 3. Adjust `DATA_DIR` variable in the [`config.py` file](https://github.com/bschilder/VEP_protein/blob/main/src/config.py) to the on-disk location where you'd like to store files.  
 
 4. Follow the [VEP tutorial notebook](https://github.com/bschilder/VEP_protein/blob/main/notebooks/VEP.ipynb).
+    - [Optional] If you followed Step 2 and created the conda env, select `vep_protein` as the notebook's kernel.
+
+
