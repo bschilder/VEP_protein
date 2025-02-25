@@ -623,95 +623,6 @@ def count_variants(lst,
     lst = as_list(lst)
     return [sum([x.split(tx_id_sep)[1].count(c) for c in count]) for x in lst]
 
-
-def as_seq(seq):
-    from Bio.Seq import Seq
-    if isinstance(seq, Seq):
-        return seq
-    if isinstance(seq, list):
-        seq = "".join(seq)
-    return Seq(seq)
-
-def as_seqrecord(seq):
-    from Bio.SeqRecord import SeqRecord
-    if isinstance(seq, SeqRecord):
-        return seq
-    return SeqRecord(as_seq(seq))
-
-def is_msa(seqs):
-    from Bio.Align import MultipleSeqAlignment
-    return isinstance(seqs, MultipleSeqAlignment)
-
-def as_msa(seqs: list[str],
-            **kwargs):
-    """
-    Convert a list of sequences to a MultipleSeqAlignment object.
-    """
-    from Bio.Align import MultipleSeqAlignment
-    
-    if is_msa(seqs):
-        return seqs
-    # Check if seqs is a list
-    if not isinstance(seqs, list):
-        raise ValueError("seqs must be a list")
-    # Check if seqs contains at least 2 sequences
-    if len(seqs) < 2:
-        raise ValueError("seqs must contain at least 2 sequences")
-    # Convert to Seq objects
-    seqs = [as_seqrecord(seq) for seq in seqs]
-    # Create MSA
-    return MultipleSeqAlignment(seqs, **kwargs)
-
-def query_msa(msa,
-              pos,
-              ref=0,
-              query=1,
-              join_str=None,
-              error=True):
-    """
-    Query a MultipleSeqAlignment at a specific reference genome coordinates.
-    
-    Parameters
-    ----------
-    msa : Bio.Align.MultipleSeqAlignment
-        Multiple sequence alignment object
-    pos : int
-        Position in the reference sequence to query (starts from 0)
-    ref : int, optional
-        Index of the reference sequence in the MSA, by default 0
-    query : int, optional
-        Index of the query sequence in the MSA to compare against reference, by default 1
-        
-    Returns
-    -------
-    list
-        List of characters from the query sequence that align to the reference position.
-        Returns None if no match is found at the specified position.
-    """
-    if ref > len(msa)-1:
-        raise ValueError(f"Reference index out of range. Maximum index is {len(msa)-1}.")
-    if query > len(msa)-1:
-        raise ValueError(f"Query index out of range. Maximum index is {len(msa)-1}.")
-    
-    idx = msa.alignment.indices[ref] == (pos-1)
-    if sum(idx) == 0:
-        txt = f"No matching sequence found at position {pos} for reference: '{msa[ref].seq}'"
-        if error:
-            raise ValueError(txt)
-        else:
-            print("Warning:",txt)
-            return None
-    subseqs = [x for i,x in enumerate(msa[query].seq) if idx[i] == True]
-    # Return 
-    if join_str is not None:
-        subseqs = join_str.join(subseqs)
-    
-    assert len(subseqs)>0
-    assert isinstance(subseqs, str)
-    assert subseqs is not None
-
-    return subseqs
-
 def get_aa_tokens(as_dict=False):
     import esm
     toks = esm.pretrained.esm.constants.proteinseq_toks['toks']
@@ -786,8 +697,6 @@ def get_candidate_proteins():
     candidate_proteins['RefSeq Protein Stable'] = candidate_proteins['RefSeq Protein'].str.split(".").str[0]
     return candidate_proteins
 
-
-
 def _make_palette(values,
                   palette):
     # sample 4 colors from a palette that goes from hot to cold
@@ -797,7 +706,6 @@ def _make_palette(values,
 def get_clinsig_palette(values=['path', 'likely_path', 'likely_benign', 'benign'],
                          palette='bwr_r'):
     return _make_palette(values, palette) 
-
 
 def list_to_df(lst,
                cols=None):

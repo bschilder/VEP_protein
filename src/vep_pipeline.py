@@ -5,14 +5,14 @@ import pathlib
 from tqdm.auto import tqdm
 
 # Local imports
-from src.config import DATA_DIR
+import src.config as config
 import src.utils as utils
 import src.haplosaurus as hs
-import src.predict_esm as ESMp
+import src.ESM_predict as ESMp
 import src.ESM as ESM
 import src.gprofiler as gp
 import src.proteingym as pg
-
+import src.biopython as bp
 
 def list_models():
     """Get available ESM models.
@@ -64,7 +64,8 @@ def vep_pipeline(prot_df: pd.DataFrame = None,
                  source_types: list[str] = None,
                  haplotypes: dict[str, dict[str, str]] = None, 
                  hap_dir: str = hs.DIR_DICT["haplotypes"],
-                 save_dir: str = os.path.join(DATA_DIR,"1KG","vep"), 
+                 run_filter_prot_df: bool = True,
+                 save_dir: str = os.path.join(config.DATA_DIR,"1KG","vep"), 
                  force: bool = False,
                  encode_haplotype_name_threshold: int = 10,
                  mutation_col="mutant",
@@ -79,7 +80,7 @@ def vep_pipeline(prot_df: pd.DataFrame = None,
     {save_dir}/
       {model}/
         {protein_id}/
-          {haplotypes}/
+          {haplotype}/
             {source_type}/
               {scoring_strategy1}.csv.gz
               {scoring_strategy2}.csv.gz
@@ -136,13 +137,16 @@ def vep_pipeline(prot_df: pd.DataFrame = None,
     
     # Get haplotype sequences
     hap_seqs = _check_hap_seqs(haplotypes=haplotypes,  
+                               use_protein_ids=False,
                                verbose=verbose)
     
     # Filter prot_df
-    prot_df = filter_prot_df(prot_df=prot_df, 
-                          protein_ids=protein_ids, 
-                          source_types=source_types, 
-                          haplotypes=haplotypes)
+    if run_filter_prot_df or 'ENST_haplosaurus' not in prot_df.columns:
+        prot_df = filter_prot_df(prot_df=prot_df, 
+                                 protein_ids=protein_ids, 
+                                 source_types=source_types, 
+                                 haplotypes=haplotypes,
+                                 verbose=verbose)
     
     # Save paths
     save_paths = {}
@@ -160,13 +164,12 @@ def vep_pipeline(prot_df: pd.DataFrame = None,
             
             assert 'protein' in prot_df.columns
             prot_df_i = prot_df.loc[prot_df['protein']==pid]
+            assert prot_df_i.shape[0] < 2, f"Multiple rows found for protein {pid}"
             assert len(prot_df_i)>0
             
             # Map protein id to ensp_id
             enst_id = prot_df_i['ENST_haplosaurus'].tolist()[0]
             assert len(enst_id)>0
-            ensp_id = prot_df_i['ENSP_haplosaurus'].tolist()[0]
-            assert len(ensp_id)>0
 
             # Iterate over variant types (eg. substitutions, indels)
             for _, row in prot_df_i.iterrows():
@@ -182,9 +185,7 @@ def vep_pipeline(prot_df: pd.DataFrame = None,
                 # Iterate over haplotypes
                 for seq_name, seqs in tqdm(hap_seqs[enst_id], 
                                         desc="Processing haplotypes", 
-                                        leave=False):
-                    print(seq_name)
-                    print(seqs)
+                                        leave=False): 
 
                     is_ref = seq_name.endswith('REF')
                     assert len(seq_name)>0
@@ -196,11 +197,15 @@ def vep_pipeline(prot_df: pd.DataFrame = None,
                     else:
                         seq_name_save = seq_name
                         
-                    if not _check_seq_len(seqs, model_location, pid, seq_name, verbose=verbose):
+                    if not _check_seq_len(seqs=seqs, 
+                                          model_location=model_location, 
+                                          pid=pid, 
+                                          seq_name=seq_name, 
+                                          verbose=verbose):
                         continue
                     
                     # Convert to MultipleSequenceAlignment so we can inject mutations at the correct positions
-                    msa = utils.as_msa(seqs) 
+                    msa = bp.as_msa(seqs) 
                     assert len(msa)>0
                     
                     # Iterate over scoring strategies
@@ -291,7 +296,7 @@ def _check_seq_len(seqs: list,
         ESM1b/v models cannot handle sequences longer than 1024 residues
         See: https://github.com/facebookresearch/esm/issues/166
     """
-    seq_len = len(ESMp.preprocess_sequence(seqs[1]))
+    seq_len = len(bp.preprocess_sequence(seqs[1]))
     for model, max_len in model_checks.items():
         if model_location.startswith(model) and seq_len > max_len:
             if verbose:
@@ -318,7 +323,7 @@ def _check_prot_df(prot_df) -> pd.DataFrame:
     return prot_df
 
 def _check_haplotypes(haplotypes: dict[str, dict[str, str]],
-                      hap_dir: str = os.path.join(DATA_DIR,"1KG","haplotypes"),
+                      hap_dir: str = os.path.join(config.DATA_DIR,"1KG","haplotypes"),
                       verbose: bool = True):
     if haplotypes is None:
         if hap_dir is None:
@@ -330,11 +335,14 @@ def _check_haplotypes(haplotypes: dict[str, dict[str, str]],
                                         verbose=verbose)
     return haplotypes
 
-def _check_hap_seqs(haplotypes,  
-                    verbose=True):
+def _check_hap_seqs(haplotypes: dict[str, dict[str, str]],  
+                    use_protein_ids: bool = True,
+                    add_haplotype_names: bool = True,
+                    verbose: bool = True):
     hap_seqs = hs.get_haplotype_seqs(haplotypes, 
                                         aligned=2, 
-                                        add_haplotype_names=True,
+                                        use_protein_ids=use_protein_ids,
+                                        add_haplotype_names=add_haplotype_names,
                                         verbose=verbose)
     assert isinstance(hap_seqs, dict)
     assert len(hap_seqs)>0
@@ -343,43 +351,105 @@ def _check_hap_seqs(haplotypes,
 def filter_prot_df(prot_df: pd.DataFrame,
                   protein_ids: list[str] = None,
                   source_types: list[str] = None,
-                  haplotypes: dict[str, dict[str, str]] = None) -> pd.DataFrame:
+                  haplotypes: dict[str, dict[str, str]] = None,
+                  run_mapping: bool = True,
+                  verbose: bool = True) -> pd.DataFrame:
     
+    prot_df = prot_df.copy()
     # Filter by protein ids if provided
     if protein_ids is not None:
         prot_df = prot_df.loc[prot_df['protein'].isin(protein_ids)]
     assert len(prot_df)>0
 
     # Filter by haplotypes if provided
-    if haplotypes is not None:
-        # Map ENP IDs
-        hap_seqs_id_map = gp.get_id_map(ids=haplotypes.keys(),
-                                        rename_converted=True,
-                                        target_namespace='ENST',
-                                        as_dict=-1)
-        
-        # Map prot_df
-        prot_df = pg.map_resources(prot_df)
-        # Map ENST to ENSP
-        prot_df.loc[:,'ENST_haplosaurus'] = prot_df['ENST'].map(hap_seqs_id_map)
-        enst_to_ensp = hs.get_haplotype_protein_ids(haplotypes)
-        prot_df.loc[:,'ENSP_haplosaurus'] = prot_df['ENST_haplosaurus'].map(enst_to_ensp)
+    if not all(col in prot_df.columns for col in ['ENST_haplosaurus','ENSP_haplosaurus']):
+        if haplotypes is None:
+            raise ValueError("When `prot_df` does not contain `ENST_haplosaurus` and `ENSP_haplosaurus` columns, `haplotypes` must be provided.")
+        else:
+            # Map ENST to ENSP
+            if all([col not in prot_df.columns for col in ['ENST', 'ENSP']]):
+                prot_df = pg.map_resources(prot_df,
+                                           target_namespace=['ENSP','ENST'],
+                                            verbose=verbose)
+            
+            # Map ENP IDs
+            enst_to_ensp = hs.get_haplotype_protein_ids(haplotypes, 
+                                                        add_self=True)
+            
+            # If ENSP is present, map it to ENSP
+            if 'ENSP' in prot_df.columns: 
+                if run_mapping:
+                    haplotype_id_map = gp.get_id_map(ids=list(enst_to_ensp.values()),
+                                                     rename_converted=True,
+                                                     target_namespace='ENSP',
+                                                     as_dict=-1,
+                                                     verbose=verbose)
+                    prot_df.loc[:,'ENSP_haplosaurus'] = prot_df['ENSP'].map(haplotype_id_map)
+                    prot_df = prot_df.loc[prot_df['ENSP_haplosaurus'].notna()]  
+                else:
+                    prot_df = prot_df.loc[prot_df['ENSP'].isin(enst_to_ensp.values())]
+                    prot_df.loc[:,'ENSP_haplosaurus'] = prot_df['ENSP']
+                
+                assert len(prot_df)>0
 
-        # Filter the prot_df
-        prot_df = prot_df.loc[prot_df['ENST_haplosaurus'].notna()]  
-        if source_types is not None:
-            prot_df = prot_df.loc[prot_df['source_type'].isin(source_types)]
-        
-        # Only keep the first occurence of each experiment_id (to avoid artifacts of ID mapping)
-        prot_df = prot_df.drop_duplicates(subset=['experiment_id']) 
-        
-        # Report the number of unique proteins 
-        print(len(prot_df['protein'].unique()),"unique proteins") 
+                # Add txid column
+                prot_df = hs.add_txid(df=prot_df, 
+                                        haplotypes=haplotypes, 
+                                        protein_id_col='ENSP_haplosaurus',
+                                        tx_id_col='ENST_haplosaurus', 
+                                        verbose=verbose) 
+                # Check the matching mappings
+                if verbose:
+                    print("ENSP_haplosaurus == ENSP:",  
+                          sum(prot_df['ENSP_haplosaurus'] == prot_df['ENSP']) / len(prot_df))
+              
+            # If ENST is present, map it to ENSP
+            elif 'ENST' in prot_df.columns:
+                if run_mapping:
+                    haplotype_id_map = gp.get_id_map(ids=list(enst_to_ensp.keys()),
+                                                     rename_converted=True,
+                                                     target_namespace='ENST',
+                                                     as_dict=-1,
+                                                     verbose=verbose)
+                    prot_df.loc[:,'ENST_haplosaurus'] = prot_df['ENST'].map(haplotype_id_map)
+                    prot_df = prot_df.loc[prot_df['ENST_haplosaurus'].notna()]  
+                else:
+                    prot_df = prot_df.loc[prot_df['ENST'].isin(enst_to_ensp.keys())]
+                    prot_df.loc[:,'ENST_haplosaurus'] = prot_df['ENST']
+                
+                assert len(prot_df)>0
+
+                # Add txid column
+                prot_df.loc[:,'ENSP_haplosaurus'] = prot_df['ENST_haplosaurus'].map(enst_to_ensp)
+                # Check the matching mappings
+                if verbose:
+                    print("ENST_haplosaurus == ENST:",  
+                          sum(prot_df['ENST_haplosaurus'] == prot_df['ENST']) / len(prot_df))
+            else:
+                raise ValueError("No ENST or ENSP column found in prot_df") 
+    assert len(prot_df)>0
+
+    # Filter the prot_df
+    prot_df = prot_df.loc[prot_df['ENST_haplosaurus'].notna()]  
+    assert len(prot_df)>0
     
+    if source_types is not None:
+        print("Filtering by source types:",",".join(source_types))
+        assert 'source_type' in prot_df.columns
+        prot_df = prot_df.loc[prot_df['source_type'].isin([str(x) for x in source_types])]
+        assert len(prot_df)>0
+
+    # Only keep the first occurence of each experiment_id (to avoid artifacts of ID mapping)
+    prot_df = prot_df.drop_duplicates(subset=['experiment_id']) 
+    assert len(prot_df)>0
     assert 'ENST_haplosaurus' in prot_df.columns
     assert 'ENSP_haplosaurus' in prot_df.columns
-    # Return the filtered prot_df
+    
+    # Report the number of unique proteins 
+    print(len(prot_df['protein'].unique()),"unique proteins") 
     assert len(prot_df)>0
+    
+    # Return the filtered prot_df
     return prot_df
 
 
@@ -454,7 +524,7 @@ def _parse_args():
     parser.add_argument("--save_dir", 
                         type=pathlib.Path,
                         required=False,
-                        default=os.path.join(DATA_DIR,"1KG","vep"),
+                        default=os.path.join(config.DATA_DIR,"1KG","vep"),
                         help="Directory to save results.")
     parser.add_argument("--verbose", type=bool, default=True,
                        help="Print verbose output.")

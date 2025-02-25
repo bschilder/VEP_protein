@@ -252,6 +252,7 @@ def merge_resources(keys=['clinical_ProteinGym_substitutions.zip',
     return proteins_df
 
 def map_resources(proteins_df, 
+                  on_left='protein',
                   target_namespace=['ENSP','ENST','REFSEQ_PEPTIDE'],
                   force = False,
                   verbose = True): 
@@ -276,6 +277,7 @@ def map_resources(proteins_df,
     """
     for tn in target_namespace:
         proteins_df = gp.map_ids(proteins_df,
+                                 on_left=on_left,
                                  target_namespace=tn, 
                                  force=force, 
                                  verbose=verbose)

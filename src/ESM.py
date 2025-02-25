@@ -1,13 +1,12 @@
 try:
-    from src.utils import create_proteoform_id, load_pickle, save_pickle, intersect, run_umap, run_tsvd, as_list, get_marker_map, count_variants, get_clinsig_palette
-    from src.haplosaurus import add_haplotype_freqs, add_txid, filter_haplotype_freqs
-    from src.config import PALETTES
+    import src.utils as utils 
+    import src.haplosaurus as hs 
+    import src.config as config
+    import src.proteingym as pg
+    import src.gprofiler as gp
 except:
     print("Could not import utils")
 
-import os
-import random
-import numpy as np
 import torch
 
  
@@ -60,7 +59,7 @@ def get_torch_data_i(transcript_id,
             if to_stop is True:
                 if '*' in seq:
                     seq = seq[:seq.find('*')]
-            proteoform_id = create_proteoform_id(transcript_id, seq, alphabet)
+            proteoform_id = utils.create_proteoform_id(transcript_id, seq, alphabet)
             if seq not in seq_to_proteoform.keys():
                 if transcript_id not in transcript_to_proteoform:
                     transcript_to_proteoform[transcript_id] = []
@@ -96,7 +95,7 @@ def get_torch_data_transcripts(results_all=None,
             transcript_ids_x = list(transcript_ids_x)
     # Filter transcript IDs
     if transcript_ids is not None:
-        transcript_ids_final = intersect(transcript_ids_x, transcript_ids)
+        transcript_ids_final = utils.intersect(transcript_ids_x, transcript_ids)
     else:
         transcript_ids_final = transcript_ids_x
     if max_transcripts is not None:
@@ -138,7 +137,7 @@ def get_torch_data(results_all=None,
         elif save_dir is not None:
             if isinstance(save_dir, str): 
                 f = f"{save_dir}/{transcript_id}.pkl"
-                results_tx = load_pickle(f, verbose=verbose>1) 
+                results_tx = utils.load_pickle(f, verbose=verbose>1) 
                 if results_tx is not None:
                      batches[transcript_id] += get_torch_data_i(
                         transcript_id=transcript_id, 
@@ -149,7 +148,7 @@ def get_torch_data(results_all=None,
             elif isinstance(save_dir, dict):
                 for sample_group,save_dir_group in save_dir.items():
                     f = f"{save_dir_group}/{transcript_id}.pkl"
-                    results_tx = load_pickle(f, verbose=verbose>1)
+                    results_tx = utils.load_pickle(f, verbose=verbose>1)
                     if results_tx is not None:
                         batches[transcript_id] += get_torch_data_i(
                             transcript_id=transcript_id, 
@@ -249,9 +248,9 @@ def get_embeddings(batches,
                                      force=force, 
                                      verbose=verbose>1)
             else:
-                results_tx = load_pickle(save_path, 
-                                        force=force, 
-                                        verbose=verbose>1)
+                results_tx = utils.load_pickle(save_path, 
+                                               force=force, 
+                                               verbose=verbose>1)
             if results_tx is not None: 
                 save_paths[tx_id] = save_path
                 results[tx_id] = results_tx
@@ -285,7 +284,7 @@ def get_embeddings(batches,
                                     force=force,
                                     verbose=verbose>1)
                 else:
-                    save_pickle(obj=results[tx_id],
+                    utils.save_pickle(obj=results[tx_id],
                                 save_path=save_path,
                                 verbose=verbose>1) 
                 # Only add to save_paths if the file was created
@@ -453,9 +452,9 @@ def get_reduction_df(seq_reps,
     if embedding is None or nan_indices is None:
         X = get_representation_matrix(seq_reps)
         if method == "UMAP":
-            model, embedding, nan_indices = run_umap(X)
+            model, embedding, nan_indices = utils.run_umap(X)
         elif method == "TSVD":
-            model, embedding, nan_indices = run_tsvd(X)
+            model, embedding, nan_indices = utils.run_tsvd(X)
     df = pd.DataFrame(
         embedding, 
         columns=[method+" "+str(i+1) for i in range(embedding.shape[1])]
@@ -464,17 +463,17 @@ def get_reduction_df(seq_reps,
     df['label'] = [x[0] for i,x in enumerate(seq_reps) if not nan_indices[i]]
     df['label_base'] = df['label'].str.split(split).str[0] 
     # Count the number of variants in the label_base (the number of ">" or "<" in the label_base)
-    df['edits'] = count_variants(df['label_base'], 
+    df['edits'] = utils.count_variants(df['label_base'], 
                                tx_id_sep=tx_id_sep)
     # Add group column
     df['group'] = get_haplotype_group(df, col="label")
     # Add protein_id column
     df['protein_id'] = [x.split(tx_id_sep)[0] for x in df['label']]
     if haplotypes is not None and add_tx_id:
-        df = add_txid(df, haplotypes, verbose=verbose)
+        df = hs.add_txid(df, haplotypes, verbose=verbose)
         # Add haplotype frequencies
     if haplotypes is not None and add_freqs:
-        df = add_haplotype_freqs(df, haplotypes, verbose=verbose)
+        df = hs.add_haplotype_freqs(df, haplotypes, verbose=verbose)
     return df
 
 def _get_color_map(df, color_col, color_palette): 
@@ -488,7 +487,7 @@ def _infer_xy_cols(df, x, y,
                    search_strings=["UMAP","TSVD"]):
     # Find columns that match the search strings followed by a number
     # Find which search string has at least 2 matching columns
-    search_strings = as_list(search_strings)
+    search_strings = utils.as_list(search_strings)
     search_string = None
     for s in search_strings:
         matching_cols = [col for col in df.columns if s.lower() in col.lower()]
@@ -622,7 +621,7 @@ def _plot_umap_static(df,
     if highlight_color is not None:
         highlight_color = legend_text
     # Plot
-    marker_map = get_marker_map()
+    marker_map = utils.get_marker_map()
     fig, ax = plt.subplots(figsize=figsize)
 
     # First plot the density contours
@@ -665,7 +664,7 @@ def _plot_umap_static(df,
                 draw_haplotype_trio_edges(df,
                                         x=x,
                                         y=y,
-                                        palettes=PALETTES,
+                                        palettes=config.PALETTES,
                                         connect_pb=False,
                                         ax=ax)
     else:
@@ -713,7 +712,7 @@ def _plot_umap_static(df,
             draw_haplotype_trio_edges(df,
                                     x=x,
                                     y=y,
-                                    palettes=PALETTES,
+                                    palettes=config.PALETTES,
                                     connect_pb=False,
                                     ax=ax,
                                     zorder=edge_zorder
@@ -833,7 +832,7 @@ def plot_umap(df,
 def draw_haplotype_trio_edges(df, 
                              x='UMAP 1',
                              y='UMAP 2',
-                             palettes=PALETTES, 
+                             palettes=config.PALETTES, 
                              connect_pb=True,
                              alpha=0.2,
                              linestyle='--',
@@ -1250,9 +1249,9 @@ def get_paired_distances(seq_reps,
             # Add a column for the protein_id
             df['protein_id'] = df['sample1'].str.split(':').str[0]
             # Add a column for the number of edits
-            df['sample1_edits'] = count_variants(df['sample1'], 
+            df['sample1_edits'] = utils.count_variants(df['sample1'], 
                                                  tx_id_sep=tx_id_sep)
-            df['sample2_edits'] = count_variants(df['sample2'], 
+            df['sample2_edits'] = utils.count_variants(df['sample2'], 
                                                  tx_id_sep=tx_id_sep)
             df['max_edits'] = df[['sample1_edits', 'sample2_edits']].max(axis=1)
             return df
@@ -1260,7 +1259,7 @@ def get_paired_distances(seq_reps,
             return distances_subset
     
     if by_edits:
-        edits = count_variants(get_seq_names(seq_reps), 
+        edits = utils.count_variants(get_seq_names(seq_reps), 
                                tx_id_sep=tx_id_sep)
         distances_subset_dict = {}
         seq_reps_ref = [seq_reps[i] for i,x in enumerate(edits) if x==0]
@@ -1272,7 +1271,7 @@ def get_paired_distances(seq_reps,
             if len(seq_reps_i)==0:
                 continue
             else:
-                seq_reps_i = as_list(seq_reps_ref) + seq_reps_i
+                seq_reps_i = utils.as_list(seq_reps_ref) + seq_reps_i
             if verbose:
                 print(f"Found {len(seq_reps_i)} sequences")
             distances_i = get_distances(seq_reps_i)
@@ -1371,7 +1370,7 @@ def plot_vep_violin(vep_df,
                     violin_alpha = 0.25,
                     point_size = 4,
                     point_alpha = 0.5,
-                    palette = get_clinsig_palette(),
+                    palette = utils.get_clinsig_palette(),
                     add_connections = False, 
                     connection_alpha = 0.3,
                     connection_linewidth = 1,
@@ -1414,7 +1413,7 @@ def plot_vep_violin(vep_df,
     for ax, protein in zip(axes, proteins):
         # Get data for this protein
         protein_data = vep_df[vep_df['protein'] == protein].sort_values(by=clinsig_col)
-        protein_data = filter_haplotype_freqs(protein_data, freq_filters)
+        protein_data = hs.filter_haplotype_freqs(protein_data, freq_filters)
         
         # Create violin plots for each mutant, grouped by clinsig category
         for mutant in protein_data[~protein_data['is_ref']]['mutant'].unique():
@@ -1558,7 +1557,7 @@ def plot_vep_violin(vep_df,
         n_mutants = protein_data.groupby(clinsig_col)['mutant'].nunique()
         mutant_counts = [f"{cat}: {n_mutants[cat]}" for cat in categories]
         
-        ax.set_title(f'Protein: {protein} / {protein_data["ENST"].iloc[0]} / {protein_data["HGNC"].iloc[0]}\n'
+        ax.set_title(f'Protein: {protein} / {protein_data["ENSP_haplosaurus"].iloc[0]} / {protein_data["HGNC"].iloc[0]}\n'
                      f'Haplotypes: {n_haplotypes}, Variants ({", ".join(mutant_counts)})', 
                      y=title_y)
         ax.set_ylabel(f'{", ".join(vep_df["scoring_strategy"].unique())}')
@@ -1598,7 +1597,7 @@ def plot_vep_density(vep_df):
                     x='esm1v_t33_650M_UR90S_1',
                     hue=clinsig_col,
                     fill=True,
-                    palette=get_clinsig_palette(), 
+                    palette=utils.get_clinsig_palette(), 
                     alpha=.75,
                     legend=True)
     
@@ -1637,7 +1636,10 @@ def merge_vep(save_dir,
               add_model_location=True,
               add_variant_set=True,
               add_filename=False,
-              col_map= {'mutant': 'mutant'}
+              add_metadata=True,
+              target_namespace='ENST',
+              col_map= {'mutant': 'mutant', 
+                        'protein': 'protein'}
               ):
     """
     Merge VEP results from multiple files into a single dataframe.
@@ -1688,10 +1690,33 @@ def merge_vep(save_dir,
         
     # Concatenate all dataframes
     if dfs:
-        merged_df = pd.concat(dfs, ignore_index=True)
+        vep_df = pd.concat(dfs, ignore_index=True)
+        vep_df['ENSP_haplosaurus'] = vep_df['haplotype'].str.split(":").str[0]
+        # Map protein IDs to ENST and HGNC
+        if target_namespace is not None:
+            vep_df = gp.map_ids(vep_df, 
+                                rows_per_id=1,
+                                target_namespace=target_namespace)
         # Check if reformatted mutant is in haplotype string
-        merged_df['mutant_in_haplotype'] = merged_df.apply(lambda x: _reformat_mutant(x[col_map['mutant']]) in x['haplotype'], axis=1)
-        return merged_df
+        vep_df['mutant_in_haplotype'] = vep_df.apply(lambda x: _reformat_mutant(x[col_map['mutant']]) in x['haplotype'], axis=1)
+        assert len(vep_df)>0, "No VEP data found"
+        if add_metadata:
+            if all(col in vep_df.columns for col in [col_map['protein'], col_map['mutant']]):
+                # Gather additional PGD metadata
+                resources_df = pg.get_resources_df()
+                pgd_resources = pg.download_resources(resources_df.loc[resources_df['Filename'].isin(['substitutions_raw_clinical.zip', 'indels_raw_clinical.zip'])], 
+                                                    include_raw=True)
+                assert len(pgd_resources)>0, "No PGD metadata found"
+
+                pgd_subs_raw = pd.read_csv(pgd_resources['substitutions_raw_clinical'][0])
+                # Annotate with PGD variants
+                vep_df = vep_df.merge(pgd_subs_raw.groupby([col_map['protein'], col_map['mutant']]).head(1),
+                                      on=[col_map['protein'], col_map['mutant']], 
+                                      how='left')
+                assert len(vep_df)>0, "No PGD metadata found"
+            else:
+                print("Cannot `add_metadata`: No 'protein' or 'mutant' columns found in VEP dataframe.")
+        return vep_df
     else:
         print("No files were successfully read")
         return None 
@@ -1703,6 +1728,10 @@ def report_vep(vep_df,
     Report on the VEP dataframe
     """
     import pandas as pd 
+    # Add extra columns
+    vep_df['protein_sequence_length'] = vep_df['protein_sequence'].map(utils.preprocess_sequence).str.len()
+    vep_df['mutated_sequence_length'] = vep_df['mutated_sequence'].map(utils.preprocess_sequence).str.len()
+
     clinsig_counts = vep_df['clinsig'].value_counts().to_frame(name='clinsig_count')
     seq_check_df = pd.merge(vep_df.groupby(clinsig_col).apply(lambda x: sum(x['protein_sequence_length'] != x['mutated_sequence_length'])).to_frame(name='mismatched_length').reset_index(),
                             vep_df.groupby(clinsig_col).apply(lambda x: sum(x['protein_sequence'] == x['mutated_sequence'])).to_frame(name='identical_sequences').reset_index(),

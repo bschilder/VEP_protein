@@ -56,13 +56,19 @@ def get_id_map(ids,
             if verbose:
                 print(f"Loading ID mapping from: '{save_path}'")
             id_map = pd.read_csv(save_path)
+            cache = None
+        else:
+            id_map = None
+    else:
+        id_map = None
 
     # Get the ID mapping
-    gp = GProfiler(return_dataframe=True)
-    id_map = gp.convert(organism=organism,
-                        query=query,
-                        target_namespace=target_namespace,
-                        **kwargs)
+    if id_map is None:
+        gp = GProfiler(return_dataframe=True)
+        id_map = gp.convert(organism=organism,
+                            query=query,
+                            target_namespace=target_namespace,
+                            **kwargs)
     # Save the ID mapping
     if cache is not None:
         os.makedirs(cache, exist_ok=True)
@@ -218,9 +224,11 @@ def map_and_filter(df1,
     
     # Get the first occurence of each experiment_id (to avoid artifacts of ID mapping)
     if rows_per_id is not None:
-        print("df1: Keeping only the first",rows_per_id[0],"row(s) per ID.")
-        id_map1 = id_map1.groupby([input_col1]).head(rows_per_id[0])
-        print("df2: Keeping only the first",rows_per_id[1],"row(s) per ID.")
-        id_map2 = id_map2.groupby([input_col2]).head(rows_per_id[1])
+        if rows_per_id[0] is not None:
+            print("df1: Keeping only the first",rows_per_id[0],"row(s) per ID.")
+            id_map1 = id_map1.groupby([input_col1]).head(rows_per_id[0])
+        if rows_per_id[1] is not None:
+            print("df2: Keeping only the first",rows_per_id[1],"row(s) per ID.")
+            id_map2 = id_map2.groupby([input_col2]).head(rows_per_id[1])
 
     return id_map1, id_map2

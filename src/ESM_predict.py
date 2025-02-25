@@ -12,42 +12,13 @@ import torch
 
 from esm import Alphabet, FastaBatchedDataset, ProteinBertModel, pretrained, MSATransformer
 import pandas as pd
-from tqdm import tqdm
+from tqdm.auto import tqdm
 from Bio import SeqIO
 import itertools
-from typing import List, Tuple
-import numpy as np
+from typing import List, Tuple 
 import os
 
-from src.utils import query_msa, as_msa, is_msa
-
-def to_stop(sequence,
-            stop_str='*'):
-    return sequence if sequence.find(stop_str)==-1 else sequence[:sequence.find(stop_str)]
-
-def _get_sequence(sequence,
-                  i = -1):
-    from copy import deepcopy
-    if is_msa(sequence):
-        sequence = str(deepcopy(sequence[i].seq))
-    return sequence
-
-def preprocess_sequence(sequence: str,
-                        strip: list = ['*'],
-                        replace: list = ['.', '-'],
-                        truncate: bool = True,
-                        i: int = -1) -> str:
-    
-    processed = sequence
-    processed = _get_sequence(processed, i)
-    for s in strip:
-        processed = processed.strip(s)
-    for r in replace:
-        processed = processed.replace(r, '')
-    # Truncate protein if "*" is in the sequence
-    if truncate:
-        processed = to_stop(processed)
-    return processed
+import src.biopython as bp
 
 def remove_insertions(sequence: str) -> str:
     """ Removes any insertions into the sequence. Needed to load aligned sequences in an MSA. """
@@ -65,7 +36,6 @@ def read_msa(filename: str, nseq: int) -> List[Tuple[str, str]]:
     
     The input file must be in a3m format (although we use the SeqIO fasta parser)
     for remove_insertions to work properly."""
-    import os
     if not os.path.exists(filename):
         raise FileNotFoundError(f"MSA file not found: {filename}")
     msa = [
@@ -156,23 +126,39 @@ def check_sequence(sequence,
                    expected,
                    type="wildtype",
                    invert=False,
-                   is_ref=True):
+                   is_ref=True,
+                   verbose=True,
+                   error=True):
     
-    if is_msa(sequence):
+    if bp.is_msa(sequence):
         query = 0 if type == "wildtype" else 1
-        subseq = query_msa(sequence, 
-                           pos=idx+1, 
-                           ref=0, 
-                           query=query,
-                           join_str="")
+        subseq = bp.query_msa(sequence, 
+                                pos=idx+1, 
+                                ref=0, 
+                                query=query,
+                                join_str="",
+                                error=error)
         if invert:
             if subseq == expected:
-                print(f"Warning: The listed {type} is already present in the provided sequence: {subseq} == {expected} in {sequence}")
+                if verbose:
+                    print(f"Warning: The listed {type} is already present in the provided sequence: {subseq} == {expected} in {sequence}")
         else:
-            assert subseq == expected, f"The listed {type} does not match the provided sequence: {subseq} != {expected} in {sequence}"
+            txt = f"The listed {type} does not match the provided sequence: {subseq} != {expected} in {sequence}"
+            if error:
+                assert subseq == expected, txt
+            else:
+                if subseq != expected:
+                    if verbose:
+                        print(txt)
     else:
+        txt = f"The listed {type} does not match the provided sequence: {sequence[idx]} != {expected} in {sequence}"
         if is_ref:
-            assert sequence[idx] == expected, f"The listed {type} does not match the provided sequence: {sequence[idx]} != {expected} in {sequence}"
+            if error:
+                assert sequence[idx] == expected, txt
+            else:
+                if sequence[idx] != expected:
+                    print(txt) 
+
 
 def _parse_mutation_row(mutation_row,
                         offset_idx):
@@ -187,22 +173,45 @@ def _parse_mutation_row(mutation_row,
     assert isinstance(mt, str)
     return wt, idx, mt
 
-def label_row(mutation_row, 
+def _check_ref_sequence(row,
+                        sequence,
+                        error=True):
+    if 'protein_sequence' in row.index:
+        ref_sequence1 = bp.preprocess_sequence(row['protein_sequence'])
+        ref_sequence2 = bp.preprocess_sequence(bp.get_sequence(sequence, i=0))
+        if error:
+            assert ref_sequence1 == ref_sequence2, f"The protein sequence in the mutation row is not the same as the reference sequence in the MSA:\nMUT> {ref_sequence1}\nMSA> {ref_sequence2}"
+        else:
+            if ref_sequence1 != ref_sequence2:
+                print(f"Warning: The protein sequence in the mutation row is not the same as the reference sequence in the MSA:\nMUT> {ref_sequence1}\nMSA> {ref_sequence2}")
+
+def label_row(row,
+              mutation_col,
               sequence, 
               token_probs, 
               alphabet, 
               offset_idx,
               is_ref):
     
+    # Check that the protein sequence in the mutation row is the same as the sref equence in MSA
+    _check_ref_sequence(row=row,
+                        sequence=sequence,
+                        error=False)
+
+    mutation_row = row[mutation_col]
     # parses "G195S" into wt="G", idx=195, mt="S"
     wt, idx, mt = _parse_mutation_row(mutation_row, offset_idx)
 
     # Check the wildtype sequence
-    check_sequence(sequence=sequence, 
-                   idx=idx, 
-                   expected=wt, 
-                   type="wildtype", 
-                   is_ref=is_ref)
+    try:
+        check_sequence(sequence=sequence, 
+                       idx=idx, 
+                       expected=wt, 
+                       type="wildtype", 
+                       is_ref=is_ref)
+    except AssertionError as e:
+        print(e)
+        return None
 
     wt_encoded, mt_encoded = alphabet.get_idx(wt), alphabet.get_idx(mt)
 
@@ -230,11 +239,11 @@ def mutate_sequence(mutation_row,
                    is_ref=is_ref)
 
     # Mutate the sequence
-    sequence_str = _get_sequence(sequence)
+    sequence_str = bp.get_sequence(sequence)
     sequence_mut = sequence_str[:idx] + mt + sequence_str[(idx + 1) :]
-    if is_msa(sequence):
-        sequence_mut = as_msa([sequence[0].seq,
-                               sequence_str])
+    if bp.is_msa(sequence):
+        sequence_mut = bp.as_msa([sequence[0].seq,
+                                  sequence_str])
         
     # Check the mutant sequence
     check_sequence(sequence=sequence_mut, 
@@ -246,16 +255,23 @@ def mutate_sequence(mutation_row,
 
     return wt, idx, mt, sequence_mut
     
-def compute_pppl(mutation_row, 
+def compute_pppl(row,
+                 mutation_col,
                  sequence, 
                  model, 
                  alphabet, 
                  offset_idx, 
                  is_ref):
-
+    
+    # Check that the protein sequence in the mutation row is the same as the sref equence in MSA
+    _check_ref_sequence(row=row,
+                        sequence=sequence,
+                        error=False)
+    
+    mutation_row = row[mutation_col]
     wt, idx, mt, sequence = mutate_sequence(mutation_row, sequence, offset_idx, is_ref)
  
-    sequence_str = preprocess_sequence(sequence)
+    sequence_str = bp.preprocess_sequence(sequence)
     # encode the sequence
     data = [
         ("protein1", sequence_str),
@@ -377,7 +393,7 @@ def main(
 
             df[model_loc] = df.apply(
                 lambda row: label_row(
-                    row[mutation_col], sequence, token_probs, alphabet, offset_idx
+                    row, mutation_col, sequence, token_probs, alphabet, offset_idx
                 ),
                 axis=1,
             )
@@ -385,7 +401,7 @@ def main(
         ## Non-MSA models
         else:
             data = [
-                ("protein1", preprocess_sequence(sequence)),
+                ("protein1", bp.preprocess_sequence(sequence)),
             ]
             (batch_labels, 
              batch_strs, 
@@ -401,7 +417,8 @@ def main(
                 tqdm.pandas(desc=f"Computing 'wt-marginals' for {model_loc}")
                 df[model_loc] = df.progress_apply(
                     lambda row: label_row(
-                        row[mutation_col],
+                        row, 
+                        mutation_col,
                         sequence,
                         token_probs,
                         alphabet,
@@ -426,7 +443,8 @@ def main(
 
                 df[model_loc] = df.apply(
                     lambda row: label_row(
-                        row[mutation_col],
+                        row,
+                        mutation_col,
                         sequence,
                         token_probs,
                         alphabet,
@@ -440,7 +458,13 @@ def main(
                 tqdm.pandas(desc=f"Computing 'pseudo-ppl' for {model_loc}")
                 df[model_location] = df.progress_apply(
                     lambda row: compute_pppl(
-                        row[mutation_col], sequence, model, alphabet, offset_idx, is_ref
+                        row,
+                        mutation_col,
+                        sequence,
+                        model,
+                        alphabet,
+                        offset_idx,
+                        is_ref,
                     ),
                     axis=1,
                 )
