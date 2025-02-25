@@ -961,10 +961,10 @@ def add_haplotype_freqs(df: pd.DataFrame,
                     total=len(populations),
                     leave=True):
             df[freq_cols[i]] = df.apply(
-                lambda row: pop_freqs[row['tx_id']][row[haplotype_col]][pop] 
-                    if row['tx_id'] in pop_freqs 
-                    and row[haplotype_col] in pop_freqs[row['tx_id']] 
-                    and pop in pop_freqs[row['tx_id']][row[haplotype_col]] 
+                lambda row: pop_freqs[row[tx_id_col]][row[haplotype_col]][pop] 
+                    if row[tx_id_col] in pop_freqs 
+                    and row[haplotype_col] in pop_freqs[row[tx_id_col]] 
+                    and pop in pop_freqs[row[tx_id_col]][row[haplotype_col]] 
                     else None,
                 axis=1
             )

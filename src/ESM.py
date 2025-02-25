@@ -4,6 +4,7 @@ try:
     import src.config as config
     import src.proteingym as pg
     import src.gprofiler as gp
+    import src.biopython as bp
 except:
     print("Could not import utils")
 
@@ -1365,7 +1366,9 @@ def batches_to_df(batches):
 
 def plot_vep_violin(vep_df, 
                     model_location = None, 
-                    clinsig_col='clinsig',               
+                    scoring_strategy = None,
+                    clinsig_col='clinsig',  
+                    max_proteins = None,             
                     bar_width = 0.5,
                     violin_alpha = 0.25,
                     point_size = 4,
@@ -1383,6 +1386,13 @@ def plot_vep_violin(vep_df,
     import matplotlib.pyplot as plt
     import numpy as np
     from scipy import stats  
+
+    if scoring_strategy is not None:
+        scoring_strategy = utils.as_list(scoring_strategy)
+        vep_df = vep_df[vep_df['scoring_strategy'].isin(scoring_strategy)]
+
+    if max_proteins is not None:
+        vep_df = vep_df.loc[vep_df['protein'].isin(vep_df['protein'].unique()[:max_proteins])]
 
     if model_location is None:
         if "model_location" in vep_df.columns:
@@ -1556,9 +1566,12 @@ def plot_vep_violin(vep_df,
         n_haplotypes = protein_data['haplotype'].nunique()
         n_mutants = protein_data.groupby(clinsig_col)['mutant'].nunique()
         mutant_counts = [f"{cat}: {n_mutants[cat]}" for cat in categories]
+
+        # Get summary of unique mutants per clinical significance
+        mutant_summary_str = _summarise_mutants(vep_df, clinsig_col)
+        final_label = _summarise_title(vep_df)  
         
-        ax.set_title(f'Protein: {protein} / {protein_data["ENSP_haplosaurus"].iloc[0]} / {protein_data["HGNC"].iloc[0]}\n'
-                     f'Haplotypes: {n_haplotypes}, Variants ({", ".join(mutant_counts)})', 
+        ax.set_title(f'{final_label}\n{mutant_summary_str}', 
                      y=title_y)
         ax.set_ylabel(f'{", ".join(vep_df["scoring_strategy"].unique())}')
         ax.set_xlabel('Clinical classification')
@@ -1576,9 +1589,23 @@ def _summarise_mutants(vep_df,
     mutant_summary_str = ', '.join([f"{k}: {v}" for k,v in mutant_summary.items()]) 
     return mutant_summary_str
 
-def plot_vep_density(vep_df):
-    np_id='NP_000509.1'
+def _summarise_title(vep_df,
+                     label_cols = ['protein', 'ENST', 'HGNC', 'haplotype']):
+    
+    labels = {}
+    for col in label_cols:
+        if col not in vep_df.columns:
+            continue
+        if vep_df[col].nunique() > 1:
+            labels[col] = f"{col}: {vep_df[col].nunique()}"
+        else:
+            labels[col] = f"{col}: {vep_df[col].iloc[0]}"
+    return ', '.join([labels[col] for col in label_cols])
 
+
+def plot_vep_density(vep_df, 
+                      alpha=.7,
+                     **kwargs): 
     import seaborn as sns
     # Get filtered data
     vep_df = vep_df.copy().sort_values(['clinsig']) 
@@ -1598,15 +1625,15 @@ def plot_vep_density(vep_df):
                     hue=clinsig_col,
                     fill=True,
                     palette=utils.get_clinsig_palette(), 
-                    alpha=.75,
-                    legend=True)
+                    alpha=alpha,
+                    legend=True,
+                    **kwargs)
     
     # Get summary of unique mutants per clinical significance
     mutant_summary_str = _summarise_mutants(vep_df, clinsig_col)
-    
-    # Add title with protein, haplotype and mutant counts
-    n_haplotypes = vep_df['haplotype'].nunique()
-    g.fig.suptitle(f'Protein: {np_id} / {vep_df["ENST"].iloc[0]} / {vep_df["HGNC"].iloc[0]}, Haplotypes: {n_haplotypes},\n{mutant_summary_str}', y=1.1)
+    final_label = _summarise_title(vep_df) 
+    # Add title with protein, haplotype and mutant counts 
+    g.fig.suptitle(f'{final_label}\n{mutant_summary_str}', y=1.1)
 
 
     # Add vertical lines for REF haplotypes
@@ -1729,8 +1756,8 @@ def report_vep(vep_df,
     """
     import pandas as pd 
     # Add extra columns
-    vep_df['protein_sequence_length'] = vep_df['protein_sequence'].map(utils.preprocess_sequence).str.len()
-    vep_df['mutated_sequence_length'] = vep_df['mutated_sequence'].map(utils.preprocess_sequence).str.len()
+    vep_df['protein_sequence_length'] = vep_df['protein_sequence'].map(bp.preprocess_sequence).str.len()
+    vep_df['mutated_sequence_length'] = vep_df['mutated_sequence'].map(bp.preprocess_sequence).str.len()
 
     clinsig_counts = vep_df['clinsig'].value_counts().to_frame(name='clinsig_count')
     seq_check_df = pd.merge(vep_df.groupby(clinsig_col).apply(lambda x: sum(x['protein_sequence_length'] != x['mutated_sequence_length'])).to_frame(name='mismatched_length').reset_index(),
