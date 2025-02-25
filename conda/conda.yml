@@ -23,11 +23,12 @@ dependencies:
     - scikit-learn
     - biopython
     - gprofiler
-    - pyensembl
-    - ensembl-vep
+    - pyensembl 
     - biotite
     - owlready2
+    - pooch
     - pip
     - pip:
         - fair-esm[esmfold]
         - logomaker
+        - ensembl-rest

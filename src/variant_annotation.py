@@ -1,4 +1,9 @@
-from src.utils import as_list, save_vcf, sort_variants
+import os
+import pandas as pd
+from tqdm.auto import tqdm
+
+import src.utils as utils  
+import src.ontologies as on
 
 def get_myvariant_db():
     import myvariant
@@ -37,7 +42,6 @@ def embl_get_variants(uniprot_id,
         sys.exit()
     responseBody = r.json()
     if as_df:
-        import pandas as pd
         df1 = pd.DataFrame({k: [v] for k, v in responseBody[0].items() if k != 'features'})
         df2 = pd.DataFrame(responseBody[0]['features'])
         df1 = pd.concat([df1] *  len(df2), ignore_index=True)
@@ -65,7 +69,7 @@ def filter_variants(recs,
                     verbose=True):
     recs_filtered = []
     if regions is not None:
-        regions = as_list(regions)
+        regions = utils.as_list(regions)
         for region in regions:
             chrom = region.split(":")[0]
             start = int(region.split(":")[1].split("-")[0])
@@ -107,11 +111,9 @@ def get_clinvar_variants(db,
     criteria provided, single submitter (1 star): The classification from all submitted records with this review status is used to calculate the aggregate classification on the VCV and RCV records.
     For example, the classification on a single SCV record with review status "criteria provided, single submitter" supersedes classifications on multiple SCV records with lower review statuses.
     no assertion criteria provided (0 stars): The classification from all submitted records with this review status is used to calculate the aggregate classification on the VCV and RCV records, if there is no record with higher precedence.
-    """
-
-    from tqdm.auto import tqdm 
+    """ 
+    
     import pysam
-    import os
     vcf_in = None
     if save_path is not None:
         if os.path.exists(save_path) and not force:
@@ -136,7 +138,7 @@ def get_clinvar_variants(db,
            ) 
     
     recs_all = []
-    transcript_ids = as_list(transcript_ids)
+    transcript_ids = utils.as_list(transcript_ids)
     variant_counts = {} 
     transcripts_to_variants = {}
 
@@ -182,9 +184,9 @@ def get_clinvar_variants(db,
         recs_all += recs
     
     # Sort variants so they can be indexed
-    recs_all = sort_variants(recs_all)
+    recs_all = utils.sort_variants(recs_all)
     # Write the filtered variants to the output VCF
-    save_vcf(recs_all, save_path, header) 
+    utils.save_vcf(recs_all, save_path, header) 
     if verbose:
         print(f"Found {len(recs_all)} clinvar variants")
     # Return the results
@@ -201,7 +203,8 @@ def get_clinvar_variants_pathogenic(db,
                                     max_variants_per_transcript=1,
                                     **kwargs):
    if mc_descendants is not None:
-       descendants = get_sequence_ontology_descendants(mc_descendants, as_str=True)
+       descendants = on.get_descendants(mc_descendants, 
+                                        return_as='id|label')
        filters['MC'] = tuple(descendants)
    recs, variant_counts, transcripts_to_variants = get_clinvar_variants(
         filters = filters,
@@ -250,7 +253,6 @@ def select_variants(recs,
     """
     Select variants for a given transcript
     """
-    from tqdm.auto import tqdm
     transcripts_selected = {k:v for k,v in variant_counts.items() if v > min_variants_per_transcript} 
     if verbose:
         print(f"Selected {len(transcripts_selected)} transcripts.")
