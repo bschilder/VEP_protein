@@ -1379,7 +1379,8 @@ def plot_vep_violin(vep_df,
                     connection_linewidth = 1,
                     title_y = 1,
                     freq_filters = {'freq_1000GENOMES:phase_3:ALL':None},
-                    add_side_labels = False
+                    add_side_labels = False,
+                    verbose=True
                     ):
     
     import seaborn as sns
@@ -1387,21 +1388,18 @@ def plot_vep_violin(vep_df,
     import numpy as np
     from scipy import stats  
 
+    vep_df = vep_df.copy()
+
     if scoring_strategy is not None:
         scoring_strategy = utils.as_list(scoring_strategy)
         vep_df = vep_df[vep_df['scoring_strategy'].isin(scoring_strategy)]
 
     if max_proteins is not None:
         vep_df = vep_df.loc[vep_df['protein'].isin(vep_df['protein'].unique()[:max_proteins])]
-
+    
     if model_location is None:
-        if "model_location" in vep_df.columns:
-            model_location = vep_df['model_location'].unique()[0]
-            print(f"Using model_location: {model_location}")
-        else:
-            raise ValueError("model_location is not specified")
-            
-    vep_df = vep_df.copy()
+        model_location =  _get_model_location(vep_df)
+    vep_df = _filter_vep_df(vep_df, verbose=verbose) 
     
     # Remove NA rows from model_location column
     nrows_before = len(vep_df)
@@ -1602,15 +1600,39 @@ def _summarise_title(vep_df,
             labels[col] = f"{col}: {vep_df[col].iloc[0]}"
     return ', '.join([labels[col] for col in label_cols])
 
+def _get_model_location(vep_df):
+    if 'model_location' in vep_df.columns:
+        return vep_df['model_location'].unique()[0]
+    else:
+        return None
+    
+def _filter_vep_df(vep_df,
+                   model_location=None,
+                   verbose=True):
+    """
+    Filter the VEP dataframe to ensure that the model location is not None
+    """
+    rows_before = len(vep_df)
+    if model_location is None:
+        model_location =  _get_model_location(vep_df)
+    vep_df = vep_df.loc[vep_df[model_location].notna()]
+    rows_after = len(vep_df)
+    if verbose:
+        print(f"Filtered {((rows_before-rows_after)/rows_before)*100:.1f}% of rows with model location {model_location}")
+    return vep_df
+
 
 def plot_vep_density(vep_df, 
-                      alpha=.7,
+                     clinsig_col = 'clinsig',
+                     alpha=.7,
+                     verbose=True,
                      **kwargs): 
     import seaborn as sns
     # Get filtered data
     vep_df = vep_df.copy().sort_values(['clinsig']) 
-    clinsig_col = 'clinsig'
 
+    model_location =  _get_model_location(vep_df)
+    vep_df = _filter_vep_df(vep_df, verbose=verbose) 
     # Create facet grid
     g = sns.FacetGrid(data=vep_df, 
                     col='scoring_strategy',
@@ -1621,7 +1643,7 @@ def plot_vep_density(vep_df,
 
     # Plot KDE
     g.map_dataframe(sns.kdeplot, 
-                    x='esm1v_t33_650M_UR90S_1',
+                    x=model_location,
                     hue=clinsig_col,
                     fill=True,
                     palette=utils.get_clinsig_palette(), 
