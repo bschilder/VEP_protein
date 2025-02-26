@@ -6,52 +6,20 @@ from tqdm.auto import tqdm
 import ensembl_rest
 
 import src.utils as utils
-from src.config import PARAMS_VEP, PARAMS_HAPLOTYPES, PARAMS_VARIATION, DATA_DIR
-from src.onekg import get_sample_metadata
-from src.ontologies import get_sequence_ontology, get_descendants
+import src.config as config
 import src.biopython as bp
+import src.ontologies as on
+import src.ensembl_rest as er
+import src.onekg as onekg
+DIR_DICT = er.DIR_DICT
+DIR_DICT.update({
+    "variants": os.path.join(config.DATA_DIR, "haplosaurus","variants",""),
+    "variant_sets": os.path.join(config.DATA_DIR, "haplosaurus","variant_sets","")
+})
 
-
-
-DIR_DICT = {
-    "haplosaurus": os.path.join(DATA_DIR, "haplosaurus",""),
-    "vep": os.path.join(DATA_DIR, "haplosaurus","vep",""),
-    "haplotypes": os.path.join(DATA_DIR, "haplosaurus","haplotypes",""),
-    "variants": os.path.join(DATA_DIR, "haplosaurus","variants",""),
-    "variant_sets": os.path.join(DATA_DIR, "haplosaurus","variant_sets",""),
-    "variation": os.path.join(DATA_DIR, "haplosaurus","variation",""),
-}
- 
-def get_ensembl_client(client: Optional[ensembl_rest.EnsemblClient] = None,
-                       force: bool = False) -> ensembl_rest.EnsemblClient:
-    """Get an Ensembl REST API client.
-
-    Creates a new Ensembl REST API client if one is not provided or if force=True.
-    See:
-        https://ensemblrest.readthedocs.io/en/latest/
-
-    Args:
-        client (EnsemblClient, optional): Existing Ensembl client to use. Defaults to None.
-        force (bool, optional): Whether to force creation of new client even if one is provided. 
-            Defaults to False.
-
-    Returns:
-        EnsemblClient: An Ensembl REST API client instance, either the provided one or a new one.
-
-    Example:
-        >>> client = get_ensembl_client()
-        >>> # Use existing client
-        >>> same_client = get_ensembl_client(client=client)
-        >>> # Force new client
-        >>> new_client = get_ensembl_client(client=client, force=True)
-    """
-    if client is None or force:
-        client = ensembl_rest.EnsemblClient()
-    return client
-
-def get_ensembl_figshare(fname: Union[str, List[str]] = ["haplotype_analysis_database.zip",
-                                                         "SupplementaryData1.tar.gz",
-                                                         "SupplementaryData2-all_protein_haplotypes_GRCh37.fa.gz"
+def get_figshare(fname: Union[str, List[str]] = ["haplotype_analysis_database.zip",
+                                                "SupplementaryData1.tar.gz",
+                                                "SupplementaryData2-all_protein_haplotypes_GRCh37.fa.gz"
                                 ],
                             **kwargs):
     """
@@ -152,46 +120,6 @@ def filter_variants(variants_tx: List[Dict],
         print(f"{len(variants_tx_filtered)}/{len(variants_tx)} variants retained")
     return variants_tx_filtered
 
-def map_tx2prot_ensembl(tx_df: pd.DataFrame, 
-                        batch_size: int = 500):
-    """
-    Map Ensembl Transcript ID to Ensembl Protein ID
-
-    Args:
-        tx_df (pd.DataFrame): A pandas DataFrame containing the transcript IDs.
-        batch_size (int): The batch size for the mapping.
-
-    Returns:
-        dict: A dictionary mapping protein IDs to transcript IDs.
-    """
-    import ensembl_rest
-    client = ensembl_rest.EnsemblClient()
-    # Map Protein ID to Transcript ID
-    from tqdm.auto import tqdm 
-    batches = [tx_df['Ensembl Protein ID'].tolist()[i:i+batch_size] for i in range(0, len(tx_df['Ensembl Protein ID'].tolist()), batch_size)]
-    prot_to_tx = {}
-    for batch in tqdm(batches):
-        prot_to_tx.update(client.lookup_post(params={'ids':batch})) 
-    return prot_to_tx
-
-
-def _params_to_filename(params: Optional[Dict],
-                        suffix: str = '.json.gz') -> str:
-    """
-    Convert a dictionary of parameters to a filename suffix.
-
-    Args:
-        params (Optional[Dict]): A dictionary of parameters.
-        suffix (str): The suffix for the filename.
-
-    Returns:
-        str: The filename suffix.
-    """
-    if params is None:
-        return 'file' + suffix
-    return ";".join([f"{k}:{v}" for k,v in sorted(params.items())]) + suffix
-
-
 def get_variants(tx_id: str,
                  save_dir: Optional[Path] = Path(DIR_DICT["variants"]),
                  client: Optional[ensembl_rest.EnsemblClient] = None,
@@ -217,13 +145,11 @@ def get_variants(tx_id: str,
         force (bool): Whether to force the retrieval of the variants.
         error (bool): Whether to raise an error if the variants are not found.
         verbose (bool): Whether to print verbose output.
-    """
-    
-    
+    """ 
     variants_tx = None
     # Check if variants are already cached 
     if save_dir is not None:
-        filename = _params_to_filename(params_query)
+        filename = er._params_to_filename(params_query)
         # Customize save subdir based on params_query
         save_path = os.path.join(save_dir,tx_id,filename)
         variants_tx = utils.load_json(save_path, 
@@ -231,7 +157,7 @@ def get_variants(tx_id: str,
                                       verbose=verbose>1)
         variants_tx = list(variants_tx.values())[0] if isinstance(variants_tx, dict) else variants_tx
     if variants_tx is None:
-        client = get_ensembl_client(client=client)
+        client = er.get_ensembl_client(client=client)
         try:
             variants_tx = client.overlap_id(id=tx_id, 
                                             params=params_query
@@ -259,50 +185,6 @@ def get_variants(tx_id: str,
         print(len(variants_tx),"variants returned")
     return variants_tx
 
-def get_variation(variant_id: str,
-                  save_dir: Optional[Path] = Path(DIR_DICT["variation"]),
-                  species: str = 'homo_sapiens',
-                  params: Dict = PARAMS_VARIATION,
-                  verbose: bool = True,
-                  client: Optional[ensembl_rest.EnsemblClient] = None,
-                  force: bool = False,
-                  error: bool = True):
-    """
-    Uses a variant identifier (e.g. rsID) to return the variation features
-      including optional genotype, phenotype and population data
-    See the following for more information:
-        https://rest.ensembl.org/documentation/info/variation_id
-
-    Args:
-        variant_id (str): The variant identifier.
-        save_dir (Optional[Path]): The directory to save the variation.
-    """
-    if save_dir is not None:
-        import os
-        filename = _params_to_filename(params)
-        save_path = os.path.join(save_dir,variant_id,filename)
-        variation = utils.load_json(save_path, 
-                                    force=force, 
-                                    verbose=verbose>1)
-        if variation is not None:
-            return variation
-    client = get_ensembl_client(client=client)
-    try:
-        variation = client.variation_id(id=variant_id, 
-                                        species=species,
-                                        params=params
-                                        )
-        utils.save_json(obj=variation,
-                        save_path=save_path,
-                        verbose=verbose>1)
-    except Exception as e:
-        if error:
-            raise e
-        else:
-            if verbose:
-                print(f"Error getting info for {variant_id}: {e}")
-            variation = None
-    return variation
 
 def variation_to_dfs(variation: Dict,
                     fields: List[str] = ['populations', # population-level variant frequencies
@@ -329,7 +211,7 @@ def _check_vep_i(var: List[Dict],
                 desc_filter: str,
                 verbose: bool,
                 exact: bool = True,
-                params_vep: Dict = PARAMS_VEP):
+                params_vep: Dict = config.PARAMS_VEP):
     """
     Check VEP for a list of variants.
 
@@ -337,7 +219,7 @@ def _check_vep_i(var: List[Dict],
         var (List[Dict]): The list of variants.
         save_dir_vep (Path): The directory to save the VEP results.
     """
-    vep = get_vep(ids=[x['id'] for x in var],
+    vep = er.get_vep(ids=[x['id'] for x in var],
                 save_dir=save_dir_vep,
                 client=client,
                 desc=desc_get,
@@ -345,7 +227,7 @@ def _check_vep_i(var: List[Dict],
                 verbose=verbose>1,
                 params=params_vep
                 )
-    vep = filter_vep(vep,
+    vep = er.filter_vep(vep,
                     consequence_terms=consequence_type,
                     exact=exact,
                     desc=desc_filter,
@@ -360,7 +242,7 @@ def _check_vep(varp: List[Dict],
                 client: ensembl_rest.EnsemblClient,
                 consequence_type: List[str],
                 verbose: bool,
-                params_vep: Dict = PARAMS_VEP):
+                params_vep: Dict = config.PARAMS_VEP):
     """
     Check VEP for a list of variants.
 
@@ -392,8 +274,6 @@ def _check_vep(varp: List[Dict],
                             params_vep=params_vep)
     return varp_vep, varb_vep
 
-
-
 def get_variant_sets(tx_ids: List[str],
                      so_term: str = 'SO:0001583',
                      consequence_type: List[str] = ['missense_variant'],
@@ -403,7 +283,7 @@ def get_variant_sets(tx_ids: List[str],
                      nagative_variant_set: str = '1kg_3',  # '1kg_3_com'
                      check_vep: bool = True,
                      add_vep: bool = True,
-                     params_vep: Dict = PARAMS_VEP,
+                     params_vep: Dict = config.PARAMS_VEP,
                      save_dir_variants: Path = Path(DIR_DICT["variants"]),
                      save_dir_variant_sets: Path = Path(DIR_DICT["variant_sets"]),
                      save_dir_vep: Path = Path(DIR_DICT["vep"]),
@@ -424,18 +304,18 @@ def get_variant_sets(tx_ids: List[str],
     # Gather pathogenic/benign variants
     variant_sets = {}
     consequence_type = utils.as_list(consequence_type)
-    client = get_ensembl_client(client=client)
+    client = er.get_ensembl_client(client=client)
     if not check_vep:
         add_vep = False
     # Include descendants of consequence type
     consequence_type_path = '.'.join(consequence_type)
     if include_descendants:
-        so = get_sequence_ontology()
-        consequence_type = get_descendants(label_or_id=consequence_type,
+        so = on.get_sequence_ontology()
+        consequence_type = on.get_descendants(label_or_id=consequence_type,
                                             ont=so, 
                                             return_as="label",
                                             verbose=verbose)
-        so_term = get_descendants(label_or_id=so_term,
+        so_term = on.get_descendants(label_or_id=so_term,
                                   ont=so,
                                   return_as="id",
                                   verbose=verbose) 
@@ -567,119 +447,6 @@ def get_variant_sets(tx_ids: List[str],
                 continue
     return variant_sets
     
-def filter_vep(variant_vep: Dict[str, List[Dict]],
-               consequence_terms: Optional[List[str]] = None, 
-               exact: bool = False,
-               desc: str = "Filtering variants VEP",
-               leave: bool = False,
-               verbose: bool = True):
-    """
-    Filter VEP results.
-
-    Args:
-        variant_vep (Dict[str, List[Dict]]): The VEP results.
-        consequence_terms (Optional[List[str]]): The consequence terms to filter on.
-        exact (bool): Whether to filter on exact matches.
-        desc (str): The description of the filter.
-    """
-    if consequence_terms is None:
-        return variant_vep
-    
-    consequence_terms = utils.as_list(consequence_terms)
-    variant_vep_filtered = {}
-    for id, variant_vep_id in tqdm(variant_vep.items(),
-                   desc=desc,
-                   leave=leave): 
-        cterms = set()
-        for i in variant_vep_id:
-            if 'transcript_consequences' not in i.keys():
-                continue
-            cterms.update([consequence_terms for tc in i['transcript_consequences'] for consequence_terms in tc['consequence_terms']])
-        if exact:
-            if set(cterms) == set(consequence_terms):
-                variant_vep_filtered[id] = variant_vep_id
-        else:
-            if len(set(cterms) & set(consequence_terms)) > 0:
-                variant_vep_filtered[id] = variant_vep_id
-    if verbose:
-        print(f"{len(variant_vep_filtered)}/{len(variant_vep)} variants retained")
-    if len(variant_vep_filtered)==0:
-        return None
-    return variant_vep_filtered
-
-def get_vep(ids: Union[str, List[str]],
-            species: str = 'homo_sapiens',
-            params: Dict = PARAMS_VEP,
-            save_dir: Path = Path(DIR_DICT["vep"]),
-            client: Optional[ensembl_rest.EnsemblClient] = None,
-            desc: str = "Getting variant info",
-            leave: bool = True,
-            force: bool = False,
-            verbose: bool = True,
-            cache_only: bool = False) -> Dict[str, List[Dict]]:
-    """Get Variant Effect Predictor (VEP) results from Ensembl REST API.
-
-    Retrieves VEP annotations for a list of variant IDs, with caching to avoid repeated API calls.
-
-    Args:
-        ids (str or list): Variant identifier(s) to look up
-        species (str, optional): Species name for Ensembl API. Defaults to 'homo_sapiens'.
-        params (dict, optional): Parameters for VEP API request. Defaults to PARAMS_VEP.
-        save_dir (Path, optional): Directory to cache VEP results. Defaults to DIR_DICT["vep"].
-        client (EnsemblClient, optional): Ensembl REST API client. If None, will create new client.
-        desc (str, optional): Progress bar description. Defaults to "Getting variant info".
-        leave (bool, optional): Whether to leave progress bar. Defaults to True.
-        force (bool, optional): Whether to force API request even if cached. Defaults to False.
-        verbose (bool, optional): Whether to print progress messages. Defaults to True.
-        cache_only (bool, optional): Whether to only return cached results. Defaults to False.
-
-    Returns:
-        dict: Dictionary mapping variant IDs to their VEP results from Ensembl.
-            Each value contains the variant's predicted effects and consequences.
-
-    Example:
-        >>> vep_results = get_vep('rs699')
-        >>> print(vep_results['rs699'][0]['most_severe_consequence'])
-        'missense_variant'
-    """
-
-    if cache_only:
-        force = False
-
-    client = get_ensembl_client(client=client)
-    variant_vep = {}
-    ids = utils.as_list(ids)
-
-    for id in tqdm(ids,
-                   desc=desc,
-                   leave=leave):
-        # Check if variant info is already cached
-        save_path = f"{save_dir}/{id}.json.gz"
-        variant_vep_id = utils.load_json(save_path, 
-                                         force=force, 
-                                         verbose=verbose>1)
-        if variant_vep_id is not None:
-            variant_vep[id] = list(variant_vep_id.values())[0]
-            continue
-            
-        if cache_only:
-            continue
-            
-        # Get variant info from Ensembl VEP
-        variant_vep_id = client.vep_id_get(
-            species=species,
-            id=id, 
-            params=params
-            )
-            
-        # Save variant info to cache
-        utils.save_json(obj={id:variant_vep_id},
-                        save_path=save_path,
-                        verbose=verbose>1)
-                  
-        variant_vep[id] = variant_vep_id
-        
-    return variant_vep
 
 def get_variant_ids(variant_sets: Union[List[Dict], Dict[str, Dict[str, List[Dict]]]]):
     """Extract variant IDs from variant sets data structure.
@@ -718,29 +485,33 @@ def get_variant_ids(variant_sets: Union[List[Dict], Dict[str, Dict[str, List[Dic
                 ids[tx_id][k] = [variant['id'] for variant in variant_sets[tx_id][k]]
     return ids
 
-def list_haplotypes(save_dir: Path = Path(DIR_DICT["haplotypes"]),
+def list_haplotypes(cache: Path = Path(DIR_DICT["haplotypes"]),
                     verbose: bool = True):
     import glob
-    files = glob.glob(f"{save_dir}/*.json.gz")
+    files = glob.glob(os.path.join(cache, "*.json.gz"))
     if len(files)==0:
-        raise ValueError(f"No haplotypes found in: '{save_dir}'")
+        raise ValueError(f"No haplotypes found in: '{cache}'")
     else:
         if verbose:
-            print(f"Found {len(files)} haplotypes in: '{save_dir}'")
+            print(f"Found {len(files)} haplotypes in: '{cache}'")
         return [x.split('/')[-1].split('.')[0] for x in files]
     
 def get_haplotypes(tx_ids: Optional[List[str]] = None,
                    max_tx_ids: Optional[int] = None, 
-                   save_dir: Path = Path(DIR_DICT["haplotypes"]),
                    species: str = "homo_sapiens",
-                   params: dict = PARAMS_HAPLOTYPES,
+                   params: dict = config.PARAMS_HAPLOTYPES,
                    use_protein_ids: bool = False,
                    client: Optional[ensembl_rest.EnsemblClient] = None,
                    force: bool = False,
+                   cache: Path = Path(DIR_DICT["haplotypes"]),
                    cache_only: bool = False,
                    error: bool = False,
                    verbose: bool = True) -> dict:
     """Get haplotype information for transcript IDs from Ensembl REST API.
+    For more information, see:
+        Ensembl REST API: https://rest.ensembl.org/documentation/info/transcript_haplotypes_get
+        ensembl-rest module: https://ensemblrest.readthedocs.io/en/latest/#ensembl_rest.EnsemblClient.transcript_haplotypes_get
+        Haplosaurus: https://useast.ensembl.org/info/docs/tools/vep/haplo/index.html
 
     Args:
         tx_ids (list, optional): List of transcript IDs to get haplotypes for. If None, will use all cached haplotypes. Defaults to None.
@@ -751,6 +522,7 @@ def get_haplotypes(tx_ids: Optional[List[str]] = None,
         use_protein_ids (bool, optional): Whether to convert transcript IDs to protein IDs. Defaults to False.
         client (EnsemblClient, optional): Ensembl REST API client. If None, will create new client. Defaults to None.
         force (bool, optional): Whether to force API request even if cached data exists. Defaults to False.
+        cache (Path, optional): Directory to cache haplotype data. Defaults to DIR_DICT["haplotypes"].
         cache_only (bool, optional): Whether to only return cached data without making API requests. Defaults to False.
         error (bool, optional): Whether to raise exceptions on API errors. Defaults to False.
         verbose (bool, optional): Whether to print progress messages. Defaults to True.
@@ -762,51 +534,39 @@ def get_haplotypes(tx_ids: Optional[List[str]] = None,
     Raises:
         Exception: If error=True and API request fails for a transcript.
     """
-    client = get_ensembl_client(client=client)
+    client = er.get_ensembl_client(client=client)
     haplotypes = {}
 
     # Get tx_ids if not provided
     if tx_ids is None:
-        tx_ids = list_haplotypes(save_dir=save_dir,
-                                verbose=verbose)
+        tx_ids = list_haplotypes(cache=cache,
+                                 verbose=verbose)
     if max_tx_ids is not None:
         tx_ids = tx_ids[:max_tx_ids]
 
-    # If cache only, don't search for new tx_ids  
-    if cache_only:
-        force = False
+    # Convert IDs to Ensembl transcript IDs
+    tx_ids = utils.process_ids(ids=tx_ids)
+    # non_enst = [id for id in tx_ids if not id.startswith('ENST')]
+    # if len(non_enst)>0:
+    #     enst_map = er.xref_external(non_enst, 
+    #                                 species=species, 
+    #                                 client=client)
+    #     tx_ids = [enst_map[id]['ENST'] for id in non_enst]
 
-    # Get haplotypes
-    for tx_id in tqdm(tx_ids,
-                    desc="Getting haplotypes"):
-        save_path = f"{save_dir}/{tx_id}.json.gz"
-        hap_tx_id = utils.load_json(save_path,
-                                    force=force,
-                                    verbose=verbose>1)
-        if hap_tx_id is not None:
-            haplotypes[tx_id] = hap_tx_id
-        if cache_only:
-            continue
-        else:
-            try:
-                haplotypes[tx_id] = client.transcript_haplotypes_get(
-                    id=tx_id,
-                    species=species,
-                    params=params
-                    )
-                utils.save_json(obj=haplotypes[tx_id],
-                                 save_path=save_path,
-                                 verbose=verbose>1)
-            except Exception as e:
-                if error:
-                    raise e
-                else:
-                    if verbose:
-                        print(f"Error getting haplotypes for {tx_id}: {e}")
-                    continue
-
+    # Query Ensembl REST API
+    haplotypes = er.transcript_haplotypes_get(ids=tx_ids,
+                                            species=species,
+                                            params=params,
+                                            client=client,
+                                            force=force,
+                                            cache=cache,
+                                            cache_only=cache_only,
+                                            error=error,
+                                            verbose=verbose)
+    # Convert to protein IDs if requested
     if use_protein_ids:
         haplotypes = _as_protein_ids(haplotypes)
+    # Return
     return haplotypes
 
 def _as_protein_ids(haplotypes: Dict[str, Dict]) -> Dict[str, Dict]:
@@ -814,7 +574,6 @@ def _as_protein_ids(haplotypes: Dict[str, Dict]) -> Dict[str, Dict]:
 
 def get_haplotype_seqs(haplotypes: Union[Dict[str, Dict], Dict[str, List[Dict]]],
                        aligned: int = 1,
-                       realigned: bool = False,
                        return_missing: bool = False,
                        use_protein_ids: bool = False,
                        add_haplotype_names: bool = False,
@@ -862,13 +621,22 @@ def get_haplotype_seqs(haplotypes: Union[Dict[str, Dict], Dict[str, List[Dict]]]
                 missing_seqs += [tx_id]
                 continue
                 
+    # Add haplotype names
     if add_haplotype_names:
         haplotype_names = get_haplotype_names(haplotypes) # list of haplotype names
         hap_seqs = {tx_id:list(zip(haplotype_names[tx_id], tx_seqs)) for tx_id,tx_seqs in hap_seqs.items()}
+        if add_haplotype_names>1:
+             hap_seqs = {tx_id:{x[0]:x[1] for x in tx_seqs} for tx_id,tx_seqs in hap_seqs.items()}
+    
+    # Use protein IDs as names
     if use_protein_ids:
         enst_to_ensp = get_haplotype_protein_ids(haplotypes=haplotypes, 
                                                  add_self=True)
         hap_seqs = {enst_to_ensp[k]:v for k,v in hap_seqs.items()}
+    
+       
+    
+    # Return 
     if return_missing:
         return hap_seqs, missing_seqs
     else:
@@ -985,7 +753,7 @@ def add_haplotype_freqs(df: pd.DataFrame,
     if add_top_superpop:
         if 'top_pop' in df.columns:
             if 'top_superpop' not in df.columns or force:
-                pops = get_sample_metadata()
+                pops = onekg.get_sample_metadata()
                 pop_map = dict(zip(pops['Population Code'], pops['Super Population']))
                 print(pop_map)
                 df['top_superpop'] = df['top_pop'].str.replace(f'{cohorts[0]}:', '').str.split('_').str[0].map(pop_map)
@@ -1014,7 +782,6 @@ def get_haplotype_names(haplotypes: Dict[str, Dict]) -> Dict[str, List[str]]:
     """
     if 'protein_haplotypes' in haplotypes.keys():
         return [x['name'].split('_')[0] for x in haplotypes['protein_haplotypes']]
-    from tqdm.auto import tqdm
     hap_names = {}
     for tx_id in tqdm(haplotypes.keys()):
         hap_names[tx_id] = [x['name'].split('_')[0] for x in haplotypes[tx_id]['protein_haplotypes']]
@@ -1071,7 +838,7 @@ def get_haplotype_ref(haplotypes: Union[List[Dict], Dict[str, Dict]],
                                                             leave=False)]
     elif 'protein_haplotypes' in haplotypes.keys():
         hap_ref = [x for x in haplotypes['protein_haplotypes'] if ":REF" in tqdm(x['name'])]
-    else:
+    elif isinstance(haplotypes, dict):
         hap_ref = {}
         for tx_id in tqdm(haplotypes.keys(),
                           desc="Processing transcripts",
@@ -1080,6 +847,8 @@ def get_haplotype_ref(haplotypes: Union[List[Dict], Dict[str, Dict]],
             hap_ref[tx_id] = [x for x in haplotypes[tx_id]['protein_haplotypes'] if ":REF" in x['name']]
             if isinstance(hap_ref[tx_id], list) and len(hap_ref[tx_id])>0:
                 hap_ref[tx_id] = hap_ref[tx_id]
+    else:
+        raise ValueError(f"Invalid haplotype type: {type(haplotypes)}")
     return hap_ref
 
 def to_stop(seq,
@@ -1169,7 +938,7 @@ def add_variant_to_haplotypes(haplotypes: Dict[str, Dict],
                               max_tx_ids: Optional[int] = None,
                               add_variant_info: bool = True,
                               include_all_fields: bool = False,
-                              params_vep: Dict = PARAMS_VEP,
+                              params_vep: Dict = config.PARAMS_VEP,
                               consequence_terms: Dict = {},
                               save_dir_vep: Path = Path(DIR_DICT["vep"]),
                               ref_checks: bool = False,
@@ -1217,7 +986,7 @@ def add_variant_to_haplotypes(haplotypes: Dict[str, Dict],
                 if verbose:
                     print(f"No pathogenic variants found for {tx_id}")
                 continue
-            varp_vep = get_vep(
+            varp_vep = er.get_vep(
                     ids=[x['id'] for x in varp], 
                     params=params_vep,
                     client=client,
@@ -1226,7 +995,7 @@ def add_variant_to_haplotypes(haplotypes: Dict[str, Dict],
                     leave=False,
                     **kwargs
                     ) 
-            varp_vep = filter_vep(
+            varp_vep = er.filter_vep(
                 varp_vep,
                 consequence_terms=consequence_terms,
                 exact=exact['pathogenic'],
@@ -1258,7 +1027,7 @@ def add_variant_to_haplotypes(haplotypes: Dict[str, Dict],
                 if verbose:
                     print(f"No benign variants found for {tx_id}")
                 continue
-            varb_vep = get_vep(
+            varb_vep = er.get_vep(
                     ids=[x['id'] for x in varb], 
                     params=params_vep,
                     client=client,
@@ -1267,7 +1036,7 @@ def add_variant_to_haplotypes(haplotypes: Dict[str, Dict],
                     leave=False,
                     **kwargs
                     )
-            varb_vep = filter_vep(
+            varb_vep = er.filter_vep(
                 varb_vep,
                 consequence_terms=consequence_terms,
                 exact=exact['benign'],
@@ -1421,15 +1190,15 @@ def haplotypes_to_batches_grouped(haplotypes_grouped: Dict[str, Dict],
 
 
 def reconstruct_data(tx_ids: Optional[List[str]] = None,
-                     save_dir_haplotypes: Path = Path(DIR_DICT["haplotypes"]),
-                     save_dir_variants: Path = Path(DIR_DICT["variants"]),
-                     save_dir_variant_sets: Path = Path(DIR_DICT["variant_sets"]),
-                     save_dir_vep: Path = Path(DIR_DICT["vep"]),
+                     cache_haplotypes: Path = Path(DIR_DICT["haplotypes"]),
+                     cache_variants: Path = Path(DIR_DICT["variants"]),
+                     cache_variant_sets: Path = Path(DIR_DICT["variant_sets"]),
+                     cache_vep: Path = Path(DIR_DICT["vep"]),
                      species: str = "homo_sapiens",
                      so_term: str = 'SO:0001583',
                      consequence_terms: List[str] = ['missense_variant'],
-                     params_haplotypes: Dict = PARAMS_HAPLOTYPES,
-                     params_vep: Dict = PARAMS_VEP,
+                     params_haplotypes: Dict = config.PARAMS_HAPLOTYPES,
+                     params_vep: Dict = config.PARAMS_VEP,
                      add_vep: bool = True,
                      max_tx_ids: Optional[int] = None,
                      ref_checks: bool = False,
@@ -1472,13 +1241,13 @@ def reconstruct_data(tx_ids: Optional[List[str]] = None,
 
     # Get tx_ids
     if tx_ids is None:
-        tx_ids = list_haplotypes(save_dir=save_dir_haplotypes,
+        tx_ids = list_haplotypes(cache=cache_haplotypes,
                                  verbose=verbose)
     tx_ids = list(set(utils.as_list(tx_ids)))
     # Get haplotypes
     haplotypes = get_haplotypes(
         tx_ids=tx_ids, 
-        save_dir=save_dir_haplotypes,
+        cache=cache_haplotypes,
         species=species, 
         params=params_haplotypes,
         cache_only=cache_only['get_haplotypes'],
@@ -1492,9 +1261,9 @@ def reconstruct_data(tx_ids: Optional[List[str]] = None,
         consequence_type = consequence_terms,
         params_vep=params_vep,
         add_vep=add_vep,
-        save_dir_variants=save_dir_variants,
-        save_dir_variant_sets=save_dir_variant_sets,
-        save_dir_vep=save_dir_vep,
+        save_dir_variants=cache_variants,
+        save_dir_variant_sets=cache_variant_sets,
+        save_dir_vep=cache_vep,
         exact=exact,
         check_vep=check_vep,
         cache_only=cache_only['get_variant_sets'],
@@ -1603,7 +1372,7 @@ def add_txid(df: pd.DataFrame,
 
 def add_genesymbol(df: pd.DataFrame,
                    on: List[str] = ['protein_id'],
-                   map_file: str = os.path.join(DATA_DIR, "41467_2018_6542_MOESM4_ESM.xlsx")):
+                   map_file: str = os.path.join(config.DATA_DIR, "41467_2018_6542_MOESM4_ESM.xlsx")):
     """
     Add a gene symbol column to a dataframe.
 
@@ -1629,15 +1398,13 @@ def add_variant_freqs(df,
                       field='populations',
                       verbose=True):
     import pandas as pd
-    variation = {id:get_variation(id) for id in df[variant_col].unique()}
+    variation = {id:er.get_variation(id) for id in df[variant_col].unique()}
     variation_df = pd.concat([variation_to_dfs(x)[field].assign(variant_id=k) for k,x in variation.items()], axis=0)
     return df.merge(variation_df, on=variant_col, how='left')
 
 def align_pairwise(hap_seqs):
     # convert hap_seqs to a MSA
-    from Bio.Align import PairwiseAligner
-    from tqdm.auto import tqdm
-
+    from Bio.Align import PairwiseAligner  
     msa_dict = {}
     for protein_id, tx_hap_seqs in tqdm(hap_seqs.items(),
                                         desc="Processing proteins",
@@ -1652,8 +1419,6 @@ def align_pairwise(hap_seqs):
             msa_dict[protein_id].append(alignments[0])
 
     return msa_dict
-
-
 
 def get_offset_length(seq_name, 
                       base_offset=1):

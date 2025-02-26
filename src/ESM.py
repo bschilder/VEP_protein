@@ -1364,6 +1364,9 @@ def batches_to_df(batches):
         df = pd.concat([df, row], ignore_index=True, axis=0)
     return df
 
+
+
+
 def plot_vep_violin(vep_df, 
                     model_location = None, 
                     scoring_strategy = None,
@@ -1379,6 +1382,7 @@ def plot_vep_violin(vep_df,
                     connection_linewidth = 1,
                     title_y = 1,
                     freq_filters = {'freq_1000GENOMES:phase_3:ALL':None},
+                    figsize=[6, 8],
                     add_side_labels = False,
                     verbose=True
                     ):
@@ -1390,13 +1394,18 @@ def plot_vep_violin(vep_df,
 
     vep_df = vep_df.copy()
 
+    # Filter by scoring strategy
     if scoring_strategy is not None:
         scoring_strategy = utils.as_list(scoring_strategy)
         vep_df = vep_df[vep_df['scoring_strategy'].isin(scoring_strategy)]
+    # Sort by scoring strategy
+    vep_df = utils.sort_by_reverse_string(vep_df, 'scoring_strategy')
 
+    # Filter by max proteins
     if max_proteins is not None:
         vep_df = vep_df.loc[vep_df['protein'].isin(vep_df['protein'].unique()[:max_proteins])]
     
+    # Filter by model location
     if model_location is None:
         model_location =  _get_model_location(vep_df)
     vep_df = _filter_vep_df(vep_df, verbose=verbose) 
@@ -1406,7 +1415,7 @@ def plot_vep_violin(vep_df,
     vep_df = vep_df[vep_df[model_location].notna()]
     nrows_after = len(vep_df)
     if nrows_before - nrows_after > 0:
-        print(f"Removed {nrows_before - nrows_after} rows with NA values in {model_location}")
+        print(f"Removed {nrows_before - nrows_after} rows with NA values in col '{model_location}'")
 
     # Get unique categories
     categories = sorted(vep_df[clinsig_col].unique())
@@ -1414,7 +1423,8 @@ def plot_vep_violin(vep_df,
     
     # Create figure with subplots for each protein
     proteins = vep_df['protein'].unique()
-    fig, axes = plt.subplots(len(proteins), 1, figsize=(10, 6*len(proteins)))
+    figsize[1] = figsize[1]*len(proteins)
+    fig, axes = plt.subplots(len(proteins), 1, figsize=figsize)
     if len(proteins) == 1:
         axes = [axes]
 
@@ -1575,8 +1585,9 @@ def plot_vep_violin(vep_df,
         ax.set_xlabel('Clinical classification')
         
         # Adjust plot margins
-        ax.set_xlim(-2, len(categories)+1)
-        ax.set_ylim(y_min - 0.05*y_range, y_max + 0.15*y_range)
+        if add_side_labels:
+            ax.set_xlim(-2, len(categories)+1)
+            ax.set_ylim(y_min - 0.05*y_range, y_max + 0.15*y_range)
 
     plt.tight_layout()
     plt.show()
@@ -1618,7 +1629,7 @@ def _filter_vep_df(vep_df,
     vep_df = vep_df.loc[vep_df[model_location].notna()]
     rows_after = len(vep_df)
     if verbose:
-        print(f"Filtered {((rows_before-rows_after)/rows_before)*100:.1f}% of rows with NAs in model location {model_location}")
+        print(f"Filtered {((rows_before-rows_after)/rows_before)*100:.1f}% of rows with NAs in col '{model_location}'")
     return vep_df
 
 
@@ -1630,6 +1641,9 @@ def plot_vep_density(vep_df,
     import seaborn as sns
     # Get filtered data
     vep_df = vep_df.copy().sort_values(['clinsig']) 
+
+    # Sort by scoring strategy
+    vep_df = utils.sort_by_reverse_string(vep_df, 'scoring_strategy')
 
     model_location =  _get_model_location(vep_df)
     vep_df = _filter_vep_df(vep_df, verbose=verbose) 

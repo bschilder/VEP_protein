@@ -4,7 +4,10 @@ import pandas as pd
 from tqdm import tqdm
 import glob
 
+import src.utils as utils
 import src.gprofiler as gp
+import src.ensembl_rest as er
+
 ##### Usage example #####
 ## import sys
 ## sys.path.append('ProteinGym') # Make functions available
@@ -221,7 +224,7 @@ def count_resources(pg_resources):
 def merge_resources(keys=['clinical_ProteinGym_substitutions.zip', 
                           'clinical_ProteinGym_indels.zip'],
                     redecompress = False,
-                    map_ids = False,
+                    map_ids = True,
                     force = False,
                     verbose = False): 
 
@@ -247,21 +250,27 @@ def merge_resources(keys=['clinical_ProteinGym_substitutions.zip',
     # Map RefSeq IDs to equivalent Ensembl/RefSeq IDs
     ## WARNING: Massive expands the number of rows in df due to many:many mappings
     if map_ids:
-        proteins_df = map_resources(proteins_df, force=force, verbose=verbose)
+        # Using gprofiler
+        proteins_df = map_resources(proteins_df, 
+                                    force=force, 
+                                    verbose=verbose)
 
     return proteins_df
 
-def map_resources(proteins_df, 
-                  on_left='protein',
+def map_resources(df, 
+                  input_col='protein',
                   target_namespace=['ENSP','ENST','REFSEQ_PEPTIDE'],
+                  method=['ensembl_rest','gprofiler'],
                   force = False,
                   verbose = True): 
     """
     Map ProteinGym resources to target namespaces.
     
     Args:
-        proteins_df (pd.DataFrame): DataFrame containing ProteinGym resources.
-        target_namespace (list): List of target namespaces to map to.
+        df (pd.DataFrame): DataFrame containing gene/protein/transcript IDs.
+        input_col (str): Column containing gene/protein/transcript IDs to be mapped.
+        target_namespace (list): List of target namespaces to map to. Only used if method is 'gprofiler'.
+        method (str): Method to use for mapping. Either 'gprofiler' or 'ensembl_rest'.
         force (bool): Whether to force mapping even if files exist.
 
     Returns:
@@ -275,10 +284,25 @@ def map_resources(proteins_df,
         >>> # Map IDs
         >>> proteins_df = map_resources(proteins_df)
     """
-    for tn in target_namespace:
-        proteins_df = gp.map_ids(proteins_df,
-                                 on_left=on_left,
-                                 target_namespace=tn, 
-                                 force=force, 
-                                 verbose=verbose)
-    return proteins_df
+    method = utils.one_only(method)
+    input_col = utils.one_only(input_col)
+    if method == 'gprofiler':
+        for tn in target_namespace:
+            df = gp.map_ids(df,
+                            on_left=input_col,
+                            target_namespace=tn, 
+                            force=force, 
+                            verbose=verbose)
+    elif method == 'ensembl_rest':
+
+        # Using Ensembl REST API
+        map_dict = er.xref_external(ids=df[input_col], 
+                                    force=force, 
+                                    verbose=verbose)
+        col_key = {'ENSG':'gene','ENSP':'translation','ENST':'transcript'}
+        for col, key in col_key.items():
+            map_k_v = {k:v[key] for k,v in map_dict.items()}
+            df[col] = df[input_col].map(map_k_v)
+    else:
+        raise ValueError(f"Invalid method: {method}")
+    return df

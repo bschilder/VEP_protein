@@ -80,6 +80,10 @@ def get_id_map(ids,
     if drop_na is not None:
         if verbose:
             print(f"Dropping rows with NA in {drop_na}.")
+        # Replace 'None' with None
+        for col in drop_na:
+            id_map.loc[id_map[col]=='None', col] = pd.NA
+        # Drop rows with NA in drop_na
         id_map = id_map.dropna(subset=drop_na)
     if keep_cols is not None:
         if verbose:

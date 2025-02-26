@@ -1,7 +1,9 @@
+import os
+import glob
 import io
 import pandas as pd
-import glob
-import os
+import numpy as np
+from typing import List
 
 def is_pd(x):
     """
@@ -28,17 +30,24 @@ def as_list(x,
         A list containing the converted value(s).
     """
     if is_pd(x):
-        return [x] 
-    if x == None:
-        return x
+        return [x]  
     if isinstance(x, type({}.keys())):
         return list(x)
-    if type(x) != list:
-        x = [x]
-    if type(x) == set:
-        x = list(x)
+    if isinstance(x, type({}.values())):
+        return list(x)
+    if isinstance(x, set):
+        return list(x)
+    if isinstance(x, np.ndarray):
+        return x.tolist()
+    if isinstance(x, pd.Series):
+        return x.tolist()
     if type_func != None:
-        x = [type_func(y) for y in x]
+        return [type_func(y) for y in x]
+    if x == None:
+        return x
+    if not isinstance(x, list):
+        return [x]
+        
     return x
 
 def one_only(lst):
@@ -712,3 +721,63 @@ def list_to_df(lst,
     if cols is None:
         cols = ['item']
     return pd.DataFrame(lst, columns=cols)
+
+def process_ids(ids: List[str],
+                sort: bool = True,
+                unique: bool = True):
+    """
+    Process a list of IDs.
+    """
+    ids = as_list(ids)
+    if unique:
+        ids = list(set(ids))
+    if sort:
+        ids = sorted(ids)
+    return ids
+
+def ids_to_checksum(ids: List[str],
+                    sep: str = ""):
+    """
+    Get the checksum for a list of IDs.
+    """
+    return as_checksum(sep.join(process_ids(ids)))
+
+
+def most_startswith(lst: List[str],
+                    prefix: str, 
+                    threshold: float = 0.5):
+    """
+    Get the most common prefix of a list of strings.
+    """
+    lst = process_ids(lst)
+    starts_with = [x.startswith(prefix) for x in lst]
+    return sum(starts_with) / len(starts_with) > threshold
+
+
+def sort_by_reverse_string(df, 
+                           column, 
+                           ascending=False,
+                             extra_sort_cols=[]):
+    """Sort a dataframe by the reverse of strings in a column.
+    
+    Args:
+        df (pd.DataFrame): DataFrame to sort
+        column (str): Column name containing strings to sort by
+        extra_sort_cols (list): Additional columns to sort by
+        
+    Returns:
+        pd.DataFrame: Sorted dataframe
+        
+    Example:
+        >>> df = pd.DataFrame({'col': ['abc', 'def', 'ghi']})
+        >>> sort_by_reverse_string(df, 'col')
+        # Returns dataframe sorted by ['cba', 'fed', 'ihg']
+    """
+    # Create temporary column with reversed strings
+    df = df.copy()
+    df['_temp_rev'] = df[column].apply(lambda x: str(x)[::-1])
+    
+    # Sort by reversed strings and drop temp column
+    df = df.sort_values(['_temp_rev']+extra_sort_cols, ascending=ascending).drop('_temp_rev', axis=1)
+    
+    return df

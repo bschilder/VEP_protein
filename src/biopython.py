@@ -140,10 +140,7 @@ def as_msa(seqs: list[str],
     """ 
     if is_msa(seqs):
         return seqs
-    seq_lens = [len(preprocess_sequence(seq,
-                                        replace = None,
-                                        strip=None,
-                                        truncate=False)) for seq in seqs]
+    
     # Check if seqs is a list    
     assert isinstance(seqs, list), "seqs must be a list"
     # Check if seqs contains at least 2 sequences
@@ -193,7 +190,7 @@ def query_msa(msa: MultipleSeqAlignment,
     idx = msa.alignment.indices[ref] == (pos-1)
 
     max_ref_index = max(msa.alignment.indices[ref])
-    assert max_ref_index >= (pos-1), f"Reference index out of range. Maximum index is {max_ref_index} and position is {pos}."
+    assert max_ref_index >= (pos-1), f"Query position out of range for reference. Maximum index is {max_ref_index} and position is {pos}."
     
     if sum(idx) == 0:
         txt = f"No matching sequence found at position {pos} for reference: '{msa[ref].seq}'"

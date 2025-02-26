@@ -62,6 +62,7 @@ def vep_pipeline(prot_df: pd.DataFrame = None,
                  scoring_strategies: dict[str, list[str]] = None,
                  protein_ids: list[str] = None,
                  source_types: list[str] = None,
+                 ens_id_col: str = None,
                  haplotypes: dict[str, dict[str, str]] = None, 
                  hap_dir: str = hs.DIR_DICT["haplotypes"],
                  run_filter_prot_df: bool = True,
@@ -113,6 +114,13 @@ def vep_pipeline(prot_df: pd.DataFrame = None,
     
     # Check models
     models = _check_models(models)
+
+    # Infer ens_id_col
+    if ens_id_col is None:
+        ens_id_col = _infer_ens_id_col(prot_df=prot_df,
+                                        haplotypes=haplotypes,
+                                        verbose=verbose)
+    assert ens_id_col in prot_df.columns
     
     # Check protein ids
     if protein_ids is not None:
@@ -141,9 +149,10 @@ def vep_pipeline(prot_df: pd.DataFrame = None,
                                verbose=verbose)
     
     # Filter prot_df
-    if run_filter_prot_df or 'ENST_haplosaurus' not in prot_df.columns:
+    if run_filter_prot_df:
         prot_df = filter_prot_df(prot_df=prot_df, 
                                  protein_ids=protein_ids, 
+                                 ens_id_col=ens_id_col,
                                  source_types=source_types, 
                                  haplotypes=haplotypes,
                                  verbose=verbose)
@@ -168,8 +177,8 @@ def vep_pipeline(prot_df: pd.DataFrame = None,
             assert len(prot_df_i)>0
             
             # Map protein id to ensp_id
-            enst_id = prot_df_i['ENST_haplosaurus'].tolist()[0]
-            assert len(enst_id)>0
+            ens_id = prot_df_i[ens_id_col].tolist()[0]
+            assert len(ens_id)>0
 
             # Iterate over variant types (eg. substitutions, indels)
             for _, row in prot_df_i.iterrows():
@@ -183,7 +192,7 @@ def vep_pipeline(prot_df: pd.DataFrame = None,
                 variants_type = row['source_type']
                     
                 # Iterate over haplotypes
-                for seq_name, seqs in tqdm(hap_seqs[enst_id], 
+                for seq_name, seqs in tqdm(hap_seqs[ens_id], 
                                         desc="Processing haplotypes", 
                                         leave=False): 
 
@@ -348,18 +357,143 @@ def _check_hap_seqs(haplotypes: dict[str, dict[str, str]],
     assert len(hap_seqs)>0
     return hap_seqs
 
-def filter_prot_df(prot_df: pd.DataFrame,
-                  protein_ids: list[str] = None,
-                  source_types: list[str] = None,
-                  haplotypes: dict[str, dict[str, str]] = None,
-                  run_mapping: bool = True,
-                  verbose: bool = True) -> pd.DataFrame:
-    
-    prot_df = prot_df.copy()
-    # Filter by protein ids if provided
+
+
+def _filter_source_types(prot_df: pd.DataFrame,
+                         source_types: list[str] = None,
+                         verbose: bool = True) -> pd.DataFrame:
+    """Filter the protein dataframe by source types.
+    """
+    if source_types is not None:
+        source_types = utils.as_list(source_types)
+        if verbose:
+            print(f"Filtering by {len(source_types)} source types")
+        assert 'source_type' in prot_df.columns
+        prot_df = prot_df.loc[prot_df['source_type'].isin([str(x) for x in source_types])]
+        assert len(prot_df)>0
+    return prot_df
+
+
+def _filter_protein_ids(prot_df: pd.DataFrame,
+                        protein_id_col: str = None,
+                        protein_ids: list[str] = None,
+                        verbose: bool = True) -> pd.DataFrame:
+    """Filter the protein dataframe by protein ids.
+    """
     if protein_ids is not None:
-        prot_df = prot_df.loc[prot_df['protein'].isin(protein_ids)]
+        protein_ids = utils.process_ids(protein_ids)
+        # Infer protein_id_col if not provided
+        if protein_id_col is None:
+            if utils.most_startswith(protein_ids, prefix="ENSP"):
+                protein_id_col = 'ENSP'
+            elif utils.most_startswith(protein_ids, prefix="ENST"):
+                protein_id_col = 'ENST'
+            elif utils.most_startswith(protein_ids, prefix="NP"):
+                protein_id_col = 'protein'
+            else:
+                raise ValueError("protein_ids must start with 'ENSP' or 'ENST' or 'NP'")
+        if verbose:
+            print(f"Filtering by {len(protein_ids)} protein ids")
+        assert protein_id_col in prot_df.columns
+        prot_df = prot_df.loc[prot_df[protein_id_col].isin(protein_ids)]
+        assert len(prot_df)>0
+    return prot_df
+
+def filter_prot_df(prot_df: pd.DataFrame,
+                   protein_ids: list[str] = None,
+                   source_types: list[str] = None,
+                   protein_id_col: str = None,
+                   ens_id_col: str = None,
+                   haplotypes: dict[str, dict[str, str]] = None,
+                   verbose: bool = True) -> pd.DataFrame:
+    """Filter the protein dataframe.
+    This function is used to filter the protein dataframe by protein ids, source types, and haplotypes.
+    It is used to filter the protein dataframe before running the VEP pipeline.
+    It is also used to filter the protein dataframe after running the VEP pipeline.
+
+    Args:
+        prot_df (pd.DataFrame): The protein dataframe to filter.
+        protein_ids (list[str]): The protein ids to filter by.
+        source_types (list[str]): The source types to filter by.
+        haplotypes (dict[str, dict[str, str]]): The haplotypes to filter by.
+        verbose (bool): Whether to print verbose output.
+
+    Returns:
+        pd.DataFrame: The filtered protein dataframe.
+    """
+    prot_df = prot_df.copy()
+
+    # Infer haplotype id column
+    if ens_id_col is None:
+        ens_id_col = _infer_ens_id_col(prot_df=prot_df,
+                                        haplotypes=haplotypes,
+                                        verbose=verbose)
+
     assert len(prot_df)>0
+    # Filter by protein ids
+    prot_df = _filter_protein_ids(prot_df=prot_df,
+                                  protein_ids=protein_ids,
+                                  protein_id_col=protein_id_col,
+                                  verbose=verbose)
+    # Filter by source types
+    prot_df = _filter_source_types(prot_df=prot_df,
+                                    source_types=source_types,
+                                    verbose=verbose)
+    # Filter by haplotypes
+    prot_df = _filter_prot_df_ensembl_rest(prot_df=prot_df,
+                                           ens_id_col=ens_id_col,
+                                           haplotypes=haplotypes,
+                                           verbose=verbose) 
+    # Report the number of unique proteins 
+    assert len(prot_df)>0
+    if verbose:
+        print("Returning",len(prot_df['protein'].unique()),"unique proteins") 
+    assert len(prot_df)>0
+    return prot_df
+
+def _infer_ens_id_col(prot_df: pd.DataFrame,
+                    haplotypes: dict[str, dict[str, str]],
+                    verbose: bool = True) -> str:
+    """Infer the Ensembl ID column from the protein dataframe.
+    """
+    if  utils.most_startswith(list(haplotypes.keys()), prefix='ENST'):
+        assert 'ENST' in prot_df.columns
+        return 'ENST'
+    elif utils.most_startswith(list(haplotypes.keys()), prefix='ENSP'):
+        assert 'ENSP' in prot_df.columns
+        return 'ENSP'
+    else:
+        raise ValueError("Haplotype keys must start with 'ENST' or 'ENSP'")
+
+def _filter_prot_df_ensembl_rest(prot_df: pd.DataFrame,
+                                 ens_id_col: str = None,
+                                 haplotypes: dict[str, dict[str, str]] = None,
+                                 verbose: bool = True) -> pd.DataFrame:
+    """Filter the protein dataframe using Ensembl REST API.
+    
+    Args:
+        prot_df (pd.DataFrame): The protein dataframe to filter.
+        verbose (bool): Whether to print verbose output.
+
+    Returns:
+        pd.DataFrame: The filtered protein dataframe.
+    """
+    if haplotypes is None:
+        if verbose:
+            print("No haplotypes provided. Returning original protein dataframe.")
+        return prot_df
+   
+    if verbose:
+        print("Filtering by",ens_id_col,"haplotypes")
+        prot_df = prot_df.loc[prot_df[ens_id_col].isin(haplotypes.keys())]
+    assert len(prot_df)>0
+    return prot_df
+
+
+def _filter_prot_df_gprofiler(prot_df: pd.DataFrame,
+                                haplotypes: dict[str, dict[str, str]] = None,
+                                run_mapping: bool = True,
+                                verbose: bool = True) -> pd.DataFrame:
 
     # Filter by haplotypes if provided
     if not all(col in prot_df.columns for col in ['ENST_haplosaurus','ENSP_haplosaurus']):
@@ -432,22 +566,12 @@ def filter_prot_df(prot_df: pd.DataFrame,
     # Filter the prot_df
     prot_df = prot_df.loc[prot_df['ENST_haplosaurus'].notna()]  
     assert len(prot_df)>0
-    
-    if source_types is not None:
-        print("Filtering by source types:",",".join(source_types))
-        assert 'source_type' in prot_df.columns
-        prot_df = prot_df.loc[prot_df['source_type'].isin([str(x) for x in source_types])]
-        assert len(prot_df)>0
 
     # Only keep the first occurence of each experiment_id (to avoid artifacts of ID mapping)
     prot_df = prot_df.drop_duplicates(subset=['experiment_id']) 
-    assert len(prot_df)>0
+
     assert 'ENST_haplosaurus' in prot_df.columns
     assert 'ENSP_haplosaurus' in prot_df.columns
-    
-    # Report the number of unique proteins 
-    print(len(prot_df['protein'].unique()),"unique proteins") 
-    assert len(prot_df)>0
     
     # Return the filtered prot_df
     return prot_df

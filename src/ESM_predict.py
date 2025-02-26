@@ -141,9 +141,9 @@ def check_sequence(sequence,
         if invert:
             if subseq == expected:
                 if verbose:
-                    print(f"Warning: The listed {type} is already present in the provided sequence: {subseq} == {expected} in {sequence}")
+                    print(f"Warning: The listed {type} is already present in the provided sequence at position {idx+1}: {subseq} == {expected} in {sequence}")
         else:
-            txt = f"The listed {type} does not match the provided sequence: {subseq} != {expected} in {sequence}"
+            txt = f"The listed {type} does not match the provided sequence at position {idx+1}: {subseq} != {expected} in {sequence}"
             if error:
                 assert subseq == expected, txt
             else:
@@ -151,7 +151,7 @@ def check_sequence(sequence,
                     if verbose:
                         print(txt)
     else:
-        txt = f"The listed {type} does not match the provided sequence: {sequence[idx]} != {expected} in {sequence}"
+        txt = f"The listed {type} does not match the provided sequence at position {idx+1}: {sequence[idx]} != {expected} in {sequence}"
         if is_ref:
             if error:
                 assert sequence[idx] == expected, txt
@@ -175,15 +175,22 @@ def _parse_mutation_row(mutation_row,
 
 def _check_ref_sequence(row,
                         sequence,
-                        error=True):
+                        error=True,
+                        verbose=2):
     if 'protein_sequence' in row.index:
         ref_sequence1 = bp.preprocess_sequence(row['protein_sequence'])
-        ref_sequence2 = bp.preprocess_sequence(bp.get_sequence(sequence, i=0))
+        ref_sequence2 = bp.preprocess_sequence(bp.get_sequence(sequence, 
+                                                               i=0))
+        txt = f"The protein sequence in the mutation row is not the same as the reference sequence in the MSA"
+        if verbose>1:
+                txt += f"\nMUT>> {ref_sequence1}\nMSA>> {ref_sequence2}" 
+        # Error or warning
         if error:
-            assert ref_sequence1 == ref_sequence2, f"The protein sequence in the mutation row is not the same as the reference sequence in the MSA:\nMUT> {ref_sequence1}\nMSA> {ref_sequence2}"
+            assert ref_sequence1 == ref_sequence2, txt
         else:
             if ref_sequence1 != ref_sequence2:
-                print(f"Warning: The protein sequence in the mutation row is not the same as the reference sequence in the MSA:\nMUT> {ref_sequence1}\nMSA> {ref_sequence2}")
+                if verbose>0:
+                    print(txt)
 
 def label_row(row,
               mutation_col,
