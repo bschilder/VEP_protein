@@ -1618,52 +1618,53 @@ def _get_model_location(vep_df):
         return None
     
 def _filter_vep_df(vep_df,
-                   model_location=None,
                    verbose=True):
     """
     Filter the VEP dataframe to ensure that the model location is not None
     """
-    rows_before = len(vep_df)
-    if model_location is None:
-        model_location =  _get_model_location(vep_df)
-    vep_df = vep_df.loc[vep_df[model_location].notna()]
+    rows_before = len(vep_df) 
+    vep_df = vep_df.loc[vep_df['VEP'].notna()]
     rows_after = len(vep_df)
     if verbose:
-        print(f"Filtered {((rows_before-rows_after)/rows_before)*100:.1f}% of rows with NAs in col '{model_location}'")
+        print(f"Filtered {((rows_before-rows_after)/rows_before)*100:.1f}% of rows with NAs in col 'VEP'")
     return vep_df
 
 
 def plot_vep_density(vep_df, 
                      clinsig_col = 'clinsig',
+                     model_location = None,
                      alpha=.7,
-                     figsize=[4,5],
+                     figsize=[4,4],
                      verbose=True,
                      **kwargs): 
     import seaborn as sns
     # Get filtered data
     vep_df = vep_df.copy()
-
+    if model_location is not None:
+        model_location = utils.as_list(model_location)
+        vep_df = vep_df.loc[vep_df['model_location'].isin(model_location)]
+    else:
+        model_location = _get_model_location(vep_df)
     # Sort by scoring strategy
     vep_df = utils.sort_by_reverse_string(vep_df, 
                                           column='scoring_strategy', 
                                           extra_sort_cols=['clinsig'],
                                           ascending=[False, True])
     n_scoring_strategies = vep_df['scoring_strategy'].nunique()
-    figsize[1] = figsize[1]*n_scoring_strategies
 
-    model_location =  _get_model_location(vep_df)
     vep_df = _filter_vep_df(vep_df, verbose=verbose) 
     # Create facet grid
     g = sns.FacetGrid(data=vep_df, 
                     col='scoring_strategy',
+                    row='model_location',
                     height=figsize[0],
-                    aspect=figsize[1]/figsize[0],
+                    aspect=(figsize[1]*n_scoring_strategies)/figsize[0],
                     sharex=False,
                     sharey=False)
 
     # Plot KDE
     g.map_dataframe(sns.kdeplot, 
-                    x=model_location,
+                    x='VEP',
                     hue=clinsig_col,
                     fill=True,
                     palette=utils.get_clinsig_palette(), 
@@ -1703,6 +1704,7 @@ def _reformat_mutant(mutant):
 def merge_vep(save_dir = None,
               scoring_strategy = ["wt-marginals", "masked-marginals", "pseudo-ppl"],
               add_model_location=True,
+              rename_model_location_col=True,
               add_variant_set=True,
               add_filename=False,
               add_metadata=True,
@@ -1729,7 +1731,11 @@ def merge_vep(save_dir = None,
     if save_dir is None:
         save_dir = os.path.join(config.DATA_DIR,"1KG","vep")
         print(f"No save_dir provided, using: {save_dir}")
-    
+
+    if rename_model_location_col and not add_model_location:
+        print("`add_model_location` must be set to True if `rename_model_location_col` is True.\nSetting `add_model_location` to True.")
+        add_model_location = True
+
     save_dir = os.path.expanduser(save_dir)
     if isinstance(scoring_strategy, str):
         scoring_strategy = [scoring_strategy]
@@ -1741,6 +1747,8 @@ def merge_vep(save_dir = None,
             os.path.join(save_dir, "**", f"{ss}.csv.gz"), 
                          recursive=True)
         print("Found", len(all_files), ss, "files") 
+        if len(all_files) == 0:
+            continue
         # Read each file and append to list
         for filename in tqdm(all_files, desc="Reading files"):
             try: 
@@ -1750,7 +1758,10 @@ def merge_vep(save_dir = None,
                 df['scoring_strategy'] = os.path.basename(filename).split('.')[0]  
                 df['is_ref'] = df['haplotype'].str.endswith('REF')
                 if add_model_location:
-                    df['model_location'] = os.path.dirname(filename).split(os.sep)[-4]
+                    model_location = os.path.dirname(filename).split(os.sep)[-4]
+                    df['model_location'] = model_location
+                    if rename_model_location_col:
+                        df.rename(columns={model_location: 'VEP'}, inplace=True)
                 if add_variant_set:
                     df['variant_set'] = os.path.dirname(filename).split(os.sep)[-1]
                 if add_filename:

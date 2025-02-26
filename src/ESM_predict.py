@@ -114,6 +114,11 @@ def create_parser():
         default=False,
         help="Rerun the prediction even if the results already exist"
     )
+    parser.add_argument(
+        "--verbose",
+        action="store_true",
+        help="Print verbose output"
+    )
     # fmt: on
     parser.add_argument(
         "--nogpu", 
@@ -310,7 +315,8 @@ def main(
     msa_samples: int = None,
     nogpu: bool = False,
     is_ref: bool = False,
-    force: bool = False
+    force: bool = False,
+    verbose: bool = True
 ):
     """Run ESM model predictions on mutation data.
     
@@ -337,6 +343,8 @@ def main(
             Example: False
         force: Whether to force the prediction even if the model has already been downloaded
             Example: False
+        verbose: Whether to print verbose output
+            Example: True
     """
 
     # Check if results already exist
@@ -476,9 +484,13 @@ def main(
                     axis=1,
                 )
 
-    df.to_csv(dms_output)
+    if df[model_location].isna().all():
+        if verbose:
+            print(f"No predictions generated for {model_location}. Skipping file save.")
+    else:
+        df.to_csv(dms_output)
 
-
+### MAIN SCRIPT ###
 if __name__ == "__main__":
     parser = create_parser()
     args = parser.parse_args()
