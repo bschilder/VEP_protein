@@ -239,7 +239,7 @@ def vep_pipeline(prot_df: pd.DataFrame = None,
 
                         # Run VEP
                         ## ESM models
-                        if model_location.startswith('esm'):
+                        if model_location in ESM.list_models(return_list=True):
                             ESMp.main(
                                 dms_input=variants_path,
                                 dms_output=save_path,
@@ -654,6 +654,154 @@ def _check_scoring_strategies(scoring_strategies,
         if model not in scoring_strategies:
             raise ValueError(f"Model {model} not found in scoring_strategies")
     return scoring_strategies
+
+
+def _reformat_mutant(mutant):
+    """
+    Reformat a mutant string to the format "poswt>mt"
+    Example:
+       _reformat_mutant("S223I") in "ENSP00000261556:223S>I,565S>N"
+       # True
+    """
+    wt, pos, mt = mutant[0], int(mutant[1:-1]), mutant[-1]
+    return f"{pos}{wt}>{mt}" 
+
+def merge_vep(save_dir = None,
+              scoring_strategy = ["wt-marginals", "masked-marginals", "pseudo-ppl"],
+              add_model_location=True,
+              rename_model_location_col=True,
+              add_variant_set=True,
+              add_filename=False,
+              add_metadata=True,
+              target_namespace='ENST',
+              col_map= {'mutant': 'mutant', 
+                        'protein': 'protein'}
+              ):
+    """
+    Merge VEP results from multiple files into a single dataframe.
+    
+    Args:
+        save_dir (str): Directory containing the VEP results
+        scoring_strategy (str or list): Scoring strategy to use
+        add_model_location (bool): Whether to add the model location to the dataframe
+        add_filename (bool): Whether to add the filename to the dataframe
+
+    Returns:
+        merged_df (pd.DataFrame): Merged dataframe containing all VEP results
+    """
+    import pandas as pd
+    import glob
+    import os
+    from tqdm import tqdm
+    if save_dir is None:
+        save_dir = os.path.join(config.DATA_DIR,"1KG","vep")
+        print(f"No save_dir provided, using: {save_dir}")
+
+    if rename_model_location_col and not add_model_location:
+        print("`add_model_location` must be set to True if `rename_model_location_col` is True.\nSetting `add_model_location` to True.")
+        add_model_location = True
+
+    save_dir = os.path.expanduser(save_dir)
+    if isinstance(scoring_strategy, str):
+        scoring_strategy = [scoring_strategy]
+    # Create empty list to store dataframes
+    dfs = []
+    for ss in scoring_strategy:
+        # Find all csv.gz files recursively
+        all_files = glob.glob(
+            os.path.join(save_dir, "**", f"{ss}.csv.gz"), 
+                         recursive=True)
+        print("Found", len(all_files), ss, "files") 
+        if len(all_files) == 0:
+            continue
+        # Read each file and append to list
+        for filename in tqdm(all_files, desc="Reading files"):
+            try: 
+                # Read the CSV
+                df = pd.read_csv(filename, index_col=[0,1])
+                df.insert(0, 'haplotype', os.path.dirname(filename).split(os.sep)[-2])
+                df['scoring_strategy'] = os.path.basename(filename).split('.')[0]  
+                df['is_ref'] = df['haplotype'].str.endswith('REF')
+                if add_model_location:
+                    model_location = os.path.dirname(filename).split(os.sep)[-4]
+                    df['model_location'] = model_location
+                    if rename_model_location_col:
+                        df.rename(columns={model_location: 'VEP'}, inplace=True)
+                if add_variant_set:
+                    df['variant_set'] = os.path.dirname(filename).split(os.sep)[-1]
+                if add_filename:
+                    df['filename'] = filename 
+                dfs.append(df) 
+            except Exception as e:
+                print(f"Error reading {filename}: {str(e)}")
+                continue
+        
+    # Concatenate all dataframes
+    if dfs:
+        vep_df = pd.concat(dfs, ignore_index=True)
+        if 'ENSP' not in vep_df.columns:
+            vep_df['ENSP'] = vep_df['haplotype'].str.split(":").str[0]
+        # Map protein IDs to ENST and HGNC
+        if target_namespace is not None:
+            vep_df = gp.map_ids(vep_df, 
+                                rows_per_id=1,
+                                target_namespace=target_namespace)
+        # Check if reformatted mutant is in haplotype string
+        vep_df['mutant_in_haplotype'] = vep_df.apply(lambda x: _reformat_mutant(x[col_map['mutant']]) in x['haplotype'], axis=1)
+        assert len(vep_df)>0, "No VEP data found"
+        if add_metadata:
+            if all(col in vep_df.columns for col in [col_map['protein'], col_map['mutant']]):
+                # Gather additional PGD metadata
+                resources_df = pg.get_resources_df()
+                pgd_resources = pg.download_resources(resources_df.loc[resources_df['Filename'].isin(['substitutions_raw_clinical.zip', 'indels_raw_clinical.zip'])], 
+                                                    include_raw=True)
+                assert len(pgd_resources)>0, "No PGD metadata found"
+
+                pgd_subs_raw = pd.read_csv(pgd_resources['substitutions_raw_clinical'][0])
+                # Annotate with PGD variants
+                vep_df = vep_df.merge(pgd_subs_raw.groupby([col_map['protein'], col_map['mutant']]).head(1),
+                                      on=[col_map['protein'], col_map['mutant']], 
+                                      how='left')
+                assert len(vep_df)>0, "No PGD metadata found"
+            else:
+                print("Cannot `add_metadata`: No 'protein' or 'mutant' columns found in VEP dataframe.")
+        return vep_df
+    else:
+        print("No files were successfully read")
+        return None 
+
+def report_vep(vep_df,
+               haplotype_col='haplotype',
+               clinsig_col='clinsig'):
+    """
+    Report on the VEP dataframe
+    """
+    # Add extra columns
+    vep_df['protein_sequence_length'] = vep_df['protein_sequence'].map(bp.preprocess_sequence).str.len()
+    vep_df['mutated_sequence_length'] = vep_df['mutated_sequence'].map(bp.preprocess_sequence).str.len()
+
+    clinsig_counts = vep_df['clinsig'].value_counts().to_frame(name='clinsig_count')
+    seq_check_df = pd.merge(vep_df.groupby(clinsig_col).apply(lambda x: sum(x['protein_sequence_length'] != x['mutated_sequence_length'])).to_frame(name='mismatched_length').reset_index(),
+                            vep_df.groupby(clinsig_col).apply(lambda x: sum(x['protein_sequence'] == x['mutated_sequence'])).to_frame(name='identical_sequences').reset_index(),
+                            on=clinsig_col)
+
+    # Get variant counts
+    mutant_in_haplotype = vep_df.groupby(['mutant_in_haplotype',clinsig_col])['mutant'].nunique().to_frame(name='variant_count').reset_index()
+    mutant_in_haplotype = mutant_in_haplotype.merge(mutant_in_haplotype.groupby(clinsig_col).sum().rename(columns={'variant_count':f'variant_count_by_{clinsig_col}'}).reset_index().drop(columns=['mutant_in_haplotype']),
+            on=clinsig_col,
+            how='left').fillna(0) 
+    mutant_in_haplotype['variant_proportion'] = mutant_in_haplotype['variant_count'] / mutant_in_haplotype[f'variant_count_by_{clinsig_col}']
+    # Get haplotype counts
+    haplotype_counts = vep_df.groupby(['mutant_in_haplotype',clinsig_col])[haplotype_col].nunique().to_frame(name='haplotype_count').reset_index()
+    haplotype_counts = haplotype_counts.merge(haplotype_counts.groupby(clinsig_col).sum().rename(columns={'haplotype_count':f'haplotype_count_by_{clinsig_col}'}).reset_index().drop(columns=['mutant_in_haplotype']),
+            on=clinsig_col,
+            how='left').fillna(0)
+    haplotype_counts['haplotype_proportion'] = haplotype_counts['haplotype_count'] / haplotype_counts[f'haplotype_count_by_{clinsig_col}']
+    # Merge variant and haplotype counts
+    mutant_in_haplotype = mutant_in_haplotype.merge(haplotype_counts, 
+                                                    on=['mutant_in_haplotype',clinsig_col], 
+                                                    how='left').fillna(0)
+    return seq_check_df, clinsig_counts, mutant_in_haplotype
 
 
 def _parse_args():

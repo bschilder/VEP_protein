@@ -2,7 +2,6 @@ name: vep_protein
 channels:
     - conda-forge  
     - bioconda
-    - pytorch
     - nvidia
 dependencies:
     - python>=3.9.0
@@ -10,11 +9,9 @@ dependencies:
     - numpy
     - openpyxl
     - tqdm
-    - torch
     - umap-learn
     - IProgress
     - ipywidgets
-    - bioconda
     - pyfaidx
     - pysam
     - HTSeq
@@ -22,13 +19,17 @@ dependencies:
     - seaborn
     - scikit-learn
     - biopython
-    - gprofiler
     - pyensembl 
     - biotite
     - owlready2
     - pooch
     - pip
     - pip:
-        - fair-esm[esmfold]
+        - torch 
+        - torchvision 
+        - torchaudio
+        # - fair-esm[esmfold] # Old ESM module
+        - esm # New ESM module
         - logomaker
         - ensembl-rest
+        - gprofiler

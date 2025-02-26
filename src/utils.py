@@ -824,3 +824,23 @@ def get_sequence_similarity(ref_seq,
         return setratio(ref_seq, query_seq)
     else:
         raise ValueError(f"Invalid method: {method}")
+    
+
+def set_seeds_torch(seed, deterministic=True):
+    """Set random seeds for reproducibility across different libraries.
+    
+    Args:
+        seed (int): Random seed value
+        deterministic (bool): Whether to enforce deterministic behavior in PyTorch
+    """ 
+    import torch
+    import random
+    import numpy as np
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
+    # Ensure deterministic behavior in PyTorch
+    torch.backends.cudnn.deterministic = deterministic
+    torch.backends.cudnn.benchmark = not deterministic
