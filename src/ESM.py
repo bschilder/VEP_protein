@@ -1694,7 +1694,7 @@ def _reformat_mutant(mutant):
     wt, pos, mt = mutant[0], int(mutant[1:-1]), mutant[-1]
     return f"{pos}{wt}>{mt}" 
 
-def merge_vep(save_dir,
+def merge_vep(save_dir = None,
               scoring_strategy = ["wt-marginals", "masked-marginals", "pseudo-ppl"],
               add_model_location=True,
               add_variant_set=True,
@@ -1720,6 +1720,9 @@ def merge_vep(save_dir,
     import glob
     import os
     from tqdm import tqdm
+    if save_dir is None:
+        save_dir = os.path.join(config.DATA_DIR,"1KG","vep")
+        print(f"No save_dir provided, using: {save_dir}")
     
     save_dir = os.path.expanduser(save_dir)
     if isinstance(scoring_strategy, str):
