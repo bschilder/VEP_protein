@@ -1636,24 +1636,30 @@ def _filter_vep_df(vep_df,
 def plot_vep_density(vep_df, 
                      clinsig_col = 'clinsig',
                      alpha=.7,
+                     figsize=[4,5],
                      verbose=True,
                      **kwargs): 
     import seaborn as sns
     # Get filtered data
-    vep_df = vep_df.copy().sort_values(['clinsig']) 
+    vep_df = vep_df.copy()
 
     # Sort by scoring strategy
-    vep_df = utils.sort_by_reverse_string(vep_df, 'scoring_strategy')
+    vep_df = utils.sort_by_reverse_string(vep_df, 
+                                          column='scoring_strategy', 
+                                          extra_sort_cols=['clinsig'],
+                                          ascending=[False, True])
+    n_scoring_strategies = vep_df['scoring_strategy'].nunique()
+    figsize[1] = figsize[1]*n_scoring_strategies
 
     model_location =  _get_model_location(vep_df)
     vep_df = _filter_vep_df(vep_df, verbose=verbose) 
     # Create facet grid
     g = sns.FacetGrid(data=vep_df, 
                     col='scoring_strategy',
-                    height=4,
+                    height=figsize[0],
+                    aspect=figsize[1]/figsize[0],
                     sharex=False,
-                    sharey=False,
-                    aspect=1)
+                    sharey=False)
 
     # Plot KDE
     g.map_dataframe(sns.kdeplot, 

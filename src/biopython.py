@@ -19,7 +19,8 @@ def to_stop(sequence: str,
 
 def get_sequence(sequence: MultipleSeqAlignment,
                   i: int = -1,
-                  copy: bool = False):
+                  copy: bool = False,
+                  preprocess: bool = False):
     """
     Get a sequence from a MultipleSeqAlignment object or return the input sequence.
 

@@ -897,46 +897,6 @@ def clean_seq(seq,
     seq = add_codon_buffer(seq, codon_buffer)
     return seq
 
-def sequence_similarity(ref_seq, 
-                        query_seq, 
-                        method="Levenshtein.ratio"):
-                        
-    import numpy as np
-    if method == "list":
-        # Get max length and pad shorter sequence with spaces which will count as mismatches
-        if isinstance(ref_seq, str):
-            ref_seq = list(ref_seq)
-        if isinstance(query_seq, str):
-            query_seq = list(query_seq)
-        max_len = max(len(ref_seq), len(query_seq))
-        ref_seq = ref_seq + [' '] * (max_len - len(ref_seq))
-        query_seq = query_seq + [' '] * (max_len - len(query_seq))
-        # Convert sequences to NumPy arrays
-        arr1 = np.array(ref_seq, dtype='U1')
-        arr2 = np.array(query_seq, dtype='U1')
-        matches = np.sum(arr1 == arr2)
-        return matches / max_len 
-    elif method == "str": 
-        if isinstance(ref_seq, list):
-            ref_seq = "".join(ref_seq)
-        if isinstance(query_seq, list):
-            query_seq = "".join(query_seq)
-        ref_array = np.frombuffer(ref_seq.encode(), dtype='S1')
-        query_array = np.frombuffer(query_seq.encode(), dtype='S1')
-        matches = np.sum(ref_array == query_array)
-        return matches / len(ref_seq)
-    elif method == "Levenshtein.ratio":
-        from Levenshtein import ratio
-        return ratio(ref_seq, query_seq)
-    elif method == "Levenshtein.setratio":
-        from Levenshtein import setratio
-        if isinstance(ref_seq, str):
-            ref_seq = list(ref_seq)
-        if isinstance(query_seq, str):
-            query_seq = list(query_seq)
-        return setratio(ref_seq, query_seq)
-    else:
-        raise ValueError(f"Invalid method: {method}")
 
 def get_ref_seq_keys(d):
     return [sample for sample in d.keys() if sample.startswith("REFERENCE")]

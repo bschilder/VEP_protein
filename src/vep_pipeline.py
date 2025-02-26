@@ -399,6 +399,49 @@ def _filter_protein_ids(prot_df: pd.DataFrame,
         assert len(prot_df)>0
     return prot_df
 
+def add_sequence_checks(prot_df: pd.DataFrame,
+                        haplotypes: dict[str, dict[str, str]],
+                        verbose: bool = True):
+    """Add the sequence length to the protein dataframe.
+    """
+    # Get haplotype sequences
+    hap_seqs = hs.get_haplotype_seqs(haplotypes,
+                                    aligned=2,
+                                    as_msa=True,
+                                    #   use_protein_ids=True,
+                                    add_haplotype_names=True)
+
+    # Check ref sequence length
+    hap_seq_lens = {}
+    mut_seq_lens = {}
+    sequence_similarity = {}
+    sequence_identical = {}
+    for i, row in prot_df.iterrows():
+        ens_id_col = _infer_ens_id_col(prot_df=prot_df,
+                                       haplotypes=haplotypes,
+                                       verbose=verbose)
+        tx_id = row[ens_id_col]
+        
+        mut_df = pd.read_csv(row["source_file"], index_col=0)
+        mut_seqs = [bp.preprocess_sequence(seqs, i=0) for seqs in mut_df.groupby("protein").head(1)['protein_sequence'].tolist()]
+        mut_seq_lens[tx_id] = list(set([len(seqs) for seqs in mut_seqs]))
+
+        hap_seqs_tmp = [bp.preprocess_sequence(seqs, i=0) for seq_name, seqs in hap_seqs[tx_id]]
+        hap_seq_lens[tx_id] = list(set([len(seqs) for seqs in hap_seqs_tmp]))
+
+        sequence_similarity[tx_id] = utils.get_sequence_similarity(mut_seqs[0], hap_seqs_tmp[0])
+        sequence_identical[tx_id] = mut_seqs[0] == hap_seqs_tmp[0]
+
+
+    prot_df.loc[:,"proteingym_seq_len"] = prot_df[ens_id_col].map(mut_seq_lens)
+    prot_df.loc[:,"haplosaurus_seq_len"] = prot_df[ens_id_col].map(hap_seq_lens)
+    prot_df.loc[:,"proteingym_haplosaurus_seq_sim"] = prot_df[ens_id_col].map(sequence_similarity)
+    prot_df.loc[:,"proteingym_haplosaurus_seq_identical"] = prot_df[ens_id_col].map(sequence_identical)
+    return prot_df
+    
+
+        
+
 def filter_prot_df(prot_df: pd.DataFrame,
                    protein_ids: list[str] = None,
                    source_types: list[str] = None,

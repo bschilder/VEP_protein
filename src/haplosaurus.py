@@ -574,6 +574,7 @@ def _as_protein_ids(haplotypes: Dict[str, Dict]) -> Dict[str, Dict]:
 
 def get_haplotype_seqs(haplotypes: Union[Dict[str, Dict], Dict[str, List[Dict]]],
                        aligned: int = 1,
+                       as_msa: bool = False,
                        return_missing: bool = False,
                        use_protein_ids: bool = False,
                        add_haplotype_names: bool = False,
@@ -594,6 +595,9 @@ def get_haplotype_seqs(haplotypes: Union[Dict[str, Dict], Dict[str, List[Dict]]]
     
     hap_seqs = {}
     missing_seqs = []
+    if aligned!=2:
+        print(f'Warning: Aligned must be 2 to convert to MSA (as_msa=True)')
+        as_msa = False
     for tx_id in tqdm(haplotypes.keys(),
                       desc="Getting haplotype sequences"):
         
@@ -620,6 +624,8 @@ def get_haplotype_seqs(haplotypes: Union[Dict[str, Dict], Dict[str, List[Dict]]]
                     print(f"No seqs found for {tx_id}")
                 missing_seqs += [tx_id]
                 continue
+    if as_msa:
+        hap_seqs = {tx_id:[bp.as_msa(seqs) for seqs in tx_seqs] for tx_id,tx_seqs in hap_seqs.items()}
                 
     # Add haplotype names
     if add_haplotype_names:
