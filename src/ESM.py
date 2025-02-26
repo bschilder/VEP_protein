@@ -1,6 +1,5 @@
-from tqdm.auto import tqdm
 import torch
-import esm
+import esm2
 import os
 import glob
 import pandas as pd
@@ -9,6 +8,7 @@ import plotly.express as px
 import seaborn as sns
 import matplotlib.pyplot as plt
 import time
+from tqdm.auto import tqdm
 
 import src.utils as utils 
 import src.haplosaurus as hs 
@@ -22,7 +22,7 @@ import src.biopython as bp
 def list_models(prefix='esm',
                 return_list=False):
      
-    models = [model_name for model_name in dir(esm.pretrained) if model_name.startswith(prefix)]
+    models = [model_name for model_name in dir(esm2.pretrained) if model_name.startswith(prefix)]
     if return_list:
         return models
     else:
@@ -192,7 +192,7 @@ def get_embeddings(batches,
     if model is None:
         if verbose:
             print(f"Using model: esm2_t33_650M_UR50D")
-        model, alphabet = esm.pretrained.esm2_t33_650M_UR50D()
+        model, alphabet = esm2.pretrained.esm2_t33_650M_UR50D()
     if alphabet is None:
         alphabet = model.alphabet
     batch_converter = alphabet.get_batch_converter()

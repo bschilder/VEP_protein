@@ -750,7 +750,9 @@ def most_startswith(lst: List[str],
     Get the most common prefix of a list of strings.
     """
     lst = process_ids(lst)
+    assert len(lst) > 0, "List is empty"
     starts_with = [x.startswith(prefix) for x in lst]
+    assert len(starts_with) > 0, "List of starts_with is empty"
     return sum(starts_with) / len(starts_with) > threshold
 
 
@@ -844,3 +846,14 @@ def set_seeds_torch(seed, deterministic=True):
     # Ensure deterministic behavior in PyTorch
     torch.backends.cudnn.deterministic = deterministic
     torch.backends.cudnn.benchmark = not deterministic
+
+
+def check_arg(func,
+              arg,
+              arg_index,
+              max_args=None):
+    options = func.__defaults__[arg_index]
+    if max_args is not None:
+        arg = as_list(arg)[:max_args]
+    assert arg in options, f"Invalid argument: '{arg}'. Must be one of {','.join(options)}"
+    return arg

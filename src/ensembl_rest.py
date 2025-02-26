@@ -71,7 +71,7 @@ def xref_external(ids: List[str],
             return map_dict
 
     map_dict = {}
-    for id in tqdm(ids):
+    for id in tqdm(ids, desc="Getting Ensembl IDs"):
         try:
             res = client.xref_external(species=species, symbol=id)
             if len(res) > 0:

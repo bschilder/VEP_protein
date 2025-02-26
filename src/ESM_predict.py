@@ -7,18 +7,18 @@
 import argparse
 import pathlib
 import string
-
-import torch
-
-from esm import Alphabet, FastaBatchedDataset, ProteinBertModel, pretrained, MSATransformer
 import pandas as pd
 from tqdm.auto import tqdm
-from Bio import SeqIO
 import itertools
 from typing import List, Tuple 
 import os
 
+from Bio import SeqIO
+import torch
+from esm2 import pretrained, MSATransformer
+
 import src.biopython as bp
+import src.vep_metrics as vm
 
 def remove_insertions(sequence: str) -> str:
     """ Removes any insertions into the sequence. Needed to load aligned sequences in an MSA. """
@@ -116,7 +116,8 @@ def create_parser():
     )
     parser.add_argument(
         "--verbose",
-        action="store_true",
+        type=bool,
+        default=True,
         help="Print verbose output"
     )
     # fmt: on
@@ -126,182 +127,38 @@ def create_parser():
         help="Do not use GPU even if available")
     return parser
 
-def check_sequence(sequence, 
-                   idx, 
-                   expected,
-                   type="wildtype",
-                   invert=False,
-                   is_ref=True,
-                   verbose=True,
-                   error=True):
-    
-    if bp.is_msa(sequence):
-        query = 0 if type == "wildtype" else 1
-        subseq = bp.query_msa(sequence, 
-                                pos=idx+1, 
-                                ref=0, 
-                                query=query,
-                                join_str="",
-                                error=error)
-        if invert:
-            if subseq == expected:
-                if verbose:
-                    print(f"Warning: The listed {type} is already present in the provided sequence at position {idx+1}: {subseq} == {expected} in {sequence}")
-        else:
-            txt = f"The listed {type} does not match the provided sequence at position {idx+1}: {subseq} != {expected} in {sequence}"
-            if error:
-                assert subseq == expected, txt
-            else:
-                if subseq != expected:
-                    if verbose:
-                        print(txt)
-    else:
-        txt = f"The listed {type} does not match the provided sequence at position {idx+1}: {sequence[idx]} != {expected} in {sequence}"
-        if is_ref:
-            if error:
-                assert sequence[idx] == expected, txt
-            else:
-                if sequence[idx] != expected:
-                    print(txt) 
-
-
-def _parse_mutation_row(mutation_row,
-                        offset_idx):
-    # parses "G195S" into wt="G", idx=195, mt="S"
-    """
-    Example:
-        parse_mutation_row("G195S") -> ("G", 195, "S")
-    """
-    wt, idx, mt = mutation_row[0], int(mutation_row[1:-1]) - offset_idx, mutation_row[-1]
-    assert isinstance(wt, str)
-    assert isinstance(idx, int)
-    assert isinstance(mt, str)
-    return wt, idx, mt
-
-def _check_ref_sequence(row,
-                        sequence,
-                        error=True,
-                        verbose=2):
-    if 'protein_sequence' in row.index:
-        ref_sequence1 = bp.preprocess_sequence(row['protein_sequence'])
-        ref_sequence2 = bp.preprocess_sequence(bp.get_sequence(sequence, 
-                                                               i=0))
-        txt = f"The protein sequence in the mutation row is not the same as the reference sequence in the MSA"
-        if verbose>1:
-                txt += f"\nMUT>> {ref_sequence1}\nMSA>> {ref_sequence2}" 
-        # Error or warning
-        if error:
-            assert ref_sequence1 == ref_sequence2, txt
-        else:
-            if ref_sequence1 != ref_sequence2:
-                if verbose>0:
-                    print(txt)
-
-def label_row(row,
-              mutation_col,
-              sequence, 
-              token_probs, 
-              alphabet, 
-              offset_idx,
-              is_ref):
-    
-    # Check that the protein sequence in the mutation row is the same as the sref equence in MSA
-    _check_ref_sequence(row=row,
-                        sequence=sequence,
-                        error=False)
-
-    mutation_row = row[mutation_col]
-    # parses "G195S" into wt="G", idx=195, mt="S"
-    wt, idx, mt = _parse_mutation_row(mutation_row, offset_idx)
-
-    # Check the wildtype sequence
-    try:
-        check_sequence(sequence=sequence, 
-                       idx=idx, 
-                       expected=wt, 
-                       type="wildtype", 
-                       is_ref=is_ref)
-    except AssertionError as e:
-        print(e)
-        return None
-
-    wt_encoded, mt_encoded = alphabet.get_idx(wt), alphabet.get_idx(mt)
-
-    # Check if the mutation position is out of bounds
-    seq_len = token_probs.size(1) - 1  # -1 for BOS token
-    if idx >= seq_len:
-        print(f"Mutation position {idx} is out of bounds for sequence length {seq_len}")
-        return None
-    # Compute the log probability of the mutation vs the wildtype
-    # add 1 for BOS token
-    score = token_probs[0, 1 + idx, mt_encoded] - token_probs[0, 1 + idx, wt_encoded]
-    return score.item()
-
-def mutate_sequence(mutation_row,
-                    sequence, 
-                    offset_idx=1, 
-                    is_ref=True):
-    
-    # Check the wildtype sequence
-    wt, idx, mt = _parse_mutation_row(mutation_row, offset_idx)
-    check_sequence(sequence=sequence, 
-                   idx=idx, 
-                   expected=wt, 
-                   type="wildtype", 
-                   is_ref=is_ref)
-
-    # Mutate the sequence
-    sequence_str = bp.get_sequence(sequence)
-    sequence_mut = sequence_str[:idx] + mt + sequence_str[(idx + 1) :]
-    if bp.is_msa(sequence):
-        sequence_mut = bp.as_msa([sequence[0].seq,
-                                  sequence_str])
-        
-    # Check the mutant sequence
-    check_sequence(sequence=sequence_mut, 
-                   idx=idx, 
-                   expected=mt, 
-                   type="mutant", 
-                   invert=True,
-                   is_ref=is_ref)
-
-    return wt, idx, mt, sequence_mut
-    
-def compute_pppl(row,
-                 mutation_col,
-                 sequence, 
-                 model, 
-                 alphabet, 
-                 offset_idx, 
-                 is_ref):
-    
-    # Check that the protein sequence in the mutation row is the same as the sref equence in MSA
-    _check_ref_sequence(row=row,
-                        sequence=sequence,
-                        error=False)
-    
-    mutation_row = row[mutation_col]
-    wt, idx, mt, sequence = mutate_sequence(mutation_row, sequence, offset_idx, is_ref)
- 
-    sequence_str = bp.preprocess_sequence(sequence)
-    # encode the sequence
+def seq_to_data(sequence,
+                name="protein1",
+                **kwargs):
     data = [
-        ("protein1", sequence_str),
-    ] 
+        (name, bp.preprocess_sequence(sequence, **kwargs)),
+    ]
+    return data
 
+def seq_to_batch(sequence,
+                 alphabet,
+                 **kwargs):
+    """Convert a sequence to a batch of data.
+    
+    Args:
+        sequence: The sequence to convert.
+        alphabet: The alphabet to use.
+    Returns:
+        batch_labels: The labels of the batch.
+        batch_strs: The strings of the batch.
+        batch_tokens: The tokens of the batch.
+    """
+    # Convert the sequence to data
+    data = seq_to_data(sequence, **kwargs)
+
+    # Get the batch converter
     batch_converter = alphabet.get_batch_converter()
-
-    batch_labels, batch_strs, batch_tokens = batch_converter(data)
-
-    # compute probabilities at each position
-    log_probs = []
-    for i in range(1, len(sequence_str) - 1):
-        batch_tokens_masked = batch_tokens.clone()
-        batch_tokens_masked[0, i] = alphabet.mask_idx
-        with torch.no_grad():
-            token_probs = torch.log_softmax(model(batch_tokens_masked.cuda())["logits"], dim=-1)
-        log_probs.append(token_probs[0, i, alphabet.get_idx(sequence_str[i])].item())  # vocab size
-    return sum(log_probs)
+    
+    # Convert the data to a batch
+    (batch_labels, 
+     batch_strs, 
+     batch_tokens) = batch_converter(data)
+    return batch_labels, batch_strs, batch_tokens
 
 def main(
     dms_input: str,
@@ -316,6 +173,7 @@ def main(
     nogpu: bool = False,
     is_ref: bool = False,
     force: bool = False,
+    progress_bar: bool = True,
     verbose: bool = True
 ):
     """Run ESM model predictions on mutation data.
@@ -383,55 +241,72 @@ def main(
 
         batch_converter = alphabet.get_batch_converter()
 
-        ## MSA models
+        ####-- MSA models --####
+        # Original code from: 
+        # https://github.com/facebookresearch/esm/blob/2b369911bb5b4b0dda914521b9475cad1656b2ac/examples/variant-prediction/predict.py#L161
         if isinstance(model, MSATransformer):
-            data = [read_msa(msa_path, msa_samples)]
+            #### masked-marginals-msa ####
+            
+            # Check that the scoring strategy is masked-marginals-msa
+            if scoring_strategy == "masked-marginals":
+                scoring_strategy = "masked-marginals-msa"
             assert (
-                scoring_strategy == "masked-marginals"
-            ), "MSA Transformer only supports masked marginal strategy"
+                scoring_strategy == "masked-marginals-msa"
+            ), "MSA Transformer only supports masked marginals strategy"
 
+            # Read the MSA
+            data = [read_msa(msa_path, msa_samples)]
+            
+            # Convert the data to a batch
             (batch_labels, 
              batch_strs, 
              batch_tokens) = batch_converter(data)
-            batch_tokens = batch_tokens.to(device)
+ 
+            token_probs = vm.get_token_probs(model=model,
+                                             batch_tokens=batch_tokens,
+                                             alphabet=alphabet,
+                                             method="masked-marginals-msa",
+                                             progress_bar=progress_bar)
 
-            all_token_probs = []
-            for i in tqdm(range(batch_tokens.size(2))):
-                batch_tokens_masked = batch_tokens.clone()
-                batch_tokens_masked[0, 0, i] = alphabet.mask_idx  # mask out first sequence
-                with torch.no_grad():
-                    token_probs = torch.log_softmax(
-                        model(batch_tokens_masked)["logits"], dim=-1
-                    )
-                all_token_probs.append(token_probs[:, 0, i])  # vocab size
-            token_probs = torch.cat(all_token_probs, dim=0).unsqueeze(0)
-
-            df[model_loc] = df.apply(
-                lambda row: label_row(
-                    row, mutation_col, sequence, token_probs, alphabet, offset_idx
+            tqdm.pandas(desc=f"Computing 'masked-marginals-msa' for {model_loc}", 
+                        disable=not progress_bar)
+            df[model_loc] = df.progress_apply(
+                lambda row: vm.compute_mt_wt_score(
+                    row, 
+                    mutation_col, 
+                    sequence, 
+                    token_probs, 
+                    alphabet, 
+                    offset_idx,
+                    is_ref=False
                 ),
                 axis=1,
             )
 
-        ## Non-MSA models
-        else:
-            data = [
-                ("protein1", bp.preprocess_sequence(sequence)),
-            ]
-            (batch_labels, 
-             batch_strs, 
-             batch_tokens) = batch_converter(data)
+        ####-- Non-MSA models --####
+        else: 
             
-
+            #### wt-marginals ####
+            # Original code from: 
+            # https://github.com/facebookresearch/esm/blob/2b369911bb5b4b0dda914521b9475cad1656b2ac/examples/variant-prediction/predict.py#L192
             if scoring_strategy == "wt-marginals":
-                # batch_tokens = batch_tokens.to(device)
-                # Compute the log probabilities of the wildtype sequence
-                with torch.no_grad():
-                    token_probs = torch.log_softmax(model(batch_tokens.cuda())["logits"], dim=-1)
+                
+                # Convert the sequence to a batch
+                (batch_labels, 
+                 batch_strs, 
+                 batch_tokens) = seq_to_batch(sequence,
+                                              alphabet)
+                
+                # Compute token probabilities
+                token_probs = vm.get_token_probs(model=model,
+                                                 alphabet=alphabet,
+                                                 batch_tokens=batch_tokens,
+                                                 method="wt-marginals",
+                                                 progress_bar=progress_bar)
                 
                 tqdm.pandas(desc=f"Computing 'wt-marginals' for {model_loc}")
                 df[model_loc] = df.progress_apply(
-                    lambda row: label_row(
+                    lambda row: vm.compute_mt_wt_score(
                         row, 
                         mutation_col,
                         sequence,
@@ -442,22 +317,29 @@ def main(
                     ),
                     axis=1,
                 )
+                
+            #### masked-marginals ####
+            # Original code from: 
+            # https://github.com/facebookresearch/esm/blob/2b369911bb5b4b0dda914521b9475cad1656b2ac/examples/variant-prediction/predict.py#L205
             elif scoring_strategy == "masked-marginals":
 
-                all_token_probs = []
-                for i in tqdm(range(batch_tokens.size(1)),
-                              desc=f"Computing 'masked-marginals' for {model_loc}"):
-                    batch_tokens_masked = batch_tokens.clone()
-                    batch_tokens_masked[0, i] = alphabet.mask_idx
-                    with torch.no_grad():
-                        token_probs = torch.log_softmax(
-                            model(batch_tokens_masked.cuda())["logits"], dim=-1
-                        )
-                    all_token_probs.append(token_probs[:, i])  # vocab size
-                token_probs = torch.cat(all_token_probs, dim=0).unsqueeze(0)
+                # Convert the sequence to a batch
+                (batch_labels, 
+                 batch_strs, 
+                 batch_tokens) = seq_to_batch(sequence,
+                                              alphabet)
 
-                df[model_loc] = df.apply(
-                    lambda row: label_row(
+                # Compute token probabilities
+                token_probs = vm.get_token_probs(model=model,
+                                                 alphabet=alphabet,
+                                                 batch_tokens=batch_tokens,
+                                                 method="masked-marginals", 
+                                                 progress_bar=progress_bar)
+
+                tqdm.pandas(desc=f"Computing 'masked-marginals' for {model_loc}", 
+                            disable=not progress_bar)
+                df[model_loc] = df.progress_apply(
+                    lambda row: vm.compute_mt_wt_score(
                         row,
                         mutation_col,
                         sequence,
@@ -468,11 +350,17 @@ def main(
                     ),
                     axis=1,
                 )
+
+            #### pseudo-ppl ####
+            # Original code from: 
+            # https://github.com/facebookresearch/esm/blob/2b369911bb5b4b0dda914521b9475cad1656b2ac/examples/variant-prediction/predict.py#L226
             elif scoring_strategy == "pseudo-ppl":
+                
                 # Update compute_pppl to use device
-                tqdm.pandas(desc=f"Computing 'pseudo-ppl' for {model_loc}")
+                tqdm.pandas(desc=f"Computing 'pseudo-ppl' for {model_loc}", 
+                            disable=not progress_bar)
                 df[model_location] = df.progress_apply(
-                    lambda row: compute_pppl(
+                    lambda row: vm.compute_pppl(
                         row,
                         mutation_col,
                         sequence,

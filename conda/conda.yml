@@ -12,6 +12,7 @@ dependencies:
     - umap-learn
     - IProgress
     - ipywidgets
+    - ipkernel
     - pyfaidx
     - pysam
     - HTSeq
@@ -29,7 +30,9 @@ dependencies:
         - torchvision 
         - torchaudio
         # - fair-esm[esmfold] # Old ESM module
+        - "--editable=git+https://github.com/YaoYinYing/esm2.git" # https://github.com/evolutionaryscale/esm/issues/12#issuecomment-2668085866
         - esm # New ESM module
         - logomaker
+        - python-Levenshtein
         - ensembl-rest
-        - gprofiler
+        - gprofiler-official
