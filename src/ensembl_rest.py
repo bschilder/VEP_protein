@@ -1,4 +1,5 @@
 import os
+import warnings
 from typing import Dict, List, Optional, Union, Tuple, Set
 from pathlib import Path
 import pandas as pd
@@ -77,7 +78,8 @@ def xref_external(ids: List[str],
             if len(res) > 0:
                 map_dict[id] = {x['type']:x['id'] for x in res}
         except Exception as e:
-            print(e)
+            if verbose:
+                warnings.warn(f"Error getting Ensembl IDs for {id}: {e}")
     if cache is not None: 
         utils.save_json(map_dict, save_path)
     return map_dict
@@ -165,7 +167,7 @@ def _map_ids_lookup_post(df: pd.DataFrame,
                 map_k_v = {k:v[key] if key in v.keys() else {k:None} for k,v in map_dict.items()}
                 if col in df.columns:
                     if verbose:
-                        print(f"Warning: Overwriting column '{col}'")
+                        warnings.warn(f"Overwriting column '{col}'")
                 df[col] = df[input_col].map(map_k_v)
         return df
     else:
@@ -185,7 +187,7 @@ def _map_ids_xref_external(df,
         map_k_v = {k:v[key] for k,v in map_dict.items()}
         if col in df.columns:
             if verbose:
-                print(f"Warning: Overwriting column '{col}'")
+                warnings.warn(f"Overwriting column '{col}'")
         df[col] = df[input_col].map(map_k_v)
     return df
 
@@ -282,7 +284,7 @@ def transcript_haplotypes_get(ids: Optional[List[str]] = None,
                     raise e
                 else:
                     if verbose:
-                        print(f"Error getting haplotypes for {tx_id}: {e}")
+                        warnings.warn(f"Error getting haplotypes for {tx_id}: {e}")
                     continue
     return haplotypes
 
@@ -441,7 +443,7 @@ def get_variation(variant_id: str,
             raise e
         else:
             if verbose:
-                print(f"Error getting info for {variant_id}: {e}")
+                warnings.warn(f"Error getting info for {variant_id}: {e}")
             variation = None
     return variation
 

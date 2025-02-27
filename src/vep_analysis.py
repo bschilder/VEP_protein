@@ -391,6 +391,7 @@ def plot_vep_violin(vep_df,
                     freq_filters = {'freq_1000GENOMES:phase_3:ALL':None},
                     figsize=[6, 8],
                     add_side_labels = False,
+                    add_stats = False,
                     verbose=True
                     ):
     from scipy import stats  

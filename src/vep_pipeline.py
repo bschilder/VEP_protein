@@ -2,6 +2,7 @@ import os
 import pandas as pd
 import argparse
 import pathlib 
+import warnings
 from tqdm.auto import tqdm
 
 # Local imports
@@ -163,6 +164,7 @@ def vep_pipeline(prot_df: pd.DataFrame = None,
     
     # Save paths
     save_paths = {}
+    
     # Iterate over models
     for model_location in models:
 
@@ -170,13 +172,22 @@ def vep_pipeline(prot_df: pd.DataFrame = None,
         scoring_strategy = scoring_strategies[model_location]
 
         _check_scoring_strategy(scoring_strategy, verbose=verbose)
+
+        # Filter proteins that aren't too long for the model (according to the reference sequence length)
+        if run_filter_prot_df:
+            prot_df_model = filter_model_seq_len(prot_df=prot_df, 
+                                                 model_location=model_location,
+                                                 haplotypes=haplotypes,
+                                                 verbose=verbose)
+        else:
+            prot_df_model = prot_df
         
         # Iterate over proteins
-        for pid in tqdm(prot_df['protein'].unique().tolist(),
-                         desc="Processing proteins"):
+        for pid in tqdm(prot_df_model['protein'].unique().tolist(),
+                        desc="Processing proteins"):
             
-            assert 'protein' in prot_df.columns
-            prot_df_i = prot_df.loc[prot_df['protein']==pid]
+            assert 'protein' in prot_df_model.columns
+            prot_df_i = prot_df_model.loc[prot_df_model['protein']==pid]
             assert prot_df_i.shape[0] < 2, f"Multiple rows found for protein {pid}"
             assert len(prot_df_i)>0
             
@@ -210,11 +221,11 @@ def vep_pipeline(prot_df: pd.DataFrame = None,
                     else:
                         seq_name_save = seq_name
                         
-                    if not _check_seq_len(seqs=seqs, 
-                                          model_location=model_location, 
-                                          pid=pid, 
-                                          seq_name=seq_name, 
-                                          verbose=verbose):
+                    if not _check_model_seq_len(seqs=seqs, 
+                                                model_location=model_location, 
+                                                pid=pid, 
+                                                seq_name=seq_name, 
+                                                verbose=verbose):
                         continue
                     
                     # Convert to MultipleSequenceAlignment so we can inject mutations at the correct positions
@@ -286,13 +297,13 @@ def _check_models(models: list[str],
     assert len(models)>0
     return models
 
-def _check_seq_len(seqs: list,
-                   model_location: str, 
-                   pid: str,
-                   seq_name: str,
-                   model_checks: dict = {'esm1v':1024,
-                                         'esm1b':1024},
-                   verbose: bool = True) -> bool:
+def _check_model_seq_len(seqs: list,
+                         model_location: str, 
+                         pid: str = None,
+                         seq_name: str = None,
+                         model_checks: dict = {'esm1v':1024,
+                                                 'esm1b':1024},
+                         verbose: bool = True) -> bool:
     """Check if sequence length is compatible with model constraints.
     
     Args:
@@ -310,7 +321,23 @@ def _check_seq_len(seqs: list,
         ESM1b/v models cannot handle sequences longer than 1024 residues
         See: https://github.com/facebookresearch/esm/issues/166
     """
-    seq_len = len(bp.preprocess_sequence(seqs[1]))
+    # Check if pid and seq_name are provided
+    if pid is None:
+        pid = ""
+    if seq_name is None:
+        seq_name = ""
+    
+    # Get sequence
+
+    if isinstance(seqs, int):
+        # Interpret seqs as sequence length
+        seq_len = seqs
+    else:
+        # Interpret seqs as sequence
+        seqs = bp.get_sequence(seqs)
+        seq_len = len(bp.preprocess_sequence(seqs))
+
+    # Check if sequence length is compatible with model constraints
     for model, max_len in model_checks.items():
         if model_location.startswith(model) and seq_len > max_len:
             if verbose:
@@ -321,7 +348,7 @@ def _check_seq_len(seqs: list,
 def _check_scoring_strategy(scoring_strategy: list[str],
                             verbose: bool = True):
     if "pseudo-ppl" in scoring_strategy and verbose:
-        print("Warning: scoring_strategy='pseudo-ppl' can take significant compute for large protein sequences, as it considers the entire sequence at once.") 
+        warnings.warn("scoring_strategy='pseudo-ppl' can take significant compute for large protein sequences, as it considers the entire sequence at once.") 
 
 
 def _check_prot_df(prot_df) -> pd.DataFrame:
@@ -406,9 +433,20 @@ def _filter_protein_ids(prot_df: pd.DataFrame,
 
 def add_sequence_checks(prot_df: pd.DataFrame,
                         haplotypes: dict[str, dict[str, str]],
+                        force: bool = False,
                         verbose: bool = True):
     """Add the sequence length to the protein dataframe.
     """
+
+    new_cols = ['proteingym_seq_len', 
+                'haplosaurus_seq_len', 
+                'proteingym_haplosaurus_seq_sim', 
+                'proteingym_haplosaurus_seq_identical']
+    if  all([col in prot_df.columns for col in new_cols]) and not force:
+        if verbose>1:
+            print("Sequence length checks already computed. Skipping sequence length checks.")
+        return prot_df
+    
     # Get haplotype sequences
     hap_seqs = hs.get_haplotype_seqs(haplotypes,
                                     aligned=2,
@@ -445,14 +483,59 @@ def add_sequence_checks(prot_df: pd.DataFrame,
     return prot_df
     
 
-        
+def filter_model_seq_len(prot_df: pd.DataFrame,
+                         model_location: str = None,
+                         haplotypes: dict[str, dict[str, str]] = None,
+                         verbose: bool = True) -> pd.DataFrame:
+    """Filter the protein dataframe by sequence length.
+    """ 
+    if model_location is not None:
+        prot_df = prot_df.copy()
+        model_location = utils.one_only(model_location)
+        prot_df = add_sequence_checks(prot_df=prot_df,
+                                      haplotypes=haplotypes, 
+                                      verbose=verbose)
+        # Filter by sequence length
+        proteins_before = prot_df['protein'].nunique()
+        prot_df.loc[:,'model_seq_len_check'] = prot_df.apply(
+            lambda x: _check_model_seq_len(seqs=x['proteingym_seq_len'][0], 
+                                          model_location=model_location, 
+                                          pid=x['protein'], 
+                                          verbose=False), 
+            axis=1)
+        prot_df = prot_df.loc[prot_df['model_seq_len_check'] == True]
+        prot_df = prot_df.drop(columns=['model_seq_len_check'])
+        proteins_after = prot_df['protein'].nunique()
+        if verbose:
+            print(f"Filtered {proteins_before - proteins_after} / {proteins_before} proteins due to sequences being too long for model '{model_location}'")
+
+    return prot_df
+
+def _filter_seq_len_mismatch(prot_df: pd.DataFrame,
+                             haplotypes: dict[str, dict[str, str]], 
+                             verbose: bool = True) -> pd.DataFrame:
+    """Filter the protein dataframe by sequence length mismatch.
+    """
+    prot_df = add_sequence_checks(prot_df=prot_df,
+                                  haplotypes=haplotypes,
+                                  verbose=verbose) 
+    # Filter by sequence length mismatch
+    proteins_before = prot_df['protein'].nunique()
+    prot_df = prot_df.loc[prot_df['proteingym_haplosaurus_seq_identical'] == True]
+    proteins_after = prot_df['protein'].nunique()
+    if verbose and proteins_before - proteins_after > 0:
+        print(f"Filtered {proteins_before - proteins_after} / {proteins_before} proteins due to sequence length mismatch")
+    return prot_df
+
 
 def filter_prot_df(prot_df: pd.DataFrame,
                    protein_ids: list[str] = None,
                    source_types: list[str] = None,
+                   model_location: str = None,
                    protein_id_col: str = None,
                    ens_id_col: str = None,
                    haplotypes: dict[str, dict[str, str]] = None,
+                   run_filter_seq_len_mismatch: bool = True,
                    verbose: bool = True) -> pd.DataFrame:
     """Filter the protein dataframe.
     This function is used to filter the protein dataframe by protein ids, source types, and haplotypes.
@@ -492,6 +575,16 @@ def filter_prot_df(prot_df: pd.DataFrame,
                                            ens_id_col=ens_id_col,
                                            haplotypes=haplotypes,
                                            verbose=verbose) 
+    # Filter by sequence length mismatch
+    if run_filter_seq_len_mismatch:
+        prot_df = _filter_seq_len_mismatch(prot_df=prot_df,
+                                            haplotypes=haplotypes,
+                                            verbose=verbose)
+    if model_location is not None:
+        prot_df = filter_model_seq_len(prot_df=prot_df,
+                                      model_location=model_location,
+                                      haplotypes=haplotypes,
+                                      verbose=verbose)
     # Report the number of unique proteins 
     assert len(prot_df)>0
     if verbose:

@@ -5,6 +5,7 @@
 # LICENSE file in the root directory of this source tree.
 
 import os
+import warnings
 import argparse
 import pathlib 
 import pandas as pd
@@ -241,7 +242,13 @@ def main(
             model_loc = "esm1v_t33_650M_UR90S_1"
         
         # Load the model
-        model, alphabet = pretrained.load_model_and_alphabet(model_loc)
+        with warnings.catch_warnings():
+            # Suppress warning about missing regression weights (not needed for current VEP metrics?)
+            if verbose < 2:
+                warnings.filterwarnings('ignore', 
+                                        category=UserWarning, 
+                                        message='Regression weights not found, predicting contacts will not produce correct results.')
+            model, alphabet = pretrained.load_model_and_alphabet(model_loc)
         model.eval()
         
         # Move the model to the device

@@ -1,4 +1,5 @@
 from tqdm.auto import tqdm
+import warnings
 import torch
 
 import src.utils as utils
@@ -26,7 +27,7 @@ def check_sequence(sequence,
         if invert:
             if subseq == expected:
                 if verbose:
-                    print(f"Warning: The listed {type} is already present in the provided sequence at position {pos}: {subseq} == {expected} in {sequence}")
+                    warnings.warn(f"The listed {type} is already present in the provided sequence at position {pos}: {subseq} == {expected} in {sequence}")
         else:
             txt = f"The listed {type} does not match the provided sequence at position {pos}: {subseq} != {expected} in {sequence}"
             if error:
@@ -34,7 +35,7 @@ def check_sequence(sequence,
             else:
                 if subseq != expected:
                     if verbose:
-                        print(txt)
+                        warnings.warn(txt)
     else:
         txt = f"The listed {type} does not match the provided sequence at position {pos}: {sequence[pos]} != {expected} in {sequence}"
         if is_ref:
@@ -43,7 +44,7 @@ def check_sequence(sequence,
             else:
                 if bp.preprocess_sequence(sequence)[pos-1] != expected:
                     if verbose:
-                        print(txt) 
+                        warnings.warn(txt) 
 
 def _parse_mutation_row(mutation_row):
     # parses "G195S" into wt="G", pos=195, mt="S"
@@ -74,7 +75,7 @@ def check_ref_sequence(row,
         else:
             if ref_sequence1 != ref_sequence2:
                 if verbose>0:
-                    print(txt) 
+                    warnings.warn(txt) 
 
 
 def compute_mt_wt_score(row,
@@ -114,7 +115,7 @@ def compute_mt_wt_score(row,
                        type="wildtype", 
                        is_ref=is_ref)
     except AssertionError as e:
-        print(e)
+        warnings.warn(e)
         return None
     
     # Token probabilites are computed using the preprocessed sequence (after removing gaps)
@@ -131,7 +132,7 @@ def compute_mt_wt_score(row,
     seq_len = token_probs.size(1) - 1  # -1 for BOS token
     if idx_preprocessed is None:
         if verbose:
-            print(f"Mutation position {idx} is out of bounds for sequence length {seq_len}")
+            warnings.warn(f"Mutation position {idx} is out of bounds for sequence length {seq_len}")
         return None
     
     # Compute the log probability of the mutation vs the wildtype
@@ -228,7 +229,7 @@ def get_token_probs(model,
             )
             for _ in tqdm(
                 range(1), 
-                desc="Computing token probabilities:'wt-marginals'",
+                desc="Computing token probabilities: 'wt-marginals'",
                 disable=not progress_bar, 
                 leave=leave
             ):
@@ -240,7 +241,7 @@ def get_token_probs(model,
     elif method == "masked-marginals":
         all_token_probs = []
         for i in tqdm(range(batch_tokens.size(1)),
-                        desc=f"Computing token probabilities:'masked-marginals'",
+                        desc=f"Computing token probabilities: 'masked-marginals'",
                         disable=not progress_bar):
             batch_tokens_masked = batch_tokens.clone()
             batch_tokens_masked[0, i] = alphabet.mask_idx
@@ -257,7 +258,7 @@ def get_token_probs(model,
     elif method == "masked-marginals-msa":
         all_token_probs = []
         for i in tqdm(range(batch_tokens.size(2)), 
-                      desc="Computing token probabilities:'masked-marginals-msa'",
+                      desc="Computing token probabilities: 'masked-marginals-msa'",
                       disable=not progress_bar, 
                       leave=leave):
             batch_tokens_masked = batch_tokens.clone()
@@ -279,7 +280,7 @@ def get_token_probs(model,
         # compute probabilities at each position
         log_probs = []
         for i in tqdm(range(1, len(sequence_str) - 1),
-                      desc="Computing token probabilities:'pseudo-ppl'",
+                      desc="Computing token probabilities: 'pseudo-ppl'",
                       disable=not progress_bar, 
                       leave=leave):
             batch_tokens_masked = batch_tokens.clone()

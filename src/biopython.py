@@ -2,12 +2,14 @@ from typing import Optional, Union, List, Tuple
 import string
 import os
 import itertools
+import warnings
 import numpy as np
 from Bio.Seq import Seq
 from Bio.SeqRecord import SeqRecord
 from Bio.SeqFeature import SeqFeature
 from Bio.Align import MultipleSeqAlignment
 from Bio import SeqIO
+
 import src.utils as utils
 
 
@@ -213,7 +215,7 @@ def query_msa(msa: MultipleSeqAlignment,
             raise ValueError(txt)
         else:
             if verbose:
-                print("Warning:",txt)
+                warnings.warn(txt)
             return None
         
     subseqs = np.array(list(msa[query].seq))[idxs_bool].tolist()

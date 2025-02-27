@@ -1,4 +1,5 @@
 import os
+import warnings
 from typing import Dict, List, Optional, Union, Tuple, Set
 from pathlib import Path
 import pandas as pd
@@ -596,7 +597,7 @@ def get_haplotype_seqs(haplotypes: Union[Dict[str, Dict], Dict[str, List[Dict]]]
     hap_seqs = {}
     missing_seqs = []
     if aligned!=2:
-        print(f'Warning: Aligned must be 2 to convert to MSA (as_msa=True)')
+        warnings.warn('Aligned must be 2 to convert to MSA (`as_msa=True`)')
         as_msa = False
     for tx_id in tqdm(haplotypes.keys(),
                       desc="Getting haplotype sequences"):
@@ -621,7 +622,7 @@ def get_haplotype_seqs(haplotypes: Union[Dict[str, Dict], Dict[str, List[Dict]]]
                     hap_seqs[tx_id] = haplotypes[tx_id][0]['seq']
             else:
                 if verbose:
-                    print(f"No seqs found for {tx_id}")
+                    warnings.warn(f"No seqs found for {tx_id}")
                 missing_seqs += [tx_id]
                 continue
     if as_msa:
@@ -752,16 +753,15 @@ def add_haplotype_freqs(df: pd.DataFrame,
                 max_freq_idx = df.loc[has_freqs, freq_cols].idxmax(axis=1)
                 df.loc[has_freqs, 'top_pop'] = max_freq_idx.str.replace('freq_', '')
             else:
-                print("Warning: All frequency columns contain NA values")
+                warnings.warn("All frequency columns contain NA values")
         else:
-            print("Warning: No frequency columns found")
+            warnings.warn("No frequency columns found")
 
     if add_top_superpop:
         if 'top_pop' in df.columns:
             if 'top_superpop' not in df.columns or force:
                 pops = onekg.get_sample_metadata()
                 pop_map = dict(zip(pops['Population Code'], pops['Super Population']))
-                print(pop_map)
                 df['top_superpop'] = df['top_pop'].str.replace(f'{cohorts[0]}:', '').str.split('_').str[0].map(pop_map)
                 df['top_superpop'].fillna('N/A', inplace=True) 
     return df

@@ -2,6 +2,7 @@
 import os
 import pandas as pd
 import pooch
+import warnings
 from gprofiler import GProfiler
 
 import src.utils as utils
@@ -145,7 +146,7 @@ def map_ids(df,
     existing_cols = utils.intersect(df.columns, [target_namespace,'incoming','converted','name'])
     if len(existing_cols) > 0:
         if verbose:
-            print('Warning: Dropping columns in df and id_map overlap:',",".join(existing_cols))        
+            warnings.warn('Dropping columns in df and id_map overlap:',",".join(existing_cols))        
         df = df.drop(columns=existing_cols)
 
     if id_map is None:
@@ -170,7 +171,7 @@ def map_ids(df,
     overlap_cols = list(set(df.columns) & set(id_map.columns) - set([on_left, on_right]))
     if len(overlap_cols) > 0:
         if verbose:
-            print('Warning: Dropping columns in df and id_map overlap:',",".join(overlap_cols))
+            warnings.warn('Dropping columns in df and id_map overlap:',",".join(overlap_cols))
         df = df.drop(columns=overlap_cols)
     
     # Merge the ID mapping
