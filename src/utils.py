@@ -855,5 +855,7 @@ def check_arg(func,
     options = func.__defaults__[arg_index]
     if max_args is not None:
         arg = as_list(arg)[:max_args]
+        if max_args==1:
+            arg = one_only(arg)
     assert arg in options, f"Invalid argument: '{arg}'. Must be one of {','.join(options)}"
     return arg

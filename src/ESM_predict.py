@@ -4,47 +4,17 @@
 # This source code is licensed under the MIT license found in the
 # LICENSE file in the root directory of this source tree.
 
-import argparse
-import pathlib
-import string
-import pandas as pd
-from tqdm.auto import tqdm
-import itertools
-from typing import List, Tuple 
 import os
-
-from Bio import SeqIO
+import argparse
+import pathlib 
+import pandas as pd
+from tqdm.auto import tqdm  
 import torch
 from esm2 import pretrained, MSATransformer
 
 import src.biopython as bp
 import src.vep_metrics as vm
-
-def remove_insertions(sequence: str) -> str:
-    """ Removes any insertions into the sequence. Needed to load aligned sequences in an MSA. """
-    # This is an efficient way to delete lowercase characters and insertion characters from a string
-    deletekeys = dict.fromkeys(string.ascii_lowercase)
-    deletekeys["."] = None
-    deletekeys["*"] = None
-
-    translation = str.maketrans(deletekeys)
-    return sequence.translate(translation)
-
-
-def read_msa(filename: str, nseq: int) -> List[Tuple[str, str]]:
-    """ Reads the first nseq sequences from an MSA file, automatically removes insertions.
-    
-    The input file must be in a3m format (although we use the SeqIO fasta parser)
-    for remove_insertions to work properly."""
-    if not os.path.exists(filename):
-        raise FileNotFoundError(f"MSA file not found: {filename}")
-    msa = [
-        (record.description, remove_insertions(str(record.seq)))
-        for record in itertools.islice(SeqIO.parse(filename, "fasta"), nseq)
-    ]
-    return msa
-
-
+ 
 def create_parser():
     parser = argparse.ArgumentParser(
         description="Label a deep mutational scan with predictions from an ensemble of ESM-1v models."  # noqa
@@ -160,6 +130,46 @@ def seq_to_batch(sequence,
      batch_tokens) = batch_converter(data)
     return batch_labels, batch_strs, batch_tokens
 
+
+  
+def compute_pppl(row,
+                 mutation_col,
+                 sequence, 
+                 model, 
+                 alphabet, 
+                 offset_idx, 
+                 is_ref,
+                 progress_bar=True):
+    
+    # Check that the protein sequence in the mutation row is the same as the sref equence in MSA
+    vm.check_ref_sequence(row=row,
+                          sequence=sequence,
+                          error=False)
+    
+    # Mutate the sequence 
+    wt, pos, idx, mt, sequence_mut = vm.mutate_sequence(mutation_row=row[mutation_col], 
+                                                        sequence=sequence, 
+                                                        offset_idx=offset_idx, 
+                                                        is_ref=is_ref)
+    sequence_mut = bp.preprocess_sequence(sequence_mut)
+    
+    # Encode the mutated sequence
+    (batch_labels, 
+     batch_strs, 
+     batch_tokens) = seq_to_batch(sequence_mut, alphabet)
+
+    # Compute the log probabilities of the mutated sequence
+    log_probs = vm.get_token_probs(model=model,
+                                  batch_tokens=batch_tokens,
+                                  sequence=sequence_mut,
+                                  alphabet=alphabet,
+                                  method="pseudo-ppl",
+                                  progress_bar=progress_bar)
+    
+    # Return the sum of the log probabilities
+    return sum(log_probs)
+ 
+
 def main(
     dms_input: str,
     dms_output: str, 
@@ -235,11 +245,7 @@ def main(
         model.eval()
         
         # Move the model to the device
-        model = model.to(device)
-        if device.type == "cuda":
-            print("Transferred model to GPU")
-
-        batch_converter = alphabet.get_batch_converter()
+        model = model.to(device) 
 
         ####-- MSA models --####
         # Original code from: 
@@ -255,9 +261,10 @@ def main(
             ), "MSA Transformer only supports masked marginals strategy"
 
             # Read the MSA
-            data = [read_msa(msa_path, msa_samples)]
+            data = bp.read_msa(msa_path, msa_samples)
             
             # Convert the data to a batch
+            batch_converter = alphabet.get_batch_converter()
             (batch_labels, 
              batch_strs, 
              batch_tokens) = batch_converter(data)
@@ -314,6 +321,7 @@ def main(
                         alphabet,
                         offset_idx,
                         is_ref,
+                        verbose=verbose
                     ),
                     axis=1,
                 )
@@ -347,6 +355,7 @@ def main(
                         alphabet,
                         offset_idx,
                         is_ref,
+                        verbose=verbose
                     ),
                     axis=1,
                 )
@@ -359,8 +368,8 @@ def main(
                 # Update compute_pppl to use device
                 tqdm.pandas(desc=f"Computing 'pseudo-ppl' for {model_loc}", 
                             disable=not progress_bar)
-                df[model_location] = df.progress_apply(
-                    lambda row: vm.compute_pppl(
+                df[model_loc] = df.progress_apply(
+                    lambda row: compute_pppl(
                         row,
                         mutation_col,
                         sequence,
@@ -372,10 +381,14 @@ def main(
                     axis=1,
                 )
 
-    if df[model_location].isna().all():
-        if verbose:
-            print(f"No predictions generated for {model_location}. Skipping file save.")
+    # Check if there are any predictions
+    if df.dropna(subset=model_location, how="all").empty:
+        if verbose>1:
+            print(f"No predictions generated for {model_loc}. Skipping file save.")
+    # Save the results
     else:
+        if verbose>1:
+            print(f"Saving results to {dms_output}")
         df.to_csv(dms_output)
 
 ### MAIN SCRIPT ###

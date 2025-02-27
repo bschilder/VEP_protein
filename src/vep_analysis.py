@@ -26,7 +26,8 @@ def merge_vep(save_dir = None,
               add_metadata=True,
               target_namespace='ENST',
               col_map= {'mutant': 'mutant', 
-                        'protein': 'protein'}
+                        'protein': 'protein'},
+              verbose=True
               ):
     """
     Merge VEP results from multiple files into a single dataframe.
@@ -62,7 +63,8 @@ def merge_vep(save_dir = None,
         all_files = glob.glob(
             os.path.join(save_dir, "**", f"{ss}.csv.gz"), 
                          recursive=True)
-        print("Found", len(all_files), ss, "files") 
+        if verbose:
+            print("Found", len(all_files), ss, "files") 
         if len(all_files) == 0:
             continue
         # Read each file and append to list
@@ -84,7 +86,8 @@ def merge_vep(save_dir = None,
                     df['filename'] = filename 
                 dfs.append(df) 
             except Exception as e:
-                print(f"Error reading {filename}: {str(e)}")
+                if verbose:
+                    print(f"Error reading {filename}: {str(e)}")
                 continue
         
     # Concatenate all dataframes
@@ -545,36 +548,33 @@ def plot_vep_violin(vep_df,
                                         linewidth=connection_linewidth)
         
         # Add statistical test
-        # Perform one-way ANOVA if more than 2 categories, t-test if exactly 2
-        category_vals = [protein_data[~protein_data['is_ref'] & (protein_data[clinsig_col] == cat)][y_col] 
-                        for cat in categories]
-        
-        if len(categories) == 2:
-            stat, pval = stats.ttest_ind(*category_vals)
-        else:
-            stat, pval = stats.f_oneway(*category_vals)
-        
-        y_max = max(val.max() for val in category_vals)
-        y_min = min(val.min() for val in category_vals)
-        y_range = y_max - y_min
-        y_bracket = y_max + 0.03 * y_range
-        
-        if pval < 0.001:
-            pval_text = 'p < 0.001'
-        else:
-            pval_text = f'p = {pval:.3f}'
+        if add_stats:
+            # Perform one-way ANOVA if more than 2 categories, t-test if exactly 2
+            category_vals = [protein_data[~protein_data['is_ref'] & (protein_data[clinsig_col] == cat)][y_col] 
+                            for cat in categories]
             
-        ax.text(len(categories)/2 - 0.5, y_bracket+0.5*y_range*0.03, pval_text, ha='center', va='bottom')
+            if len(categories) == 2:
+                stat, pval = stats.ttest_ind(*category_vals)
+            else:
+                stat, pval = stats.f_oneway(*category_vals)
+            
+            y_max = max(val.max() for val in category_vals)
+            y_min = min(val.min() for val in category_vals)
+            y_range = y_max - y_min
+            y_bracket = y_max + 0.03 * y_range
+            
+            if pval < 0.001:
+                pval_text = 'p < 0.001'
+            else:
+                pval_text = f'p = {pval:.3f}'
+                
+            ax.text(len(categories)/2 - 0.5, y_bracket+0.5*y_range*0.03, pval_text, ha='center', va='bottom')
+            
+            # Draw significance bracket
+            ax.plot([0, len(categories)-1], [y_bracket, y_bracket], 'k:', linewidth=1, alpha=0.8)
+            ax.plot([0, 0], [y_bracket-30, y_bracket], 'k:', linewidth=1, alpha=0.8)
+            ax.plot([len(categories)-1, len(categories)-1], [y_bracket-30, y_bracket], 'k:', linewidth=1, alpha=0.8)
         
-        # Draw significance bracket
-        ax.plot([0, len(categories)-1], [y_bracket, y_bracket], 'k:', linewidth=1, alpha=0.8)
-        ax.plot([0, 0], [y_bracket-30, y_bracket], 'k:', linewidth=1, alpha=0.8)
-        ax.plot([len(categories)-1, len(categories)-1], [y_bracket-30, y_bracket], 'k:', linewidth=1, alpha=0.8)
-        
-        n_haplotypes = protein_data['haplotype'].nunique()
-        n_mutants = protein_data.groupby(clinsig_col)['mutant'].nunique()
-        mutant_counts = [f"{cat}: {n_mutants[cat]}" for cat in categories]
-
         # Get summary of unique mutants per clinical significance
         mutant_summary_str = _summarise_mutants(vep_df, clinsig_col)
         final_label = _summarise_title(vep_df)  

@@ -253,7 +253,8 @@ def vep_pipeline(prot_df: pd.DataFrame = None,
                                 offset_idx=1,
                                 scoring_strategy=ss,
                                 is_ref=is_ref, 
-                                force=force
+                                force=force,
+                                verbose=verbose
                             )
                         else:
                             raise ValueError(f"Model {model_location} not supported")
