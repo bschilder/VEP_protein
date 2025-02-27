@@ -14,8 +14,13 @@ import src.haplosaurus as hs
 import src.gprofiler as gp
 import src.proteingym as pg
 import src.biopython as bp
+import src.vep_pipeline as vp
 
-
+def get_models_palette(palette="husl"):
+    models = vp.list_models()
+    palette = sns.color_palette(palette=palette, 
+                                n_colors=len(models))
+    return dict(zip(models, palette))
 
 def merge_vep(save_dir = None,
               scoring_strategy = ["wt-marginals", "masked-marginals", "pseudo-ppl"],
@@ -635,22 +640,25 @@ def _add_legend(g, palette=utils.get_clinsig_palette(), loc='upper center',
                  bbox_to_anchor=(0.5, 1.05),
                  top=0.9,
                  ncol=None):
+    
     handles = [plt.Rectangle((0,0),1,1, color=palette[label]) for label in palette]
     labels = list(palette.keys())
     if ncol is None:    
         ncol = len(palette)
-    g.fig.legend(handles, labels, 
+    g.figure.legend(handles, labels, 
                  loc=loc,
                  bbox_to_anchor=bbox_to_anchor,
                  ncol=ncol) 
-    g.fig.subplots_adjust(top=top)  # Adjust spacing for titles 
+    g.figure.subplots_adjust(top=top)  # Adjust spacing for titles 
 
 def plot_vep_density(vep_df, 
                      clinsig_col = 'clinsig',
                      palette = utils.get_clinsig_palette(),
                      model_location = None,
                      alpha=.8,
-                     figsize=[2,3.5],
+                     height=3,
+                     aspect=1.5,
+                     title_y=1,
                      sharex=True,
                      sharey=False,
                      verbose=True,
@@ -668,17 +676,17 @@ def plot_vep_density(vep_df,
                                           column='scoring_strategy', 
                                           extra_sort_cols=['model_location','clinsig'],
                                           ascending=[False, True, True])
-    n_scoring_strategies = vep_df['scoring_strategy'].nunique()
 
     vep_df = _filter_vep_df(vep_df, verbose=verbose) 
     # Create facet grid
     g = sns.FacetGrid(data=vep_df, 
                     col='scoring_strategy',
                     row='model_location',
-                    height=figsize[0],
-                    aspect=(figsize[1]*n_scoring_strategies)/figsize[0],
+                    height=height,
+                    aspect=aspect,
                     sharex=sharex,
-                    sharey=sharey)
+                    sharey=sharey, 
+                    margin_titles=True)
 
     # Plot KDE
     g.map_dataframe(sns.kdeplot, 
@@ -694,11 +702,14 @@ def plot_vep_density(vep_df,
     mutant_summary_str = _summarise_mutants(vep_df, clinsig_col)
     final_label = _summarise_title(vep_df) 
     # Add title with protein, haplotype and mutant counts 
-    g.fig.suptitle(f'{final_label}\n{mutant_summary_str}', y=1.1)
+    g.figure.suptitle(f'{final_label}\n{mutant_summary_str}', y=title_y)
 
     # Add legend 
     _add_legend(g, palette=palette) 
+    _rm_subplot_prefixes(g)
 
+    plt.tight_layout()
+    plt.show()
     # Add vertical lines for REF haplotypes
     # for ax in g.axes.flat:
     #     ref_data = esm_vep[(esm_vep['protein'] == np_id) & 
@@ -759,7 +770,7 @@ def plot_vep_variance(vep_df,
     g.set_xticklabels(rotation=45, ha='right')
     
     # Remove subplot titles and add margin titles
-    g.fig.suptitle("")  # Remove overall title if any
+    g.figure.suptitle("")  # Remove overall title if any
 
     _rm_subplot_prefixes(g)
     _add_legend(g, palette=palette) 
@@ -816,7 +827,7 @@ def plot_vep_percentiles(vep_df,
     g.set_xticklabels(rotation=45, ha='right')
 
     # Remove subplot titles and add margin titles
-    g.fig.suptitle(suptitle)  # Remove overall title if any
+    g.figure.suptitle(suptitle)  # Remove overall title if any
 
     _rm_subplot_prefixes(g)
 
@@ -825,3 +836,76 @@ def plot_vep_percentiles(vep_df,
 
     if return_df:
         return vep_df
+
+
+def _filter_palette(palette, labels):
+    return {k:v for k,v in palette.items() if k in labels}
+
+def plot_vep_pbratios(vep_df, 
+                        suptitle='Pathogenic/Benign Ratios \nlower means greater difference between Pathogenic and Benign VEPs)',
+                        groupby_cols =['model_location', 'haplotype', 'scoring_strategy','clinsig'],
+                        x='model_location',
+                        y=['path_benign_ratio','path_benign_ratio_strict',
+                           'path_benign_difference','path_benign_difference_strict'][0],
+                        hue='model_location',
+                        row="scoring_strategy",
+                        log_scale=True,
+                        func=sns.violinplot,
+                        palette = get_models_palette(),
+                        height=4,
+                        aspect=.9,
+                        sharex=True,
+                        sharey=True,
+                        return_df=True,
+                        add_legend=True,
+                        **kwargs):
+
+    y = utils.one_only(y) 
+
+    # Get filtered data
+    vep_pbratios = vep_df.groupby(groupby_cols)['VEP'].mean().reset_index().pivot(
+            index=['model_location', 'haplotype', 'scoring_strategy'],
+            columns='clinsig',
+            values='VEP'
+        ).reset_index()
+
+    if "difference" in y and log_scale:
+        import warnings
+        warnings.warn("Difference plots are not supported with log scale, setting log_scale to False")
+        log_scale = False
+
+    vep_pbratios['path_benign_ratio_strict'] = vep_pbratios['path'] / vep_pbratios['benign']
+    vep_pbratios['path_benign_difference_strict'] = vep_pbratios['path'] - vep_pbratios['benign']
+    vep_pbratios['path_benign_ratio'] = vep_pbratios[['path','likely_path']].mean(axis=1) / vep_pbratios[['benign','likely_benign']].mean(axis=1)
+    vep_pbratios['path_benign_difference'] = vep_pbratios['path'] - vep_pbratios['benign']
+ 
+    # Sort by scoring strategy
+    vep_pbratios = utils.sort_by_reverse_string(vep_pbratios, 
+                                            column='scoring_strategy', 
+                                            extra_sort_cols=['model_location'],
+                                            ascending=[False, True])
+
+    g = sns.FacetGrid(data=vep_pbratios, row=row, height=height, aspect=aspect, sharex=sharex, sharey=sharey)
+    g.map_dataframe(func, x=x, y=y, hue=hue, palette=palette, log_scale=log_scale, **kwargs)
+    # if log_scale:
+    #     g.set(yscale="log")
+
+    # Rotate x-axis labels for better readability
+    g.set_xticklabels(rotation=45, ha='right')
+
+    # Remove subplot titles and add margin titles
+    g.figure.suptitle(suptitle)  # Remove overall title if any
+    
+
+    _rm_subplot_prefixes(g)
+
+    if add_legend:
+        labels = vep_pbratios[x].unique()
+        palette = _filter_palette(palette, labels)
+        _add_legend(g, palette=palette, ncol=1, loc='upper right', bbox_to_anchor=(1.7, 1))
+
+    plt.tight_layout()
+    plt.show()
+
+    if return_df:
+        return vep_pbratios

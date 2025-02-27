@@ -4,7 +4,7 @@ import argparse
 import pathlib 
 import warnings
 from tqdm.auto import tqdm
-
+import seaborn as sns
 # Local imports
 import src.config as config
 import src.utils as utils
@@ -36,9 +36,6 @@ def list_models(as_list=True):
         print(f"Available models:")
         for model in models:
             print(f"- {model}")
-
-
-
 
 def list_scoring_strategies(models: list[str] = None):
     """Get available scoring strategies for each available model.
