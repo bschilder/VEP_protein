@@ -631,12 +631,28 @@ def _filter_vep_df(vep_df,
         print(f"Filtered {((rows_before-rows_after)/rows_before)*100:.1f}% of rows with NAs in col 'VEP'")
     return vep_df
 
+def _add_legend(g, palette=utils.get_clinsig_palette(), loc='upper center',
+                 bbox_to_anchor=(0.5, 1.05),
+                 top=0.9,
+                 ncol=None):
+    handles = [plt.Rectangle((0,0),1,1, color=palette[label]) for label in palette]
+    labels = list(palette.keys())
+    if ncol is None:    
+        ncol = len(palette)
+    g.fig.legend(handles, labels, 
+                 loc=loc,
+                 bbox_to_anchor=bbox_to_anchor,
+                 ncol=ncol) 
+    g.fig.subplots_adjust(top=top)  # Adjust spacing for titles 
 
 def plot_vep_density(vep_df, 
                      clinsig_col = 'clinsig',
+                     palette = utils.get_clinsig_palette(),
                      model_location = None,
-                     alpha=.7,
-                     figsize=[4,4],
+                     alpha=.8,
+                     figsize=[2,3.5],
+                     sharex=True,
+                     sharey=False,
                      verbose=True,
                      **kwargs): 
     # Get filtered data
@@ -646,11 +662,12 @@ def plot_vep_density(vep_df,
         vep_df = vep_df.loc[vep_df['model_location'].isin(model_location)]
     else:
         model_location = _get_model_location(vep_df)
+
     # Sort by scoring strategy
     vep_df = utils.sort_by_reverse_string(vep_df, 
                                           column='scoring_strategy', 
-                                          extra_sort_cols=['clinsig'],
-                                          ascending=[False, True])
+                                          extra_sort_cols=['model_location','clinsig'],
+                                          ascending=[False, True, True])
     n_scoring_strategies = vep_df['scoring_strategy'].nunique()
 
     vep_df = _filter_vep_df(vep_df, verbose=verbose) 
@@ -660,15 +677,15 @@ def plot_vep_density(vep_df,
                     row='model_location',
                     height=figsize[0],
                     aspect=(figsize[1]*n_scoring_strategies)/figsize[0],
-                    sharex=False,
-                    sharey=False)
+                    sharex=sharex,
+                    sharey=sharey)
 
     # Plot KDE
     g.map_dataframe(sns.kdeplot, 
                     x='VEP',
                     hue=clinsig_col,
                     fill=True,
-                    palette=utils.get_clinsig_palette(), 
+                    palette=palette, 
                     alpha=alpha,
                     legend=True,
                     **kwargs)
@@ -679,6 +696,8 @@ def plot_vep_density(vep_df,
     # Add title with protein, haplotype and mutant counts 
     g.fig.suptitle(f'{final_label}\n{mutant_summary_str}', y=1.1)
 
+    # Add legend 
+    _add_legend(g, palette=palette) 
 
     # Add vertical lines for REF haplotypes
     # for ax in g.axes.flat:
@@ -690,3 +709,119 @@ def plot_vep_density(vep_df,
     #                   linestyle='--', 
     #                   alpha=0.5)
 
+def _rm_subplot_prefixes(g):
+    g.set_titles(row_template='{row_name}', 
+                 col_template='{col_name}')  # Only show model name without prefix
+
+def plot_vep_variance(vep_df,
+                      groupby_cols = ['model_location','protein','clinsig','mutant','scoring_strategy'],
+                      x='clinsig',
+                      y='VEP_variance',
+                      hue='clinsig',
+                      row='model_location',
+                      col='scoring_strategy',
+                      func=sns.boxplot,
+                      palette = utils.get_clinsig_palette(),
+                      height=3,
+                      aspect=.9,
+                      sharex=True,
+                      sharey=True,
+                      return_df=False,
+                      **kwargs):
+    # Get filtered data
+    vep_df = vep_df.copy()
+    vep_variance = vep_df.groupby(groupby_cols)['VEP'].var().reset_index().rename(columns={'VEP':'VEP_variance'})
+
+    # Sort by scoring strategy
+    vep_variance = utils.sort_by_reverse_string(vep_variance, 
+                                                column='scoring_strategy', 
+                                                extra_sort_cols=['model_location','clinsig'],
+                                                ascending=[False, True, True])
+
+    g = sns.FacetGrid(data=vep_variance, 
+                     row=row,
+                     col=col,
+                     height=height,
+                     aspect=aspect,
+                     sharex=sharex,
+                     sharey=sharey,
+                     margin_titles=True
+                     )  
+
+    g.map_dataframe(func,
+                    x=x,
+                    y=y,
+                    hue=hue,
+                    palette=palette,
+                    **kwargs)
+
+    # Rotate x-axis labels for better readability
+    g.set_xticklabels(rotation=45, ha='right')
+    
+    # Remove subplot titles and add margin titles
+    g.fig.suptitle("")  # Remove overall title if any
+
+    _rm_subplot_prefixes(g)
+    _add_legend(g, palette=palette) 
+
+    plt.tight_layout()
+    plt.show()
+
+    if return_df:
+        return vep_variance
+
+
+def plot_vep_percentiles(vep_df,
+                        is_ref=True,
+                        suptitle=None,
+                        groupby_cols = ['model_location','protein','clinsig','mutant','scoring_strategy'],
+                        x='clinsig',
+                        y='VEP_percentile',
+                        hue='clinsig',
+                        row='model_location',
+                        col='scoring_strategy',
+                        func=sns.boxplot,
+                        palette = utils.get_clinsig_palette(),
+                        height=3,
+                        aspect=.9,
+                        sharex=True,
+                        sharey=True,
+                        return_df=False,
+                        **kwargs):
+
+    if suptitle is None and is_ref:
+        suptitle = 'Reference Representativeness'
+    elif suptitle is None and not is_ref:
+        suptitle = y.replace('_', ' ')
+
+    # Get filtered data
+    if y not in vep_df.columns:
+        vep_df[y] = vep_df.groupby(groupby_cols)['VEP'].rank(pct=True)*100
+    vep_df = vep_df.copy()
+
+    # Filter for REF haplotypes
+    if is_ref:
+        vep_df = vep_df.loc[vep_df['is_ref']==True]
+
+    # Sort by scoring strategy
+    vep_df = utils.sort_by_reverse_string(vep_df, 
+                                                column='scoring_strategy', 
+                                                extra_sort_cols=['model_location','clinsig'],
+                                                ascending=[False, True, True])
+
+    g = sns.FacetGrid(data=vep_df, col=col, row=row, height=height, aspect=aspect, margin_titles=True, sharex=sharex, sharey=sharey)
+    g.map_dataframe(func, x=x, y=y, hue=hue, palette=palette, **kwargs)
+
+    # Rotate x-axis labels for better readability
+    g.set_xticklabels(rotation=45, ha='right')
+
+    # Remove subplot titles and add margin titles
+    g.fig.suptitle(suptitle)  # Remove overall title if any
+
+    _rm_subplot_prefixes(g)
+
+    plt.tight_layout()
+    plt.show()
+
+    if return_df:
+        return vep_df
