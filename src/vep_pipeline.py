@@ -38,6 +38,8 @@ def list_models(as_list=True):
             print(f"- {model}")
 
 
+
+
 def list_scoring_strategies(models: list[str] = None):
     """Get available scoring strategies for each available model.
 
@@ -138,7 +140,8 @@ def vep_pipeline(prot_df: pd.DataFrame = None,
             source_types = [source_types]
     
     # Scoring strategy
-    scoring_strategies = _check_scoring_strategies(scoring_strategies, models)
+    scoring_strategies = _check_scoring_strategies(scoring_strategies=scoring_strategies, 
+                                                    models=models)
 
     # Get mutation data (even if not provided)
     prot_df = _check_prot_df(prot_df=prot_df) 
@@ -171,7 +174,8 @@ def vep_pipeline(prot_df: pd.DataFrame = None,
         # Get scoring strategies for this model
         scoring_strategy = scoring_strategies[model_location]
 
-        _check_scoring_strategy(scoring_strategy, verbose=verbose)
+        _warn_scoring_strategies(scoring_strategy=scoring_strategy, 
+                                 verbose=verbose)
 
         # Filter proteins that aren't too long for the model (according to the reference sequence length)
         if run_filter_prot_df:
@@ -345,10 +349,36 @@ def _check_model_seq_len(seqs: list,
             return False
     return True
 
-def _check_scoring_strategy(scoring_strategy: list[str],
+def _warn_scoring_strategies(scoring_strategy: list[str],
+                            warn_on: list[str] = ["pseudo-ppl"],
                             verbose: bool = True):
-    if "pseudo-ppl" in scoring_strategy and verbose:
-        warnings.warn("scoring_strategy='pseudo-ppl' can take significant compute for large protein sequences, as it considers the entire sequence at once.") 
+    ss_warn = utils.intersect(utils.as_list(scoring_strategy), 
+                              utils.as_list(warn_on))
+    if len(ss_warn)>0:
+        if verbose:
+            warnings.warn(f"scoring_strategy='{','.join(ss_warn)}' can take significant compute for large protein sequences, as it considers the entire sequence at once.") 
+
+def _check_scoring_strategies(scoring_strategies,
+                              models):
+    
+    # Get default scoring strategies if none provided
+    if scoring_strategies is None:
+        scoring_strategies = list_scoring_strategies(models=models)
+    
+    # Convert to list or dict
+    if isinstance(scoring_strategies, list) or isinstance(scoring_strategies, str):
+        scoring_strategies = utils.as_list(scoring_strategies)
+        # Convert to dict
+        scoring_strategies = {model: scoring_strategies for model in models}
+    
+    # Check scoring strategies for each model
+    for model in models:
+        if model not in scoring_strategies:
+            raise ValueError(f"Model {model} not found in scoring_strategies")
+    
+    # Return
+    return scoring_strategies
+
 
 
 def _check_prot_df(prot_df) -> pd.DataFrame:
@@ -744,14 +774,6 @@ def _parse_scoring_strategies(scoring_strategies):
         result[model] = strategies.split(",")
     return result
 
-def _check_scoring_strategies(scoring_strategies,
-                              models):
-    if scoring_strategies is None:
-        scoring_strategies = ESM.list_scoring_strategies()
-    for model in models:
-        if model not in scoring_strategies:
-            raise ValueError(f"Model {model} not found in scoring_strategies")
-    return scoring_strategies
 
 
 

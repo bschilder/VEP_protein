@@ -381,8 +381,8 @@ def plot_vep_violin(vep_df,
                     max_proteins = None,             
                     bar_width = 0.5,
                     violin_alpha = 0.25,
-                    point_size = 4,
-                    point_alpha = 0.5,
+                    point_size = 3,
+                    point_alpha = 0.1,
                     palette = utils.get_clinsig_palette(),
                     add_connections = False, 
                     connection_alpha = 0.3,
@@ -578,9 +578,10 @@ def plot_vep_violin(vep_df,
         
         # Get summary of unique mutants per clinical significance
         mutant_summary_str = _summarise_mutants(vep_df, clinsig_col)
-        final_label = _summarise_title(vep_df)  
+        title_label1 = _summarise_title(vep_df, label_cols=['model_location'])
+        title_label2 = _summarise_title(vep_df)  
         
-        ax.set_title(f'{final_label}\n{mutant_summary_str}', 
+        ax.set_title(f'{title_label1}\n{title_label2}\n{mutant_summary_str}', 
                      y=title_y)
         ax.set_ylabel(f'{", ".join(vep_df["scoring_strategy"].unique())}')
         ax.set_xlabel('Clinical classification')
