@@ -20,9 +20,34 @@ import src.biopython as bp
 
  
 def list_models(prefix='esm',
+                recommended_models=False,
                 return_list=False):
-     
+    """Lists available ESM models from esm2.pretrained.
+    See here for descriptions of each model and recommendations for which ones to use:
+    https://github.com/facebookresearch/esm?tab=readme-ov-file#main-models-you-should-use-
+    
+    Args:
+        prefix (str, optional): Filter models starting with this prefix. Defaults to 'esm'.
+        recommended_models (bool, optional): If True, only returns models recommended by the ESM team. Defaults to False.
+        return_list (bool, optional): If True, returns list of model names. If False, prints them. Defaults to False.
+        
+    Returns:
+        list: List of model names if return_list=True, otherwise None
+    """
     models = [model_name for model_name in dir(esm2.pretrained) if model_name.startswith(prefix)]
+    # Filter by recommended models
+    if recommended_models:
+        recc_models = [
+            "esm2_t36_3B_UR50D", 
+            'esm2_t48_15B_UR50D',
+            'esmfold_v1',
+            'esm_msa1b_t12_100M_UR50S',
+            'esm1v_t33_650M_UR90S_1',
+            'esm1v_t33_650M_UR90S_5',
+            'esm_if1_gvp4_t16_142M_UR50'
+        ]
+        models = utils.intersect(models, recc_models)
+    # Return list of models
     if return_list:
         return models
     else:

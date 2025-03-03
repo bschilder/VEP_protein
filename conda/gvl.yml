@@ -1,4 +1,4 @@
-name: genome-loader
+name: gvl
 channels:
   - bioconda
   - conda-forge

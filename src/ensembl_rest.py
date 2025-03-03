@@ -37,8 +37,6 @@ def _params_to_filename(params: Optional[Dict],
         return 'file' + suffix
     return ";".join([f"{k}:{v}" for k,v in sorted(params.items())]) + suffix
 
-
-
 def xref_external(ids: List[str], 
                   client=None, 
                   species='homo_sapiens', 
@@ -115,14 +113,28 @@ def get_ensembl_client(client: Optional[ensembl_rest.EnsemblClient] = None,
 def lookup_post(ids,
                 batch_size: int = 500, 
                 params: dict = {},
-                client=None):
+                client=None) -> Dict[str, Dict[str, str]]:
     """
     Map Ensembl IDs to other Ensembl ID synonyms using the Ensembl REST API.
     For more information, see:
         https://ensemblrest.readthedocs.io/en/latest/#ensembl_rest.EnsemblClient.lookup_post
         https://rest.ensembl.org/documentation/info/lookup_post
+    Args:
+        ids (str or list): The IDs to map.
+        batch_size (int, optional): The batch size for the mapping. Defaults to 500.
+        params (dict, optional): The parameters for the mapping. Defaults to {}.
+        client (ensembl_rest.EnsemblClient, optional): The Ensembl client. Defaults to None.
+
+    Returns:
+        Dict[str, Dict[str, str]]: A dictionary mapping the IDs to their Ensembl IDs.
+    
+    Example:
+        >>> er.lookup_post(ids='ENST00000456328')
     """
     client = get_ensembl_client(client=client)
+    
+    # ids = utils.process_ids(ids)
+    
     batches = [ids[i:i+batch_size] for i in range(0, len(ids), batch_size)]
     map_dict = {}
     all_params = {}
@@ -257,6 +269,8 @@ def transcript_haplotypes_get(ids: Optional[List[str]] = None,
     if cache_only:
         force = False
 
+    ids = utils.process_ids(ids)
+
     # Get haplotypes
     for tx_id in tqdm(ids,
                       desc="Getting haplotypes"):
@@ -271,14 +285,35 @@ def transcript_haplotypes_get(ids: Optional[List[str]] = None,
             continue
         else:
             try:
-                haplotypes[tx_id] = client.transcript_haplotypes_get(
-                    id=tx_id,
-                    species=species,
-                    params=params
+                # First attempt with original ID
+                try:
+                    haplotypes[tx_id] = client.transcript_haplotypes_get(
+                        id=tx_id,
+                        species=species,
+                        params=params
                     )
+                except Exception as e1:
+                    # If first attempt fails, try mapping ID
+                    mapped = lookup_post(ids=[tx_id], client=client)
+                    if mapped and tx_id in mapped:
+                        mapped_id = mapped[tx_id].get('id')
+                        if mapped_id:
+                            # Second attempt with mapped ID
+                            haplotypes[tx_id] = client.transcript_haplotypes_get(
+                                id=mapped_id,
+                                species=species,
+                                params=params
+                            )
+                        else:
+                            raise e1
+                    else:
+                        raise e1
+                        
+                # Save successful result
                 utils.save_json(obj=haplotypes[tx_id],
-                                 save_path=save_path,
-                                 verbose=verbose>1)
+                              save_path=save_path,
+                              verbose=verbose>1)
+                              
             except Exception as e:
                 if error:
                     raise e

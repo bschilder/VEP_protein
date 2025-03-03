@@ -170,6 +170,14 @@ def compute_pppl(row,
     # Return the sum of the log probabilities
     return sum(log_probs)
  
+def _fix_esm_model_name(model_name):
+    if model_name == "esm1v_t33_650M_UR90S":
+        model_name = "esm1v_t33_650M_UR90S_1"
+    if model_name == "esmfold_v0":
+        model_name = "esmfold_3B_v0"
+    if model_name == "esmfold_v1":
+        model_name = "esmfold_3B_v1"
+    return model_name
 
 def main(
     dms_input: str,
@@ -238,8 +246,7 @@ def main(
     for model_loc in model_location:
         
         # Avoid an infinite loop of trying to download the model (internal to esm)
-        if model_loc == "esm1v_t33_650M_UR90S":
-            model_loc = "esm1v_t33_650M_UR90S_1"
+        model_loc = _fix_esm_model_name(model_loc)
         
         # Load the model
         with warnings.catch_warnings():

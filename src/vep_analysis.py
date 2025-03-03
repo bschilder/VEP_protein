@@ -6,7 +6,7 @@ import pathlib
 from tqdm.auto import tqdm
 import seaborn as sns
 import matplotlib.pyplot as plt
-
+from typing import Dict
 # Local imports
 import src.config as config
 import src.utils as utils
@@ -841,15 +841,18 @@ def plot_vep_percentiles(vep_df,
 def _filter_palette(palette, labels):
     return {k:v for k,v in palette.items() if k in labels}
 
-def plot_vep_pbratios(vep_df, 
-                        suptitle='Pathogenic/Benign Ratios \nlower means greater difference between Pathogenic and Benign VEPs)',
+
+def compute_bpratio(b,p):
+    return b/(b+p)
+
+def plot_vep_bpratios(vep_df, 
+                        suptitle='Benign/Pathogenic Ratios \n(Higher means greater relative difference\nbetween Benign vs. Pathogenic VEPs)',
                         groupby_cols =['model_location', 'haplotype', 'scoring_strategy','clinsig'],
                         x='model_location',
-                        y=['path_benign_ratio','path_benign_ratio_strict',
-                           'path_benign_difference','path_benign_difference_strict'][0],
+                        y=['benign_path_ratio','benign_path_ratio_strict'][0],
                         hue='model_location',
+                        y_label='VEP_Benign /\nVEP_Benign + VEP_Pathogenic',
                         row="scoring_strategy",
-                        log_scale=True,
                         func=sns.violinplot,
                         palette = get_models_palette(),
                         height=4,
@@ -868,16 +871,12 @@ def plot_vep_pbratios(vep_df,
             columns='clinsig',
             values='VEP'
         ).reset_index()
-
-    if "difference" in y and log_scale:
-        import warnings
-        warnings.warn("Difference plots are not supported with log scale, setting log_scale to False")
-        log_scale = False
-
-    vep_pbratios['path_benign_ratio_strict'] = vep_pbratios['path'] / vep_pbratios['benign']
-    vep_pbratios['path_benign_difference_strict'] = vep_pbratios['path'] - vep_pbratios['benign']
-    vep_pbratios['path_benign_ratio'] = vep_pbratios[['path','likely_path']].mean(axis=1) / vep_pbratios[['benign','likely_benign']].mean(axis=1)
-    vep_pbratios['path_benign_difference'] = vep_pbratios['path'] - vep_pbratios['benign']
+ 
+    vep_pbratios['benign_path_ratio_strict'] = compute_bpratio(b=vep_pbratios['benign'],
+                                                               p=vep_pbratios['path'])
+    vep_pbratios['benign_path_ratio'] = compute_bpratio(b=vep_pbratios[['benign','likely_benign']].mean(axis=1), 
+                                                        p=vep_pbratios[['path','likely_path']].mean(axis=1))
+    
  
     # Sort by scoring strategy
     vep_pbratios = utils.sort_by_reverse_string(vep_pbratios, 
@@ -886,7 +885,7 @@ def plot_vep_pbratios(vep_df,
                                             ascending=[False, True])
 
     g = sns.FacetGrid(data=vep_pbratios, row=row, height=height, aspect=aspect, sharex=sharex, sharey=sharey)
-    g.map_dataframe(func, x=x, y=y, hue=hue, palette=palette, log_scale=log_scale, **kwargs)
+    g.map_dataframe(func, x=x, y=y, hue=hue, palette=palette, **kwargs)
     # if log_scale:
     #     g.set(yscale="log")
 
@@ -895,7 +894,7 @@ def plot_vep_pbratios(vep_df,
 
     # Remove subplot titles and add margin titles
     g.figure.suptitle(suptitle)  # Remove overall title if any
-    
+    g.set_ylabels(y_label)
 
     _rm_subplot_prefixes(g)
 
@@ -909,3 +908,66 @@ def plot_vep_pbratios(vep_df,
 
     if return_df:
         return vep_pbratios
+    
+def add_haplotype_sequence(vep_df,
+                           haplotypes: Dict[str, Dict] = None, 
+                           force: bool = False,
+                           verbose: bool = True):
+    """
+    Add a column to the dataframe containing the haplotype sequence.
+    Args:
+        vep_df (pd.DataFrame): The dataframe to add the column to.
+        haplotypes (Dict[str, Dict]): The haplotypes to use.
+        force (bool): Whether to force the addition of the column.
+
+    Returns:
+        pd.DataFrame: The dataframe with the new column.
+    """
+    
+    if 'haplotype_sequence' not in vep_df.columns or force:
+        if haplotypes is None:
+            haplotypes = hs.get_haplotypes(verbose=verbose)
+        if verbose:
+            print("Getting haplotype sequences")
+        hap_seqs_flattened = hs.get_haplotype_seqs(haplotypes,
+                                                   add_haplotype_names=3)
+        if verbose:
+            print("Adding 'haplotype_sequence' column")
+        vep_df["haplotype_sequence"] = vep_df["haplotype"].map(hap_seqs_flattened)
+    if verbose:
+        print("Adding 'haplotype_sequence_len' column")
+    vep_df['haplotype_sequence_len'] = vep_df['haplotype_sequence'].apply(len)
+    return vep_df
+
+def add_mutant_out_of_frame(vep_df,
+                             haplotypes: Dict[str, Dict] = None, 
+                             protein_position_col: str = 'Protein_position',
+                             force: bool = False,
+                             verbose: bool = True):
+    """
+    Add a column to the dataframe indicating whether the mutant is out of frame.
+    i.e. if the mutation position within the amino acid sequence is greater than the haplotype sequence length.
+
+    Args:
+        vep_df (pd.DataFrame): The dataframe to add the column to.
+        haplotypes (Dict[str, Dict]): The haplotypes to use.
+        protein_position_col (str): The column name of the protein position.
+        force (bool): Whether to force the addition of the column.
+
+    Returns:
+        pd.DataFrame: The dataframe with the new column.
+    """
+    assert protein_position_col in vep_df.columns, f"Column {protein_position_col} not found in dataframe"
+    
+    if 'mutant_out_of_frame' not in vep_df.columns or force:
+        if verbose:
+            print("Adding 'haplotype_sequence' column")
+        vep_df = add_haplotype_sequence(vep_df=vep_df, 
+                                        haplotypes=haplotypes, 
+                                        force=force,
+                                        verbose=verbose)
+
+    if verbose:
+        print("Adding 'mutant_out_of_frame' column")
+    vep_df['mutant_out_of_frame'] = vep_df[protein_position_col] > vep_df['haplotype_sequence_len']
+    return vep_df

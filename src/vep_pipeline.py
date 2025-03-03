@@ -278,21 +278,26 @@ def _check_models(models: list[str],
     # Preprocess models
     if isinstance(models, str):
         models = [models]
-    models = list(set(models))
+    # Strip whitespace but preserve order
     models = [m.strip() for m in models]
 
-    # Check models
+    # Check models while preserving order
     unsupported_models = []
+    valid_models = []
     for model in models:
         if model not in list_models():
             unsupported_models.append(model)
+        else:
+            if model not in valid_models:  # Only add if not already present
+                valid_models.append(model)
+    
     if len(unsupported_models)>0:
         txt = f"Model(s) not supported: '{','.join(unsupported_models)}'"
         if error:
             raise ValueError(txt)
         else:
             print(txt)
-        models = [m for m in models if m not in unsupported_models]
+        models = valid_models
 
     # Return models
     assert len(models)>0

@@ -12,6 +12,7 @@ import src.biopython as bp
 import src.ontologies as on
 import src.ensembl_rest as er
 import src.onekg as onekg
+
 DIR_DICT = er.DIR_DICT
 DIR_DICT.update({
     "variants": os.path.join(config.DATA_DIR, "haplosaurus","variants",""),
@@ -587,7 +588,9 @@ def get_haplotype_seqs(haplotypes: Union[Dict[str, Dict], Dict[str, List[Dict]]]
         aligned (int, optional): The alignment type. Defaults to 1.
         return_missing (bool, optional): Whether to return missing sequences. Defaults to False.
         use_protein_ids (bool, optional): Whether to use protein IDs. Defaults to False.
-        add_haplotype_names (bool, optional): Whether to add haplotype names. Defaults to False.
+        add_haplotype_names (bool, optional): Whether to add haplotype names. Defaults to False. 
+        If >1, will add haplotype names as keys.
+        If >2, will unnest the haplotype names and sequences into a single dictionary.
         verbose (bool, optional): Whether to print progress messages. Defaults to False.
 
     Returns:
@@ -596,7 +599,7 @@ def get_haplotype_seqs(haplotypes: Union[Dict[str, Dict], Dict[str, List[Dict]]]
     
     hap_seqs = {}
     missing_seqs = []
-    if aligned!=2:
+    if aligned!=2 and as_msa:
         warnings.warn('Aligned must be 2 to convert to MSA (`as_msa=True`)')
         as_msa = False
     for tx_id in tqdm(haplotypes.keys(),
@@ -607,8 +610,10 @@ def get_haplotype_seqs(haplotypes: Union[Dict[str, Dict], Dict[str, List[Dict]]]
                 hap_seqs[tx_id] = [x['aligned_sequences'][1] for x in haplotypes[tx_id]['protein_haplotypes']]
             elif aligned==2:
                 hap_seqs[tx_id] = [x['aligned_sequences'] for x in haplotypes[tx_id]['protein_haplotypes']]
-            else:
+            elif aligned==0:
                 hap_seqs[tx_id] = [x['seq'] for x in haplotypes[tx_id]['protein_haplotypes']]
+            else:
+                raise ValueError(f"Invalid alignment type: {aligned}")
         else:
             if len(haplotypes[tx_id])>0:
                 if aligned==1:
@@ -632,8 +637,12 @@ def get_haplotype_seqs(haplotypes: Union[Dict[str, Dict], Dict[str, List[Dict]]]
     if add_haplotype_names:
         haplotype_names = get_haplotype_names(haplotypes) # list of haplotype names
         hap_seqs = {tx_id:list(zip(haplotype_names[tx_id], tx_seqs)) for tx_id,tx_seqs in hap_seqs.items()}
+        # Add haplotype names as keys
         if add_haplotype_names>1:
              hap_seqs = {tx_id:{x[0]:x[1] for x in tx_seqs} for tx_id,tx_seqs in hap_seqs.items()}
+             # Unnest if >2
+             if add_haplotype_names>2:
+                 hap_seqs = {k:v for d in hap_seqs.values() for k,v in d.items()}
     
     # Use protein IDs as names
     if use_protein_ids:
