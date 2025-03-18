@@ -19,5 +19,3 @@ Using protein sequence models to compute Variant Effect Predictions (VEP) across
 
 4. Follow the [VEP tutorial notebook](https://github.com/bschilder/VEP_protein/blob/main/notebooks/VEP.ipynb).
     - [Optional] If you followed Step 2 and created the conda env, select `vep_protein` as the notebook's kernel.
-
-

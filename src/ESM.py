@@ -459,8 +459,8 @@ def get_reduction_df(seq_reps,
     df['label'] = [x[0] for i,x in enumerate(seq_reps) if not nan_indices[i]]
     df['label_base'] = df['label'].str.split(split).str[0] 
     # Count the number of variants in the label_base (the number of ">" or "<" in the label_base)
-    df['edits'] = utils.count_variants(df['label_base'], 
-                               tx_id_sep=tx_id_sep)
+    df['edits'] = utils.count_edits(df['label_base'], 
+                                    tx_id_sep=tx_id_sep)
     # Add group column
     df['group'] = get_haplotype_group(df, col="label")
     # Add protein_id column

@@ -13,9 +13,10 @@ from tqdm.auto import tqdm
 import torch
 from esm2 import pretrained, MSATransformer
 
+import src.utils as utils
 import src.biopython as bp
 import src.vep_metrics as vm
- 
+
 def create_parser():
     parser = argparse.ArgumentParser(
         description="Label a deep mutational scan with predictions from an ensemble of ESM-1v models."  # noqa
@@ -140,7 +141,10 @@ def compute_pppl(row,
                  alphabet, 
                  offset_idx, 
                  is_ref,
+                 method=["esm", "mlm"],
                  progress_bar=True):
+    
+    method = utils.one_only(method)
     
     # Check that the protein sequence in the mutation row is the same as the sref equence in MSA
     vm.check_ref_sequence(row=row,
@@ -154,21 +158,24 @@ def compute_pppl(row,
                                                         is_ref=is_ref)
     sequence_mut = bp.preprocess_sequence(sequence_mut)
     
-    # Encode the mutated sequence
-    (batch_labels, 
-     batch_strs, 
-     batch_tokens) = seq_to_batch(sequence_mut, alphabet)
+    if method == "esm":
+        # Encode the mutated sequence
+        (batch_labels, 
+        batch_strs, 
+        batch_tokens) = seq_to_batch(sequence_mut, alphabet)
 
-    # Compute the log probabilities of the mutated sequence
-    log_probs = vm.get_token_probs(model=model,
-                                  batch_tokens=batch_tokens,
-                                  sequence=sequence_mut,
-                                  alphabet=alphabet,
-                                  method="pseudo-ppl",
-                                  progress_bar=progress_bar)
-    
-    # Return the sum of the log probabilities
-    return sum(log_probs)
+        # Return the sum of the log probabilities 
+        pppl = vm.compute_pppl(model=model,
+                                batch_tokens=batch_tokens,
+                                sequence=sequence_mut,
+                                alphabet=alphabet,
+                                progress_bar=progress_bar) 
+    elif method == "mlm":
+        # Return the mean of the log probabilities
+        pppl = vm.compute_pppl_mlm(sequence=sequence_mut,
+                                    model_name=model
+                                    )
+    return pppl
  
 def _fix_esm_model_name(model_name):
     if model_name == "esm1v_t33_650M_UR90S":
@@ -382,19 +389,38 @@ def main(
                 # Update compute_pppl to use device
                 tqdm.pandas(desc=f"Computing 'pseudo-ppl' for {model_loc}", 
                             disable=not progress_bar)
+                # Create a new row for WT sequence
+                # df = df.append(pd.DataFrame(columns=[model_loc]))
+
                 df[model_loc] = df.progress_apply(
                     lambda row: compute_pppl(
-                        row,
-                        mutation_col,
-                        sequence,
-                        model,
-                        alphabet,
-                        offset_idx,
-                        is_ref,
+                        row=row,
+                        mutation_col=mutation_col,
+                        sequence=sequence,
+                        model=model,
+                        alphabet=alphabet,
+                        offset_idx=offset_idx,
+                        is_ref=is_ref,
+                        progress_bar=progress_bar>1
                     ),
                     axis=1,
                 )
-
+            elif scoring_strategy == "pseudo-ppl-mlm":
+                tqdm.pandas(desc=f"Computing 'pseudo-ppl-mlm' for {model_loc}", 
+                            disable=not progress_bar)
+                df[model_loc] = df.progress_apply(
+                    lambda row: compute_pppl(
+                        row=row,
+                        mutation_col=mutation_col,
+                        sequence=sequence,
+                        model_name=model_loc,
+                        model=model,
+                        method="mlm",
+                        is_ref=is_ref,
+                        progress_bar=progress_bar>1
+                        ),
+                    axis=1,
+                )
     # Check if there are any predictions
     if df.dropna(subset=model_location, how="all").empty:
         if verbose>1:

@@ -607,7 +607,7 @@ def _create_semicircle_marker():
     codes = [Path.MOVETO] + [Path.LINETO]*(len(verts)-2) + [Path.CLOSEPOLY]
     return mpath.Path(verts, codes)
 
-def get_marker_map(n=8):
+def get_marker_map(n=8, subset=None, n_plus_marker="*"):
     """Get a map of markers for a given range of integers"""
     marker_map = {0:_create_donut_marker(), 
                   1:'o', 
@@ -621,16 +621,84 @@ def get_marker_map(n=8):
                   8:'8'
                   }
     if n > 8:
-        for i in range(10, n):
-            marker_map[i] = _create_polygon_marker(i)
+        for i in range(9, n+1):
+            if n_plus_marker is not None:
+                marker_map[i] = n_plus_marker
+            else:
+                marker_map[i] = _create_polygon_marker(i)
+    if subset is not None:
+        marker_map = {k:v for k,v in marker_map.items() if k in subset}
     return marker_map
 
-def count_variants(lst,
-                   tx_id_sep=":",
-                   count=['<','>','del','ins']):
+
+def _count_edits_indel(variant_str,
+                          string="del"):
+    # Indels with numbers
+    if "{" in variant_str:
+        # Add numbers in del{#}/ins{#}
+        import re
+        numbers = [int(n) for n in re.findall(f'{string}' + r'\{(\d+)\}', variant_str)]
+        return sum(numbers)
+    # Indels without numbers
+    else:
+        return variant_str.count(string)
+
+def count_edits(lst,
+                tx_id_sep=":",
+                search_strings=['>','del','ins'], 
+                as_dict=False):
+    """
+    Count the number of edits (number of differences relative to the reference sequence) in a list of haplotype names.
     
-    lst = as_list(lst)
-    return [sum([x.split(tx_id_sep)[1].count(c) for c in count]) for x in lst]
+    Args:
+        lst (list): List of haplotype names.
+        tx_id_sep (str): Separator between transcript ID and variant string.
+        search_strings (list): List of strings to search for in the variant string.
+        as_dict (bool): If True, return a dictionary with the haplotype names as keys and the edit distances as values.
+
+    Returns:
+        If as_dict is False, returns a list of edit distances.
+
+    Example:
+    >>> count_edits(['ENSP00000350283:723N>D,871P>L,1183K>R,1561T>I,1613S>G,123del{22}'])
+    """
+    
+    lst = process_ids(lst, 
+                      unique=as_dict)
+    non_indel_strings = [x for x in search_strings if x not in ['del', 'ins']]
+    counts = []
+    for x in lst:
+        variants = x.split(tx_id_sep)[1].split(",")
+        total = 0
+        for variant_str in variants:
+            # Count each variant string 
+            # INDELS
+            if "del" in search_strings and "del" in variant_str:
+                total += _count_edits_indel(variant_str, "del")
+            elif "ins" in search_strings and "ins" in variant_str:
+                total += _count_edits_indel(variant_str, "ins")
+            # Truncating mutations (already counted in INDELS)
+            elif "*" in variant_str:
+                continue
+            # SUBSTITUTIONS
+            else:
+                for c in non_indel_strings:
+                    total += variant_str.count(c)
+        counts.append(total)
+    if as_dict:
+        return {x:y for x,y in zip(lst, counts)}
+    else:
+        return counts
+    
+def add_edits(df,
+              haplotype_col="haplotype",
+              **kwargs):
+    """
+    Add the edit distance to the list of variants.
+    """
+    edits_dict = count_edits(df[haplotype_col], as_dict=True, **kwargs)
+    df['edits'] = df[haplotype_col].map(edits_dict)
+    return df
 
 def get_aa_tokens(as_dict=False):
     import esm
@@ -723,12 +791,15 @@ def list_to_df(lst,
     return pd.DataFrame(lst, columns=cols)
 
 def process_ids(ids: List[str],
+                remove_na: bool = True,
                 sort: bool = True,
                 unique: bool = True):
     """
     Process a list of IDs.
     """
     ids = as_list(ids)
+    if remove_na:
+        ids = [x for x in ids if x is not None and pd.notna(x)]
     if unique:
         ids = list(set(ids))
     if sort:

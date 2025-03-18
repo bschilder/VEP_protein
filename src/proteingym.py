@@ -96,6 +96,19 @@ def get_resources_df(version = PROTEINGYM_VERSION,
         df.to_csv(save_path, index=False, sep='\t')
     else:
         df = pd.read_csv(save_path, sep='\t')
+
+    # Add an extra row with some share raw data
+    new_row = pd.DataFrame({
+        'Data': 'dbNSFP/Ensembl VEP Annotations (raw)',
+        'Size (unzipped)': '981.5MB',
+        'Filename': 'all_models_deduplicated_scores_clinvar_proteingym_20230611.GRCh38_filter_isoform_clean.csv',
+        'Raw': True,
+        'Hash': 'c7570c0c5c6c92a2ae2646aec9bd990a62fbc21f512d5acc81d9027fb9c338bf',
+        'URL': 'https://marks.hms.harvard.edu/proteingym/other/all_models_deduplicated_scores_clinvar_proteingym_20230611.GRCh38_filter_isoform_clean.csv',
+        'Version': version
+    }, index=[len(df)])
+    df = pd.concat([df, new_row], ignore_index=True)
+    # Sort by Data column
     return df
 
 def download_resources(resources_df = None,
@@ -148,7 +161,10 @@ def download_resources(resources_df = None,
                        disable=progressbar<1): 
         try:
             unzipped_name = os.path.basename(row['URL']).removesuffix('.zip')
-            processor = pooch.Unzip(extract_dir=unzipped_name)
+            if os.path.basename(row['URL']).endswith('.zip'):
+                processor = pooch.Unzip(extract_dir=unzipped_name)
+            else:
+                processor = None
             if row['Filename'].endswith('.zip'):
                 if verbose:
                     print("Skipping re-extraction of zip files")
@@ -225,6 +241,7 @@ def merge_resources(keys=['clinical_ProteinGym_substitutions.zip',
                           'clinical_ProteinGym_indels.zip'],
                     redecompress = False,
                     map_ids = True,
+                    rows_per_id = None,
                     force = False,
                     verbose = False): 
 
@@ -251,16 +268,23 @@ def merge_resources(keys=['clinical_ProteinGym_substitutions.zip',
     ## WARNING: Massive expands the number of rows in df due to many:many mappings
     if map_ids:
         # Using gprofiler
-        proteins_df = map_resources(proteins_df, 
+        proteins_df = map_resources(df=proteins_df, 
                                     force=force, 
-                                    verbose=verbose)
+                                    verbose=verbose,
+                                    rows_per_id=rows_per_id)
 
     return proteins_df
 
 def map_resources(df, 
                   input_col='protein',
+                  select_cols = ['protein','genename',
+                                 'Ensembl_geneid','Ensembl_transcriptid','Ensembl_proteinid',
+                                #  'Feature',
+                                #  'Uniprot_acc','Uniprot_entry','Uniprot_acc(HGNC/Uniprot)','Uniprot_id(HGNC/Uniprot)'
+                                 ],
                   target_namespace=['ENSP','ENST','REFSEQ_PEPTIDE'],
-                  method=['ensembl_rest','gprofiler'],
+                  method=['proteingym','ensembl_rest','gprofiler'],
+                  rows_per_id = None,
                   force = False,
                   verbose = True): 
     """
@@ -284,15 +308,20 @@ def map_resources(df,
         >>> # Map IDs
         >>> proteins_df = map_resources(proteins_df)
     """
+    df = df.copy()
     method = utils.one_only(method)
     input_col = utils.one_only(input_col)
+    
     if method == 'gprofiler':
+        # Using gprofiler
         for tn in target_namespace:
             df = gp.map_ids(df,
                             on_left=input_col,
                             target_namespace=tn, 
+                            rows_per_id=rows_per_id,
                             force=force, 
                             verbose=verbose)
+            
     elif method == 'ensembl_rest':
 
         # Using Ensembl REST API
@@ -303,6 +332,111 @@ def map_resources(df,
         for col, key in col_key.items():
             map_k_v = {k:v[key] for k,v in map_dict.items()}
             df[col] = df[input_col].map(map_k_v)
+
+    elif method == 'proteingym':
+
+        # Using Proteingym
+        df = map_proteingym_ids(df,
+                                select_cols=select_cols,
+                                rows_per_id=rows_per_id,
+                                force=force, 
+                                verbose=verbose)
+        rename_cols = {'Ensembl_geneid':'ENSG',
+                       'Ensembl_proteinid':'ENSP',
+                       'Ensembl_transcriptid':'ENST'}
+        # drop existing columns that are being renamed
+        df = df.drop(columns=rename_cols.values(), errors='ignore')
+        df.rename(columns=rename_cols, inplace=True)
     else:
-        raise ValueError(f"Invalid method: {method}")
+        raise ValueError(f"Invalid method: {method}") 
+    
+    # Return the selected columns
+    return df
+
+
+def map_proteingym_ids(df=None, 
+                        input_col='protein',
+                        select_cols = ['protein','Feature','genename','Gene',
+                                        'Ensembl_geneid','Ensembl_transcriptid','Ensembl_proteinid',
+                                        'Uniprot_acc','Uniprot_entry','Uniprot_acc(HGNC/Uniprot)','Uniprot_id(HGNC/Uniprot)',
+                                        'Entrez_gene_id','CCDS_id','Refseq_id','ucsc_id'
+                                        ],
+                        return_map = False,
+                        rows_per_id = None,
+                        cache = PROTEINGYM_CACHE,
+                        force = False,
+                        verbose = True):
+    """
+    Map ProteinGym resources to target namespaces.
+
+    Args:
+        df (pd.DataFrame): DataFrame containing gene/protein/transcript IDs.
+        input_col (str): Column containing gene/protein/transcript IDs to be mapped.
+        select_cols (list): List of columns to select from the mapping file.
+        return_map (bool): Whether to return the mapping file.
+        force (bool): Whether to force mapping even if files exist.
+        verbose (bool): Whether to print verbose output.
+
+    Returns:
+        pd.DataFrame: DataFrame with mapped IDs.
+        
+    Example:
+        >>> # Download resources
+        >>> pg_resources = download_resources()
+        >>> # Merge resources
+        >>> proteins_df = merge_resources()
+    """
+
+
+    # Check if cols already exist
+    if not return_map:
+        if all(col in df.columns for col in select_cols) and not force:
+            if verbose:
+                print(f"All {len(select_cols)} columns already exist in DataFrame.")
+            return df
+
+    if verbose:
+        print("Mapping Proteingym IDs")
+    # Set the save path
+    checksum = utils.as_checksum(";".join(utils.process_ids(select_cols)))
+    save_path = os.path.join(cache, f'proteingym_id_map_{checksum}.csv.gz')
+    if os.path.exists(save_path):
+        # Load the mapping file
+        if verbose:
+            print(f"Loading mapping file from {save_path}")
+        pg_annot = pd.read_csv(save_path, index_col=0)
+    else:
+        # Download the mapping file
+        resources_df = get_resources_df()
+        resources_df = resources_df.loc[resources_df['Data'] == 'dbNSFP/Ensembl VEP Annotations (raw)']
+        pg_resources = download_resources(resources_df = resources_df, include_raw=True) 
+        pg_annot = pd.read_csv(pg_resources['all_models_deduplicated_scores_clinvar_proteingym_20230611.GRCh38_filter_isoform_clean.csv'], index_col=0)
+        pg_annot = pg_annot[select_cols].drop_duplicates()
+
+        if 'genename' in pg_annot.columns:
+            pg_annot['genename'] = pg_annot['genename'].fillna('').str.split(';').apply(lambda x: ';'.join(set(x)))
+            pg_annot = pg_annot[select_cols].drop_duplicates()
+        
+        # Save the mapping file
+        if verbose:
+            print(f"Saving mapping file to {save_path}") 
+        pg_annot.to_csv(save_path)
+    
+    # If rows_per_id is not None, take the first rows_per_id rows for each input_col
+    if rows_per_id is not None:
+        if verbose:
+            print(f"Taking the first {rows_per_id} rows for each {input_col}")
+        pg_annot = pg_annot.groupby(input_col).head(rows_per_id)
+
+    
+
+    # Return the mapping file
+    if return_map:
+        return pg_annot
+    
+    # Merge the mapping file with the input DataFrame
+    assert input_col in df.columns, f"Input column {input_col} not found in DataFrame"
+    assert input_col in pg_annot.columns, f"Input column {input_col} not found in mapping file"
+    assert set(select_cols).issubset(pg_annot.columns), f"Output columns {select_cols} not found in mapping file"
+    df = df.merge(pg_annot, on=input_col, how='left')
     return df

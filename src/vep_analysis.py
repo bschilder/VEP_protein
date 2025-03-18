@@ -6,7 +6,7 @@ import pathlib
 from tqdm.auto import tqdm
 import seaborn as sns
 import matplotlib.pyplot as plt
-from typing import Dict
+from typing import Dict, List
 # Local imports
 import src.config as config
 import src.utils as utils
@@ -266,10 +266,10 @@ def get_paired_distances(seq_reps,
             # Add a column for the protein_id
             df['protein_id'] = df['sample1'].str.split(':').str[0]
             # Add a column for the number of edits
-            df['sample1_edits'] = utils.count_variants(df['sample1'], 
-                                                 tx_id_sep=tx_id_sep)
-            df['sample2_edits'] = utils.count_variants(df['sample2'], 
-                                                 tx_id_sep=tx_id_sep)
+            df['sample1_edits'] = utils.count_edits(df['sample1'], 
+                                                    tx_id_sep=tx_id_sep)
+            df['sample2_edits'] = utils.count_edits(df['sample2'], 
+                                                    tx_id_sep=tx_id_sep)
             df['max_edits'] = df[['sample1_edits', 'sample2_edits']].max(axis=1)
             return df
         else:
@@ -971,3 +971,346 @@ def add_mutant_out_of_frame(vep_df,
         print("Adding 'mutant_out_of_frame' column")
     vep_df['mutant_out_of_frame'] = vep_df[protein_position_col] > vep_df['haplotype_sequence_len']
     return vep_df
+
+def encode_labels(vec, 
+                  binarize: bool = False,
+                  true_substring: str = "path",
+                  verbose: bool = True):
+    """
+    Encode labels within a column.
+    """
+    if binarize:
+        if verbose:
+            print("Binarizing pathogenic vs benign")
+        return np.array([true_substring in yy_.lower() for yy_ in vec]).astype(int)
+    else:
+        if verbose:
+            print(f"Encoding {len(set(vec))} multiclass labels")
+        from sklearn.preprocessing import LabelEncoder
+        # Encode multiclass labels for clinical significance
+        label_encoder = LabelEncoder()
+        return label_encoder.fit_transform(vec)
+
+def compute_precision_recall(vep_df,
+                             groupby_cols: List[str] = ['model_location', 'scoring_strategy', 'is_ref'],
+                             binarize: bool = True,
+                             x='VEP',
+                             y='DMS_bin_score',
+                             verbose: bool = True):
+    """
+    Compute precision and recall for a given scoring strategy and model location.
+    """
+    # Train logistic regression models to predict DMS binary scores
+    from sklearn.linear_model import LogisticRegression
+    from sklearn.metrics import roc_auc_score, accuracy_score  
+
+    vep_df = utils.sort_by_reverse_string(vep_df, 
+                                            column='scoring_strategy', 
+                                            extra_sort_cols=['model_location'],
+                                            ascending=[False, True])
+    
+    # Get unique combinations of model_location and scoring_strategy
+    model_combos = vep_df.groupby(groupby_cols).size().reset_index()[groupby_cols]
+
+    if binarize:
+        if verbose:
+            print("Binarizing pathogenic vs benign labels")
+    # Initialize results dictionary
+    results = []
+    # Train separate model for each combination
+    for _, combo in tqdm(model_combos.iterrows(), 
+                         total=len(model_combos),
+                         desc="Computing precision and recall"):
+        
+        # Build filter conditions for all groupby columns
+        filter_conditions = [(vep_df[col] == combo[col]) for col in groupby_cols]
+        combined_filter = pd.concat(filter_conditions, axis=1).all(axis=1)
+        
+        # Filter data for this combination
+        sub_df = vep_df.loc[combined_filter,:].copy()
+        sub_df.dropna(subset=[x,y], inplace=True)
+        
+        # Skip if there are less than 2 samples or less than 2 unique values in x or y
+        if len(sub_df) < 2 or sub_df[x].nunique() < 2 or sub_df[y].nunique() < 2:
+            continue
+            
+        # Prepare X and y
+        X = sub_df[x].values.reshape(-1, 1)
+        y_ = sub_df[y].values
+
+        # Binarize pathogenic vs benign
+        y_ = encode_labels(y_, 
+                           binarize=binarize,
+                           verbose=verbose>1)
+
+        # Train model
+        clf = LogisticRegression(random_state=42)
+        clf.fit(X, y_)
+        
+        # Get predictions
+        y_pred = clf.predict(X)
+        y_pred_proba = clf.predict_proba(X)[:,1]
+        
+        # Calculate metrics
+        accuracy = accuracy_score(y_, y_pred)
+        auc = roc_auc_score(y_, y_pred_proba)
+        
+        # Create results dictionary with all groupby columns
+        result_dict = {
+            'accuracy': accuracy,
+            'auc': auc,
+            'coef': clf.coef_[0][0],
+            'intercept': clf.intercept_[0],
+            'n_samples': len(sub_df)
+        }
+        # Add groupby columns to results
+        for col in groupby_cols:
+            result_dict[col] = combo[col]
+            
+        results.append(result_dict)
+
+    # Convert results to dataframe
+    return pd.DataFrame(results)
+
+
+def plot_precision_recall(vep_pr,
+                          x='model_location',
+                          y='auc',
+                          style='is_ref',
+                          hue='scoring_strategy',
+                          size='n_samples',
+                          alpha=0.7,
+                          figsize=(8, 6),
+                          markers=None,
+                          plot_types=['scatter_AUCROC','bar_AUCROC','bar_coef'],
+                          **kwargs):
+    """
+    Plot precision and recall for a given scoring strategy and model location.
+
+    Args:
+        vep_pr (pd.DataFrame): The dataframe containing the precision and recall results.
+        x (str): The column name of the x-axis.
+        y (str): The column name of the y-axis.
+
+    Returns:
+        None
+    
+    Example:
+    >>> vep_pr = compute_precision_recall(vep_df, x='VEP', y='DMS_bin_score')
+    >>> plot_precision_recall(vep_pr, x='VEP', y='DMS_bin_score')
+    """
+    if markers is None:
+        markers=utils.get_marker_map(max(vep_pr['edits']))
+
+    vep_pr = utils.sort_by_reverse_string(vep_pr, 
+                                        column='scoring_strategy', 
+                                        extra_sort_cols=['model_location','is_ref'],
+                                        ascending=[False, True, False])
+    # Plot results
+    if 'scatter_AUCROC' in plot_types:
+        plt.figure(figsize=figsize)
+        sns.scatterplot(data=vep_pr, x=x, y=y, size=size, 
+                        hue=hue, 
+                    alpha=alpha, 
+                    style=style,
+                    markers=markers,
+                    **kwargs)
+        plt.xticks(rotation=45, ha='right')
+        plt.title('Model Performance by Location and Scoring Strategy')
+        plt.ylabel('AUC-ROC')
+        plt.xlabel('Model Location')
+        plt.legend(bbox_to_anchor=(1.05, 1), loc='upper left')
+        plt.tight_layout()
+        plt.show()
+
+    if 'bar_AUCROC' in plot_types:
+        # Create faceted bar plots using FacetGrid
+        g = sns.FacetGrid(data=vep_pr, col='scoring_strategy',
+                         height=figsize[1], 
+                         aspect=figsize[0]/figsize[1])
+        g.map_dataframe(sns.barplot, 
+                        x=x, 
+                        y=y,
+                        hue=style,
+                        palette='dark:#1f77b4')
+        
+        # Rotate x-axis labels for better readability
+        g.set_xticklabels(rotation=45, ha='right')
+        
+        # Customize the subplot titles and labels
+        _rm_subplot_prefixes(g)
+        g.set_ylabels('AUC-ROC') 
+        # Add legend
+        g.add_legend(bbox_to_anchor=(0.05, 1), loc='upper left', title=style)
+        plt.tight_layout()
+        plt.show()
+    
+    if 'bar_coef' in plot_types:
+        # Plot coefficient values
+        plt.figure(figsize=figsize) 
+        sns.barplot(data=vep_pr, x=x, y='coef',
+                    hue=hue)
+        plt.xticks(rotation=45, ha='right')
+        plt.title('Model Coefficients by Location and Scoring Strategy')
+        plt.ylabel('Coefficient Value')
+        plt.xlabel('Model Location')
+        plt.legend(bbox_to_anchor=(1.05, 1), loc='upper left')
+        plt.tight_layout()
+        plt.show()
+
+def plot_auprc(vep_df,
+               x='VEP',
+               y='DMS_bin_score',
+               alpha=0.7,
+               figsize=(10, 6),
+               xlim=None,
+               binarize=True,
+               palette=get_models_palette(),
+               verbose: bool = True):
+    """
+    Plot the AUPRC for a given scoring strategy and model location.
+
+    Args:
+        vep_df (pd.DataFrame): The dataframe containing the VEP data.
+        alpha (float): The alpha value for the plot.
+        figsize (tuple): The size of the figure.
+        reverse_recall (bool): Whether to reverse the recall axis.
+        palette (dict): The palette to use for the plot.
+
+    Returns:
+        pd.DataFrame: The dataframe containing the precision and recall results.
+    """
+    # Create precision-recall curves using matplotlib
+    from sklearn.metrics import precision_recall_curve, average_precision_score
+
+    vep_df = utils.sort_by_reverse_string(vep_df, 
+                                            column='scoring_strategy', 
+                                            extra_sort_cols=['model_location'],
+                                            ascending=[False, True])
+    
+    # Create subplots for each scoring strategy
+    unique_models = vep_df['model_location'].unique()
+    unique_strategies = vep_df['scoring_strategy'].unique()
+    n_strategies = len(unique_strategies)
+
+    fig, axes = plt.subplots(n_strategies, 1, figsize=(figsize[0], figsize[1]*n_strategies))
+    if n_strategies == 1:
+        axes = [axes] 
+
+    results_df = pd.DataFrame()
+    for i, ss in tqdm(enumerate(unique_strategies), 
+                            total=len(unique_strategies),
+                            desc="Computing AUPRC"):
+        for j, model in enumerate(unique_models):
+            subset = vep_df.loc[(vep_df['scoring_strategy'] == ss) & 
+                            (vep_df['model_location'] == model)].copy().dropna(subset=[x])
+            
+            y_true = encode_labels(subset[y], 
+                                   binarize=binarize,
+                                   verbose=verbose>1)
+            y_score = subset[x]
+            
+            precision, recall, _ = precision_recall_curve(y_true, y_score)
+            avg_precision = average_precision_score(y_true, y_score) 
+            
+            # Store results
+            res_df = pd.DataFrame({'precision':precision,
+                                   'recall':recall})
+            res_df.loc[:, 'avg_precision'] = avg_precision
+            res_df.loc[:, 'model_location'] = model
+            res_df.loc[:, 'scoring_strategy'] = ss 
+            results_df = pd.concat([results_df, res_df])
+            
+            # Plot precision-recall curve
+            axes[i].plot(recall, precision, color=palette[model], 
+                        label=f'{model} (AP = {avg_precision:.3f})',
+                        alpha=alpha)
+            if xlim is not None:
+                axes[i].set_xlim(xlim[0], xlim[1])  # Reverse x-axis
+        
+        axes[i].set_xlabel('Recall')
+        axes[i].set_ylabel('Precision')
+        axes[i].set_title(f'Precision-Recall Curve - {ss}')
+        axes[i].grid(True)
+        
+        # Customize legend
+        axes[i].legend(bbox_to_anchor=(1.05, 1), loc='upper left')
+
+    plt.tight_layout()
+    plt.show()
+
+    return results_df
+
+
+def plot_auc_by_edits(vep_pr,
+                      x="edits_scaled",
+                      y="auc",
+                      row="model_location",
+                     col="scoring_strategy", 
+                     style="edits",
+                     markers=None,
+                     height=4, 
+                     aspect=1,
+                    alpha=0.7,
+                    add_smooth=True,
+                    frac=0.6666666666666666, 
+                    it=3,
+                      **kwargs):
+    # Create scatter plot of AUC-ROC scores by number of edits with fitted curves
+    import seaborn as sns
+    import matplotlib.pyplot as plt
+    import numpy as np
+    import statsmodels.api as sm
+    
+    vep_pr = vep_pr.copy()
+
+    if markers is None:
+        markers = utils.get_marker_map(max(vep_pr['edits']))
+    
+    # Fit the LOESS curve
+    lowess = sm.nonparametric.lowess
+    # smoothed_data = lowess(y, x, frac=0.3) # frac is the fraction of data points used for smoothing
+
+
+    # Suppress seaborn markers warning
+    import warnings
+    with warnings.catch_warnings():
+        warnings.filterwarnings('ignore', category=UserWarning)
+        # Create facet grid
+        g = sns.FacetGrid(vep_pr, 
+                            row=row, col=col, 
+                            height=height, aspect=aspect,
+                            margin_titles=True) 
+        
+        # Plot scatter points
+        g.map_dataframe(sns.scatterplot, 
+                        x=x,
+                        y=y, 
+                        style=style,
+                        markers=markers,
+                        alpha=alpha,
+                        **kwargs)
+        if add_smooth: 
+            # Fit and plot curves for each subplot
+            for ax in g.axes.flat:
+                # Get data only from current subplot
+                data = [c.get_offsets() for c in ax.collections]
+                if not data:
+                    continue
+                data = np.concatenate(data)
+                x_, y_ = data[:, 0], data[:, 1]
+                
+                try:
+                    # Fit LOWESS curve
+                    smoothed = lowess(y_, x_, frac=frac, it=it)  # frac is the fraction of data points used for smoothing
+                    x_smooth, y_smooth = smoothed[:, 0], smoothed[:, 1]
+                    
+                    # Plot smoothed curve
+                    ax.plot(x_smooth, y_smooth, 'k--', alpha=alpha, zorder=-1)  # Set zorder to -1 to put line under points
+                except:
+                    pass # Skip curve fitting if it fails
+
+        _rm_subplot_prefixes(g)
+
+        g.add_legend()
+        plt.tight_layout()

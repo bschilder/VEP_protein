@@ -20,6 +20,7 @@ DIR_DICT = {
     "variation": os.path.join(cache_dir,"variation",""),
     "xref_external": os.path.join(cache_dir,"xref_external",""),
 }
+TIMEOUT = 10
 
 def _params_to_filename(params: Optional[Dict],
                         suffix: str = '.json.gz') -> str:
@@ -42,6 +43,7 @@ def xref_external(ids: List[str],
                   species='homo_sapiens', 
                   cache=DIR_DICT["xref_external"],
                   force: bool = False,
+                  timeout: int = TIMEOUT,
                   verbose: bool = True): 
     """
     Get the Ensembl IDs for a list of IDs.
@@ -72,7 +74,9 @@ def xref_external(ids: List[str],
     map_dict = {}
     for id in tqdm(ids, desc="Getting Ensembl IDs"):
         try:
-            res = client.xref_external(species=species, symbol=id)
+            res = client.xref_external(species=species,
+                                        symbol=id,
+                                        timeout=timeout)
             if len(res) > 0:
                 map_dict[id] = {x['type']:x['id'] for x in res}
         except Exception as e:
@@ -83,7 +87,8 @@ def xref_external(ids: List[str],
     return map_dict
     
 def get_ensembl_client(client: Optional[ensembl_rest.EnsemblClient] = None,
-                       force: bool = False) -> ensembl_rest.EnsemblClient:
+                       force: bool = False,
+                       **kwargs) -> ensembl_rest.EnsemblClient:
     """Get an Ensembl REST API client.
 
     Creates a new Ensembl REST API client if one is not provided or if force=True.
@@ -107,7 +112,7 @@ def get_ensembl_client(client: Optional[ensembl_rest.EnsemblClient] = None,
         >>> new_client = get_ensembl_client(client=client, force=True)
     """
     if client is None or force:
-        client = ensembl_rest.EnsemblClient()
+        client = ensembl_rest.EnsemblClient(**kwargs)
     return client
 
 def lookup_post(ids,
@@ -237,6 +242,7 @@ def transcript_haplotypes_get(ids: Optional[List[str]] = None,
                               force: bool = False,
                               cache_only: bool = False,
                               error: bool = False,
+                              timeout: int = TIMEOUT,
                               verbose: bool = True) -> dict:
     """Get haplotype information for transcript IDs from Ensembl REST API.
     For more information, see:
@@ -290,7 +296,8 @@ def transcript_haplotypes_get(ids: Optional[List[str]] = None,
                     haplotypes[tx_id] = client.transcript_haplotypes_get(
                         id=tx_id,
                         species=species,
-                        params=params
+                        params=params,
+                        timeout=timeout
                     )
                 except Exception as e1:
                     # If first attempt fails, try mapping ID
@@ -302,7 +309,8 @@ def transcript_haplotypes_get(ids: Optional[List[str]] = None,
                             haplotypes[tx_id] = client.transcript_haplotypes_get(
                                 id=mapped_id,
                                 species=species,
-                                params=params
+                                params=params,
+                                timeout=timeout
                             )
                         else:
                             raise e1

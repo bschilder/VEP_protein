@@ -508,6 +508,7 @@ def get_haplotypes(tx_ids: Optional[List[str]] = None,
                    cache: Path = Path(DIR_DICT["haplotypes"]),
                    cache_only: bool = False,
                    error: bool = False,
+                   timeout: int = er.TIMEOUT,
                    verbose: bool = True) -> dict:
     """Get haplotype information for transcript IDs from Ensembl REST API.
     For more information, see:
@@ -564,6 +565,7 @@ def get_haplotypes(tx_ids: Optional[List[str]] = None,
                                             cache=cache,
                                             cache_only=cache_only,
                                             error=error,
+                                            timeout=timeout,
                                             verbose=verbose)
     # Convert to protein IDs if requested
     if use_protein_ids:
@@ -586,11 +588,15 @@ def get_haplotype_seqs(haplotypes: Union[Dict[str, Dict], Dict[str, List[Dict]]]
     Args:
         haplotypes (Union[Dict[str, Dict], Dict[str, List[Dict]]]): The haplotype information.
         aligned (int, optional): The alignment type. Defaults to 1.
+        If 0, will return the unaligned sequence of the haplotype (without gaps).
+        If 1, will return the aligned sequence of just the haplotype (with gaps).
+        If 2, will return the aligned sequence of the reference and the haplotype (with gaps).
         return_missing (bool, optional): Whether to return missing sequences. Defaults to False.
         use_protein_ids (bool, optional): Whether to use protein IDs. Defaults to False.
         add_haplotype_names (bool, optional): Whether to add haplotype names. Defaults to False. 
-        If >1, will add haplotype names as keys.
-        If >2, will unnest the haplotype names and sequences into a single dictionary.
+        If 1, will add haplotype names as first element in tuple, with the sequence as the second element.
+        If >1, will add haplotype names as keys, with the sequence as the value.
+        If >2, will unnest the haplotype names and sequences into a single dictionary with the haplotype name as the key and the sequence as the value.
         verbose (bool, optional): Whether to print progress messages. Defaults to False.
 
     Returns:
@@ -1466,3 +1472,42 @@ def get_offset_length(seq_name,
         return base_offset + sum(insertion_offsets) - sum(deletion_offsets)
     else:
         return base_offset
+
+def haplotypes_to_fasta(haplotypes, 
+                        aligned=1,
+                        add_haplotype_names=2,
+                        save_dir=os.path.join(config.DATA_DIR,"1KG","fasta"),
+                        strip='*',
+                        force=False,
+                        verbose=True):
+    """Convert haplotype sequences to FASTA format.
+    
+    Args:
+        haplotypes (Dict[str, Dict]): The haplotypes to convert to FASTA format.
+        aligned (int, optional): The alignment type. Defaults to 1.
+        add_haplotype_names (int, optional): The type of haplotype names to add. Defaults to 2.
+        save_dir (str, optional): The directory to save the FASTA files. Defaults to os.path.join(config.DATA_DIR,"1KG","fasta").
+        force (bool, optional): Whether to force the conversion. Defaults to False.
+        verbose (bool, optional): Whether to print verbose output. Defaults to True.
+    
+    Returns:
+        Dict[str, str]: A dictionary of tx_ids to FASTA file paths.
+    """ 
+    hap_seqs = get_haplotype_seqs(haplotypes, 
+                                  aligned=aligned,
+                                  add_haplotype_names=add_haplotype_names)
+    # Convert haplotype sequences to FASTA format
+    fasta_paths = {}
+    for tx_id in tqdm(hap_seqs.keys(),
+                      desc="Converting haplotypes to FASTA",
+                      leave=False,
+                      disable=not verbose):
+        fasta_path = os.path.join(save_dir, f"{tx_id}.fasta")
+        fasta_paths[tx_id] = fasta_path
+        if not os.path.exists(fasta_path) or force:
+            with open(fasta_path, 'w') as f:
+                for name, seq in hap_seqs[tx_id].items():
+                    if strip is not None:
+                        seq = seq.replace(strip, '')
+                    f.write(f'>{name}\n{seq}\n')
+    return fasta_paths
