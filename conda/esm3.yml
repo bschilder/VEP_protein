@@ -1,27 +1,19 @@
-name: vep_protein
+name: esm3
 channels:
     - conda-forge
-    # - bioconda
     - nvidia
 dependencies:
-    - python>=3.9.0
     - pandas
-    - numpy
     - openpyxl
     - tqdm
     - umap-learn
     - IProgress
     - ipywidgets
     - ipykernel
-    # - pyfaidx
-    # - pysam
-    # - HTSeq
-    - plotly
+    - entrypoints
     - seaborn
-    - scikit-learn
     - conda-forge::biopython
-    # - pyensembl 
-    - biotite
+    - cmake
     - owlready2
     - pooch
     - pip
@@ -29,8 +21,6 @@ dependencies:
         - torch 
         - torchvision 
         - torchaudio
-        # - fair-esm[esmfold] # Old ESM module
-        - "esm2 @ git+https://github.com/YaoYinYing/esm2.git" # https://github.com/evolutionaryscale/esm/issues/12#issuecomment-2668085866
         - esm # New ESM module
         - "dllogger @ git+https://github.com/NVIDIA/dllogger.git"
         - "openfold @ git+https://github.com/aqlaboratory/openfold.git@4b41059694619831a7db195b7e0988fc4ff3a307"
