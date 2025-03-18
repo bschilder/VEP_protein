@@ -930,3 +930,4 @@ def check_arg(func,
             arg = one_only(arg)
     assert arg in options, f"Invalid argument: '{arg}'. Must be one of {','.join(options)}"
     return arg
+

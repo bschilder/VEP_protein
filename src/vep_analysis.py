@@ -1,4 +1,5 @@
 import os
+import glob
 import pandas as pd
 import numpy as np
 import argparse
@@ -1314,3 +1315,62 @@ def plot_auc_by_edits(vep_pr,
 
         g.add_legend()
         plt.tight_layout()
+
+
+def csv_to_parquet(save_dir: str = os.path.join(config.DATA_DIR,"1KG","vep"), 
+                   pattern: str = "*.csv.gz",
+                   compression: str = "brotli",
+                   delete_csv: bool = True, 
+                   **kwargs):
+    # Find all csv.gz files recursively 
+    csv_files = glob.glob(os.path.join(save_dir, "**", pattern), recursive=True)
+
+    # Convert each csv.gz file to parquet
+    for csv_file in tqdm(csv_files, desc="Converting files"):
+        try:
+            # Create equivalent parquet path 
+            parquet_file = csv_file.replace(pattern.replace("*",""), '.parquet')
+            
+            # Skip if parquet already exists
+            if os.path.exists(parquet_file):
+                continue
+                
+            # Read CSV and write to parquet
+            df = pd.read_csv(csv_file)
+            df.to_parquet(parquet_file, 
+                          compression=compression,
+                          **kwargs)
+            
+            # Optionally remove original csv.gz file to save space
+            if delete_csv:
+                os.remove(csv_file)
+            
+        except Exception as e:
+            print(f"Error converting {csv_file}: {str(e)}")
+        
+
+def recompress_parquet(save_dir: str = os.path.join(config.DATA_DIR,"1KG","vep"),
+                      pattern: str = "*.parquet",
+                      compression: str = "brotli",
+                      **kwargs):
+    """Recompress all parquet files with snappy compression.
+    
+    Args:
+        save_dir (str): Directory containing parquet files
+        pattern (str): File pattern to match
+        compression (str): Compression algorithm to use (default: snappy). See `pandas.to_parquet` for more options.
+    """
+    parquet_files = glob.glob(os.path.join(save_dir, "**", pattern), recursive=True)
+
+    for parquet_file in tqdm(parquet_files, desc="Recompressing files"):
+        try:
+            # Read parquet file
+            df = pd.read_parquet(parquet_file)
+            
+            # Save with snappy compression
+            df.to_parquet(parquet_file, 
+                          compression=compression,
+                          **kwargs)
+            
+        except Exception as e:
+            print(f"Error recompressing {parquet_file}: {str(e)}")

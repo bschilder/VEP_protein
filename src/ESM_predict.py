@@ -429,7 +429,10 @@ def main(
     else:
         if verbose>1:
             print(f"Saving results to {dms_output}")
-        df.to_csv(dms_output)
+        if dms_output.endswith(".parquet"):
+            df.to_parquet(dms_output, compression="gzip")
+        else:
+            df.to_csv(dms_output)
 
 ### MAIN SCRIPT ###
 if __name__ == "__main__":
