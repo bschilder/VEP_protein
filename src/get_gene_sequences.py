@@ -4,6 +4,45 @@ import pandas as pd
 import time
 import warnings
 import ensembl_rest
+from pathlib import Path
+
+def format_for_alphafold(sequences_dict, gene_symbol, output_dir="alphafold_input"):
+    """
+    Format protein sequences for AlphaFold prediction.
+    
+    Args:
+        sequences_dict (dict): Dictionary containing protein sequences
+        gene_symbol (str): Gene symbol (e.g., 'BRCA1')
+        output_dir (str): Directory to save FASTA files
+        
+    Returns:
+        dict: Dictionary mapping haplotype names to their file paths
+    """
+    # Create output directory
+    output_path = Path(output_dir)
+    output_path.mkdir(parents=True, exist_ok=True)
+    
+    fasta_files = {}
+    
+    # Find the transcript ID for this gene
+    for tx_id, data in sequences_dict.items():
+        if 'protein' in data:
+            for hap_name, sequence in data['protein']:
+                # Clean haplotype name for filename
+                clean_name = hap_name.replace(':', '_').replace('>', '_').replace(',', '_')
+                filename = f"{gene_symbol}_{clean_name}.fasta"
+                filepath = output_path / filename
+                
+                # Write FASTA file
+                with open(filepath, 'w') as f:
+                    f.write(f">{hap_name} {gene_symbol}\n")
+                    # Write sequence in chunks of 80 characters
+                    for i in range(0, len(sequence), 80):
+                        f.write(sequence[i:i+80] + '\n')
+                
+                fasta_files[hap_name] = str(filepath)
+    
+    return fasta_files
 import gzip
 import json
 from pathlib import Path
