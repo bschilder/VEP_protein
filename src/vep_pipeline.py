@@ -399,6 +399,7 @@ def _check_prot_df(prot_df) -> pd.DataFrame:
 
 def _check_haplotypes(haplotypes: dict[str, dict[str, str]],
                       hap_dir: str = os.path.join(config.DATA_DIR,"1KG","haplotypes"),
+                      cache_only: bool = True,
                       verbose: bool = True):
     if haplotypes is None:
         if hap_dir is None:
@@ -406,7 +407,7 @@ def _check_haplotypes(haplotypes: dict[str, dict[str, str]],
         if verbose:
             print(f"`haplotypes` not provided. Importing haplotype sequences from '{hap_dir}'")
         haplotypes = hs.get_haplotypes(save_dir=hap_dir,
-                                        cache_only=True,
+                                        cache_only=cache_only,
                                         verbose=verbose)
     return haplotypes
 
@@ -778,25 +779,50 @@ def _parse_scoring_strategies(scoring_strategies):
         result[model] = strategies.split(",")
     return result
 
+def _parse_models(models: str) -> list[str]:
+    """Parse models from command line argument.
+    """
+    return [x.strip() for x in models.split(",")]
 
-
+def _parse_source_types(source_types: str) -> list[str]:
+    """Parse source types from command line argument.
+    """
+    return [x.strip() for x in source_types.split(",")]
 
 def _parse_args():
     parser = argparse.ArgumentParser(description="Run ESM variant effect prediction pipeline on protein haplotype sequences.")
     parser.add_argument("--prot_df", 
                         type=pathlib.Path, 
-                        required=True,
-                        help="Path to CSV file containing protein IDs and metadata. Will be imported with `pandas.read_csv`.")
+                        required=False,
+                        default=None,
+                        help="Path to CSV file containing protein IDs and metadata. Will be imported with `pandas.read_csv`. If not provided, the protein dataframe will be read from the default path in the `DATA_DIR`.")
     parser.add_argument("--protein_ids",
                         type=str, 
                         required=False,
                         help="Comma-separated list of protein IDs to process. If not provided, all protein IDs in prot_df will be processed."
+                        )
+    parser.add_argument("--source_types",
+                        type=str,
+                        required=False,
+                        help="Comma-separated list of variant source types to process (e.g. 'clinical_ProteinGym_substitutions,clinical_ProteinGym_indels')."
+                        )
+    parser.add_argument("--ens_id_col",
+                        type=str,
+                        required=False,
+                        default=None,
+                        help="Column name in prot_df containing Ensembl IDs."
                         )
     parser.add_argument("--hap_dir",
                         type=pathlib.Path,
                         required=False,
                         default=os.path.join(config.DATA_DIR,"1KG","haplotypes"),
                         help="Directory where haplotype sequences are stored. If not provided, haplotypes will be imported from the defaulthaplotypes directory in the `DATA_DIR`.")
+    parser.add_argument("--run_filter_prot_df",
+                        type=bool,
+                        required=False,
+                        default=True,
+                        help="Whether to filter the protein dataframe before processing."
+                        )
     parser.add_argument("--models", 
                         type=str, 
                         required=True, 
@@ -808,18 +834,39 @@ def _parse_args():
                         required=True,
                         default="esm1v_t33_650M_UR90S_1:wt-marginals,masked-marginals,pseudo-ppl",
                         help="Model-specific scoring strategies in format 'model1:strat1,strat2;model2:strat1,strat2'")
-    parser.add_argument("--force", 
-                        type=bool, 
-                        required=False,
-                        default=False,
-                        help="Force recomputation of existing results.")
     parser.add_argument("--save_dir", 
                         type=pathlib.Path,
                         required=False,
                         default=os.path.join(config.DATA_DIR,"1KG","vep"),
                         help="Directory to save results.")
-    parser.add_argument("--verbose", type=bool, default=True,
-                       help="Print verbose output.")
+    parser.add_argument("--save_format",
+                        type=str,
+                        required=False,
+                        default="parquet",
+                        choices=["parquet", "csv", "csv.gz"],
+                        help="Format to save results. Can be 'parquet', 'csv', or 'csv.gz'."
+                        )
+    parser.add_argument("--force", 
+                        type=bool, 
+                        required=False,
+                        default=False,
+                        help="Force recomputation of existing results.")
+    parser.add_argument("--encode_haplotype_name_threshold",
+                        type=int,
+                        required=False,
+                        default=10,
+                        help="The number of variants in the haplotype name at which to encode the haplotype name."
+                        )
+    parser.add_argument("--mutation_col",
+                        type=str,
+                        required=False,
+                        default="mutant",
+                        help="The column name of the mutation column in the input file (i.e. the column that contains values like 'A123G' or 'A123del')."
+                        )
+    parser.add_argument("--verbose", 
+                        type=bool, 
+                        default=True,
+                        help="Print verbose output.")
     return parser.parse_args()
 
 
@@ -830,12 +877,17 @@ if __name__ == "__main__":
     args = _parse_args()
     prot_df = pd.read_csv(args.prot_df)
     scoring_strategies = _parse_scoring_strategies(args.scoring_strategies)
-    
+    models = _parse_models(args.models)
+    source_types = _parse_source_types(args.source_types)
     # Run pipeline
     vep_pipeline(prot_df, 
-                 models = args.models,
+                 models = models,
                  scoring_strategies = scoring_strategies,
+                 source_types = source_types,
+                 ens_id_col = args.ens_id_col,
                  hap_dir = args.hap_dir,
+                 run_filter_prot_df = args.run_filter_prot_df,
                  save_dir = args.save_dir,
+                 save_format = args.save_format,
                  force = args.force,
                  verbose = args.verbose)
