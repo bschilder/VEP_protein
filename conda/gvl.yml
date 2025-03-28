@@ -17,7 +17,7 @@ dependencies:
   - numpy
   - pandas
   - pandera
-  - polars>=0.19.3
+  - polars>=1.22.0
   - pgenlib # optional
   - poetry
   - pyensembl

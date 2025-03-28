@@ -24,6 +24,7 @@ def get_models_palette(palette="husl"):
     return dict(zip(models, palette))
 
 def merge_vep(save_dir = None,
+              save_format = "parquet",
               scoring_strategy = ["wt-marginals", "masked-marginals", "pseudo-ppl"],
               add_model_location=True,
               rename_model_location_col=True,
@@ -67,17 +68,22 @@ def merge_vep(save_dir = None,
     for ss in scoring_strategy:
         # Find all csv.gz files recursively
         all_files = glob.glob(
-            os.path.join(save_dir, "**", f"{ss}.csv.gz"), 
+            os.path.join(save_dir, "**", f"{ss}.{save_format}"), 
                          recursive=True)
         if verbose:
-            print("Found", len(all_files), ss, "files") 
+            print("Found", len(all_files), ss, save_format, "files") 
         if len(all_files) == 0:
             continue
         # Read each file and append to list
         for filename in tqdm(all_files, desc="Reading files"):
             try: 
                 # Read the CSV
-                df = pd.read_csv(filename, index_col=[0,1])
+                if save_format == "parquet":
+                    df = pd.read_parquet(filename)
+                else:
+                    df = pd.read_csv(filename, index_col=[0,1])
+                
+                df = df.loc[:, ~df.columns.str.startswith('Unnamed:')]
                 df.insert(0, 'haplotype', os.path.dirname(filename).split(os.sep)[-2])
                 df['scoring_strategy'] = os.path.basename(filename).split('.')[0]  
                 df['is_ref'] = df['haplotype'].str.endswith('REF')
@@ -1316,12 +1322,26 @@ def plot_auc_by_edits(vep_pr,
         g.add_legend()
         plt.tight_layout()
 
-
 def csv_to_parquet(save_dir: str = os.path.join(config.DATA_DIR,"1KG","vep"), 
                    pattern: str = "*.csv.gz",
-                   compression: str = "brotli",
-                   delete_csv: bool = True, 
+                   compression: str = "brotli", 
+                   delete_csv: bool = True,
                    **kwargs):
+    """Convert CSV files to Parquet format.
+
+    Recursively finds all CSV files matching the pattern in save_dir and converts them
+    to Parquet format with the specified compression.
+
+    Args:
+        save_dir (str): Directory containing CSV files to convert. Defaults to VEP data directory.
+        pattern (str): File pattern to match CSV files. Defaults to "*.csv.gz".
+        compression (str): Compression algorithm to use for Parquet files. Defaults to "brotli".
+        delete_csv (bool): Whether to delete original CSV files after conversion. Defaults to True.
+        **kwargs: Additional arguments passed to pandas.to_parquet().
+
+    Example:
+        >>> csv_to_parquet(save_dir="data/", pattern="*.csv.gz", compression="snappy")
+    """
     # Find all csv.gz files recursively 
     csv_files = glob.glob(os.path.join(save_dir, "**", pattern), recursive=True)
 
@@ -1347,7 +1367,55 @@ def csv_to_parquet(save_dir: str = os.path.join(config.DATA_DIR,"1KG","vep"),
             
         except Exception as e:
             print(f"Error converting {csv_file}: {str(e)}")
-        
+
+def parquet_to_csv(save_dir: str = os.path.join(config.DATA_DIR,"1KG","vep"),
+                   pattern: str = "*.parquet", 
+                   compression: str = "gzip",
+                   delete_parquet: bool = True,
+                   **kwargs):
+    """Convert Parquet files to CSV format.
+
+    Recursively finds all Parquet files matching the pattern in save_dir and converts them
+    to CSV format with the specified compression.
+
+    Args:
+        save_dir (str): Directory containing Parquet files to convert. Defaults to VEP data directory.
+        pattern (str): File pattern to match Parquet files. Defaults to "*.parquet".
+        compression (str): Compression algorithm to use for CSV files. Defaults to "gzip".
+        delete_parquet (bool): Whether to delete original Parquet files after conversion. Defaults to True.
+        **kwargs: Additional arguments passed to pandas.to_csv().
+
+    Example:
+        >>> parquet_to_csv(save_dir="data/", pattern="*.parquet", compression="gzip")
+    """
+    # Find all parquet files recursively
+    parquet_files = glob.glob(os.path.join(save_dir, "**", pattern), recursive=True)
+
+    # Convert each parquet file to csv
+    for parquet_file in tqdm(parquet_files, desc="Converting files"):
+        try:
+            # Create equivalent csv path
+            csv_file = parquet_file.replace('.parquet', '.csv.gz')
+            
+            # Skip if csv already exists 
+            if os.path.exists(csv_file):
+                continue
+
+            # Read parquet and write to csv
+            df = pd.read_parquet(parquet_file)
+            df.to_csv(csv_file,
+                     compression=compression,
+                     **kwargs)
+
+            # Optionally remove original parquet file
+            if delete_parquet:
+                os.remove(parquet_file)
+
+        except Exception as e:
+            print(f"Error converting {parquet_file}: {str(e)}")
+
+
+
 
 def recompress_parquet(save_dir: str = os.path.join(config.DATA_DIR,"1KG","vep"),
                       pattern: str = "*.parquet",

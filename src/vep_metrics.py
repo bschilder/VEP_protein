@@ -118,7 +118,7 @@ def compute_mt_wt_score(row,
         warnings.warn(e)
         return None
     
-    # Token probabilites are computed using the preprocessed sequence (after removing gaps)
+    # Token probabilites are computed using the preprocessed WT sequence (after removing gaps)
     # So we need to update the index to the preprocessed sequence
     idx_preprocessed = bp.get_preprocessed_index(sequence=sequence,
                                                  idx=idx,
@@ -132,7 +132,8 @@ def compute_mt_wt_score(row,
     seq_len = token_probs.size(1) - 1  # -1 for BOS token
     if idx_preprocessed is None:
         if verbose:
-            warnings.warn(f"Mutation position {idx} is out of bounds for sequence length {seq_len}")
+            wrn = f"Mutation position {idx} is out of bounds for sequence length {seq_len}"
+            warnings.warn(wrn)
         return None
     
     # Compute the log probability of the mutation vs the wildtype
