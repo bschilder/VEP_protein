@@ -1,11 +1,9 @@
 #!/bin/bash
-#SBATCH --job-name=vep_pipeline
-#SBATCH --output=$TMPDIR/logs/vep_pipeline/vep_pipeline_%j.out
-#SBATCH --error=$TMPDIR/logs/vep_pipeline/vep_pipeline_%j.err
-#SBATCH --time=24:00:00
-#SBATCH --mem=128G
-#SBATCH --cpus-per-task=4
-#SBATCH --gres=gpu:1
+#$ -cwd
+#$ -N vep_pipeline
+#$ -l m_mem_free=128G
+#$ -l gpu=1
+#$ -pe threads 4
 
 # Create logs directory if it doesn't exist
 mkdir -p $TMPDIR/logs/vep_pipeline
