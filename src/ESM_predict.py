@@ -297,7 +297,8 @@ def main(
                                              progress_bar=progress_bar)
 
             tqdm.pandas(desc=f"Computing 'masked-marginals-msa' for {model_loc}", 
-                        disable=not progress_bar)
+                        disable=not progress_bar,
+                        leave=False)
             df[model_loc] = df.progress_apply(
                 lambda row: vm.compute_mt_wt_score(
                     row, 
@@ -332,7 +333,9 @@ def main(
                                                  method="wt-marginals",
                                                  progress_bar=progress_bar)
                 
-                tqdm.pandas(desc=f"Computing 'wt-marginals' for {model_loc}")
+                tqdm.pandas(desc=f"Computing 'wt-marginals' for {model_loc}",
+                            disable=not progress_bar,
+                            leave=False)
                 df[model_loc] = df.progress_apply(
                     lambda row: vm.compute_mt_wt_score(
                         row, 
@@ -366,7 +369,8 @@ def main(
                                                  progress_bar=progress_bar)
 
                 tqdm.pandas(desc=f"Computing 'masked-marginals' for {model_loc}", 
-                            disable=not progress_bar)
+                            disable=not progress_bar,
+                            leave=False)
                 df[model_loc] = df.progress_apply(
                     lambda row: vm.compute_mt_wt_score(
                         row,
@@ -388,7 +392,8 @@ def main(
                 
                 # Update compute_pppl to use device
                 tqdm.pandas(desc=f"Computing 'pseudo-ppl' for {model_loc}", 
-                            disable=not progress_bar)
+                            disable=not progress_bar,
+                            leave=False)
                 # Create a new row for WT sequence
                 # df = df.append(pd.DataFrame(columns=[model_loc]))
 
@@ -407,7 +412,8 @@ def main(
                 )
             elif scoring_strategy == "pseudo-ppl-mlm":
                 tqdm.pandas(desc=f"Computing 'pseudo-ppl-mlm' for {model_loc}", 
-                            disable=not progress_bar)
+                            disable=not progress_bar,
+                            leave=False)
                 df[model_loc] = df.progress_apply(
                     lambda row: compute_pppl(
                         row=row,

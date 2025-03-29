@@ -232,7 +232,7 @@ def get_embeddings(batches,
         batches = {k: v for k, v in list(batches.items())[:max_transcripts]}
 
     for tx_id, data in tqdm(batches.items(), 
-                                    desc=desc): 
+                            desc=desc): 
         if tx_suffix_dict is not None and tx_id in tx_suffix_dict:
             save_path_suffix = tx_suffix_dict[tx_id]
         else:
@@ -496,9 +496,9 @@ def _infer_xy_cols(df, x, y,
     import re
     # find columns that match the pattern "UMAP (some number)"
     if x is None:
-        x = [col for col in df.columns if re.match(r"(?i)"+search_string+"\s*\d+", col)][0]
+        x = [col for col in df.columns if re.match(r"(?i)"+search_string+r"\s*\d+", col)][0]
     if y is None:
-        y = [col for col in df.columns if re.match(r"(?i)"+search_string+"\s*\d+", col)][1]
+        y = [col for col in df.columns if re.match(r"(?i)"+search_string+r"\s*\d+", col)][1]
     return x, y
 
 def _plot_umap_interactive(df,

@@ -247,7 +247,8 @@ def get_token_probs(model,
         all_token_probs = []
         for i in tqdm(range(batch_tokens.size(1)),
                         desc=f"Computing token probabilities: 'masked-marginals'",
-                        disable=not progress_bar):
+                        disable=not progress_bar,
+                        leave=leave):
             batch_tokens_masked = batch_tokens.clone()
             batch_tokens_masked[0, i] = alphabet.mask_idx
             with torch.no_grad():
