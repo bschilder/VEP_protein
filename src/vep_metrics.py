@@ -194,6 +194,12 @@ def mutate_sequence(mutation_row,
     # - sequence_mut: mutated sequence
     return wt, pos, idx, mt, sequence_mut
      
+def enable_data_parallel(model):
+    # Enable multiple GPUs
+    if torch.cuda.device_count() > 1:
+        # print(f"Using {torch.cuda.device_count()} GPUs")
+        model = torch.nn.DataParallel(model)
+    return model
  
 def get_token_probs(model,
                     batch_tokens,
@@ -208,6 +214,7 @@ def get_token_probs(model,
                             "pseudo-ppl-mlm"],
                     tokenizer=None,
                     progress_bar=True, 
+                    data_parallel=True,
                     leave=False):
     
     # Get method options from function defaults
@@ -222,6 +229,9 @@ def get_token_probs(model,
     if framework!="torch":
         raise ValueError(f"Only 'torch' is supported for now. Got '{framework}'.")
     
+    # Enable multiple GPUs
+    if data_parallel:
+        model = enable_data_parallel(model)
     
     ##### wt-marginals #####
     # Compute the log probabilities of the wildtype sequence
