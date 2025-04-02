@@ -92,6 +92,12 @@ def create_parser():
         default=True,
         help="Print verbose output"
     )
+    parser.add_argument(
+        "--enable-data-parallel",
+        type=bool,
+        default=True,
+        help="Enable data parallelization across multiple GPUs"
+    )
     # fmt: on
     parser.add_argument(
         "--nogpu", 
@@ -200,6 +206,7 @@ def main(
     is_ref: bool = False,
     force: bool = False,
     progress_bar: bool = True,
+    enable_data_parallel: bool = True,
     verbose: bool = True
 ):
     """Run ESM model predictions on mutation data.
@@ -227,6 +234,8 @@ def main(
             Example: False
         force: Whether to force the prediction even if the model has already been downloaded
             Example: False
+        enable_data_parallel: Whether to enable data parallelization
+            Example: True
         verbose: Whether to print verbose output
             Example: True
     """
@@ -263,10 +272,16 @@ def main(
                                         category=UserWarning, 
                                         message='Regression weights not found, predicting contacts will not produce correct results.')
             model, alphabet = pretrained.load_model_and_alphabet(model_loc)
+        # Set the model to evaluation mode, which disables dropout and other training-specific behaviors
+        # This is important for inference to ensure consistent predictions
         model.eval()
         
         # Move the model to the device
-        model = model.to(device) 
+        if enable_data_parallel:
+            model = vm.enable_data_parallel(model,
+                                            verbose=verbose>1)
+        else:
+            model = model.to(device)
 
         ####-- MSA models --####
         # Original code from: 
@@ -455,5 +470,7 @@ if __name__ == "__main__":
         msa_path=args.msa_path,
         msa_samples=args.msa_samples,
         nogpu=args.nogpu,
-        is_ref=args.is_ref
+        is_ref=args.is_ref,
+        enable_data_parallel=args.enable_data_parallel,
+        verbose=args.verbose
     )

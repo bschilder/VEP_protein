@@ -193,12 +193,102 @@ def mutate_sequence(mutation_row,
     # - mt: mutant allele
     # - sequence_mut: mutated sequence
     return wt, pos, idx, mt, sequence_mut
-     
-def enable_data_parallel(model):
+
+def get_available_gpus(verbose=False):
+    """
+    Get the available devices
+    Returns a list of tuples (device_id, free_memory)
+
+    Example:
+        [(0, 10.0), (1, 8.0), (2, 6.0)]
+    """
+    # Get available GPUs (those with most free memory)
+    available_gpus = []
+    for i in range(torch.cuda.device_count()):
+        try:
+            # Check if GPU is available by querying its memory
+            free_memory = torch.cuda.get_device_properties(i).total_memory - torch.cuda.memory_allocated(i)
+            # Only include GPUs with sufficient free memory (e.g., 1GB)
+            if free_memory > 1e9:  # 1GB threshold
+                available_gpus.append((i, free_memory))
+                if verbose:
+                    print(f"GPU {i}: {free_memory/1e9:.2f}GB free")
+        except Exception as e:
+            if verbose:
+                print(f"Error checking GPU {i}: {e}")
+            continue
+    
+    # Sort GPUs by available memory (descending)
+    available_gpus.sort(key=lambda x: x[1], reverse=True)
+    return available_gpus
+
+def enable_data_parallel(model, 
+                         check_available=True,
+                         verbose=False):
+    """
+    Enables data parallelism for a PyTorch model across multiple GPUs.
+    
+    This function wraps the model with PyTorch's DataParallel module to distribute
+    computation across available GPUs. When check_available is True, it prioritizes
+    GPUs with the most available memory.
+    
+    Parameters
+    ----------
+    model : torch.nn.Module
+        The PyTorch model to parallelize.
+    check_available : bool, default=True
+        If True, checks available GPU memory and prioritizes GPUs with most free memory.
+        If False, uses all available GPUs without checking memory.
+    verbose : bool, default=True
+        If True, prints information about the GPUs being used.
+        
+    Returns
+    -------
+    torch.nn.Module
+        The model wrapped with DataParallel if multiple GPUs are available,
+        otherwise the original model.
+    """
     # Enable multiple GPUs
     if torch.cuda.device_count() > 1:
-        # print(f"Using {torch.cuda.device_count()} GPUs")
-        model = torch.nn.DataParallel(model)
+        # First move model to CUDA before wrapping with DataParallel
+        model = model.cuda()
+        
+        if check_available:
+            
+            available_gpus = get_available_gpus(verbose=verbose)
+            # Use GPUs with most available memory
+            if available_gpus:
+                device_ids = [gpu[0] for gpu in available_gpus]
+                if verbose:
+                    print(f"Using {len(device_ids)} GPUs: {device_ids}")
+                # Ensure model is on the same device as device_ids[0]
+                model = model.to(f"cuda:{device_ids[0]}")
+                # No need to call model.to(device) after this - DataParallel handles device placement
+                # The model is already on device_ids[0] from the previous line
+                model = torch.nn.DataParallel(model, 
+                                              device_ids=device_ids)
+            else:
+                if verbose:
+                    print("No GPUs with sufficient memory found, using single GPU")
+                model = model.cuda()
+        else:
+            if verbose:
+                print(f"Using all {torch.cuda.device_count()} GPUs")
+            model = torch.nn.DataParallel(model)
+    else:
+        # If only one GPU, just move to cuda
+        if verbose:
+            print("Only one GPU available")
+        model = model.cuda()
+    
+    # Verify which devices are being used
+    if isinstance(model, torch.nn.DataParallel):
+        if verbose:
+            print(f"Model is using DataParallel with devices: {model.device_ids}")
+    else:
+        if verbose:
+            print(f"Model is using single device: {next(model.parameters()).device}")
+    
     return model
  
 def get_token_probs(model,
@@ -213,8 +303,7 @@ def get_token_probs(model,
                             "pseudo-ppl",
                             "pseudo-ppl-mlm"],
                     tokenizer=None,
-                    progress_bar=True, 
-                    data_parallel=True,
+                    progress_bar=True,  
                     leave=False):
     
     # Get method options from function defaults
@@ -227,11 +316,7 @@ def get_token_probs(model,
     # Check that the framework is supported
     framework = utils.one_only(framework)
     if framework!="torch":
-        raise ValueError(f"Only 'torch' is supported for now. Got '{framework}'.")
-    
-    # Enable multiple GPUs
-    if data_parallel:
-        model = enable_data_parallel(model)
+        raise ValueError(f"Only 'torch' is supported for now. Got '{framework}'.") 
     
     ##### wt-marginals #####
     # Compute the log probabilities of the wildtype sequence

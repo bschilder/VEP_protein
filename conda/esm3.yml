@@ -2,30 +2,24 @@ name: esm3
 channels:
     - conda-forge
     - nvidia
+    - nodefaults
 dependencies:
+    - python>=3.10,<3.13
     - pandas
-    - openpyxl
     - tqdm
-    - umap-learn
     - IProgress
     - ipywidgets
     - ipykernel
-    - entrypoints
     - seaborn
-    - conda-forge::biopython
+    - plotly
     - cmake
-    - owlready2
+    - pyarrow
+    - scikit-learn
+    - conda-forge::biopython
+    - huggingface_hub
     - pooch
     - pip
     - pip:
-        - torch 
-        - torchvision 
-        - torchaudio
         - esm # New ESM module
-        - "dllogger @ git+https://github.com/NVIDIA/dllogger.git"
-        - "openfold @ git+https://github.com/aqlaboratory/openfold.git@4b41059694619831a7db195b7e0988fc4ff3a307"
-        - logomaker
         - python-Levenshtein
         - ensembl-rest
-        - gprofiler-official
-        - script-utils

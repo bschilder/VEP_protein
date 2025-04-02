@@ -12,7 +12,6 @@ from typing import Dict, List
 import src.config as config
 import src.utils as utils
 import src.haplosaurus as hs
-import src.gprofiler as gp
 import src.proteingym as pg
 import src.biopython as bp
 import src.vep_pipeline as vp
@@ -109,6 +108,7 @@ def merge_vep(save_dir = None,
             vep_df['ENSP'] = vep_df['haplotype'].str.split(":").str[0]
         # Map protein IDs to ENST and HGNC
         if target_namespace is not None:
+            import src.gprofiler as gp
             vep_df = gp.map_ids(vep_df, 
                                 rows_per_id=1,
                                 target_namespace=target_namespace)
@@ -154,6 +154,7 @@ def report_vep(vep_df,
     """
     Report on the VEP dataframe
     """
+    
     # Add extra columns
     vep_df['protein_sequence_length'] = vep_df['protein_sequence'].map(bp.preprocess_sequence).str.len()
     vep_df['mutated_sequence_length'] = vep_df['mutated_sequence'].map(bp.preprocess_sequence).str.len()
@@ -384,7 +385,6 @@ def batches_to_df(batches):
 
 
 
-
 def plot_vep_violin(vep_df, 
                     model_location = None, 
                     max_models = 1,
@@ -404,12 +404,26 @@ def plot_vep_violin(vep_df,
                     figsize=[6, 8],
                     add_side_labels = False,
                     add_stats = False,
+                    save_path = None,
                     verbose=True
                     ):
     from scipy import stats  
 
     vep_df = vep_df.copy()
     y_col = 'VEP'
+
+    # Filter by model location
+    vep_df = _filter_vep_df(vep_df, verbose=verbose)        
+    # Filter by model location
+    if model_location is not None:
+        model_location = utils.as_list(model_location)
+    else:
+        model_location = vep_df['model_location'].unique()
+
+    # Filter by max models
+    if max_models is not None:
+        model_location = model_location[:max_models]
+    vep_df = vep_df.loc[vep_df['model_location'].isin(model_location)]
 
     # Filter by scoring strategy
     if scoring_strategy is not None:
@@ -422,17 +436,6 @@ def plot_vep_violin(vep_df,
     if max_proteins is not None:
         vep_df = vep_df.loc[vep_df['protein'].isin(vep_df['protein'].unique()[:max_proteins])]
     
-    # Filter by model location
-    if model_location is not None:
-        model_location = utils.as_list(model_location)
-    else:
-        model_location = vep_df['model_location'].unique()
-    if max_models is not None:
-        model_location = model_location[:max_models]
-    vep_df = vep_df.loc[vep_df['model_location'].isin(model_location)]
-    
-    vep_df = _filter_vep_df(vep_df, verbose=verbose) 
-     
     # Get unique categories
     categories = sorted(vep_df[clinsig_col].unique())
     category_positions = {cat: i for i, cat in enumerate(categories)}
@@ -604,11 +607,18 @@ def plot_vep_violin(vep_df,
             ax.set_ylim(y_min - 0.05*y_range, y_max + 0.15*y_range)
 
     plt.tight_layout()
+    
+    # Save figure if save_path is provided
+    if save_path is not None:
+        plt.savefig(save_path)
+        
     plt.show()
 
 def _summarise_mutants(vep_df,
                        clinsig_col='clinsig'):
-    mutant_summary = vep_df.groupby(clinsig_col)['mutant'].nunique() 
+    
+    vep_df['protein_mutant'] = vep_df['protein'] + '_' + vep_df['mutant']
+    mutant_summary = vep_df.groupby(clinsig_col)['protein_mutant'].nunique() 
     mutant_summary_str = ', '.join([f"{k}: {v}" for k,v in mutant_summary.items()]) 
     return mutant_summary_str
 
@@ -639,7 +649,7 @@ def _filter_vep_df(vep_df,
     rows_before = len(vep_df) 
     vep_df = vep_df.loc[vep_df['VEP'].notna()]
     rows_after = len(vep_df)
-    if verbose:
+    if verbose and rows_before != rows_after:
         print(f"Filtered {((rows_before-rows_after)/rows_before)*100:.1f}% of rows with NAs in col 'VEP'")
     return vep_df
 
@@ -666,12 +676,18 @@ def plot_vep_density(vep_df,
                      height=3,
                      aspect=1.5,
                      title_y=1,
+                     legend_y=0.9,
+                     col='scoring_strategy',
+                     row='model_location',
                      sharex=True,
                      sharey=False,
                      verbose=True,
+                     save_path=None,
                      **kwargs): 
     # Get filtered data
     vep_df = vep_df.copy()
+
+    # Filter by model location
     if model_location is not None:
         model_location = utils.as_list(model_location)
         vep_df = vep_df.loc[vep_df['model_location'].isin(model_location)]
@@ -680,15 +696,15 @@ def plot_vep_density(vep_df,
 
     # Sort by scoring strategy
     vep_df = utils.sort_by_reverse_string(vep_df, 
-                                          column='scoring_strategy', 
-                                          extra_sort_cols=['model_location','clinsig'],
+                                          column='model_location', 
+                                          extra_sort_cols=['scoring_strategy', clinsig_col],
                                           ascending=[False, True, True])
 
     vep_df = _filter_vep_df(vep_df, verbose=verbose) 
     # Create facet grid
     g = sns.FacetGrid(data=vep_df, 
-                    col='scoring_strategy',
-                    row='model_location',
+                    col=col,
+                    row=row,
                     height=height,
                     aspect=aspect,
                     sharex=sharex,
@@ -712,10 +728,15 @@ def plot_vep_density(vep_df,
     g.figure.suptitle(f'{final_label}\n{mutant_summary_str}', y=title_y)
 
     # Add legend 
-    _add_legend(g, palette=palette) 
+    _add_legend(g, palette=palette,  top=legend_y) 
     _rm_subplot_prefixes(g)
 
     plt.tight_layout()
+    
+    # Save figure if save_path is provided
+    if save_path is not None:
+        plt.savefig(save_path, bbox_inches='tight')
+        
     plt.show()
     # Add vertical lines for REF haplotypes
     # for ax in g.axes.flat:
@@ -730,7 +751,6 @@ def plot_vep_density(vep_df,
 def _rm_subplot_prefixes(g):
     g.set_titles(row_template='{row_name}', 
                  col_template='{col_name}')  # Only show model name without prefix
-
 def plot_vep_variance(vep_df,
                       groupby_cols = ['model_location','protein','clinsig','mutant','scoring_strategy'],
                       x='clinsig',
@@ -745,6 +765,7 @@ def plot_vep_variance(vep_df,
                       sharex=True,
                       sharey=True,
                       return_df=False,
+                      save_path=None,
                       **kwargs):
     # Get filtered data
     vep_df = vep_df.copy()
@@ -783,6 +804,11 @@ def plot_vep_variance(vep_df,
     _add_legend(g, palette=palette) 
 
     plt.tight_layout()
+    
+    # Save figure if save_path is provided
+    if save_path is not None:
+        plt.savefig(save_path, bbox_inches='tight')
+        
     plt.show()
 
     if return_df:
@@ -802,9 +828,11 @@ def plot_vep_percentiles(vep_df,
                         palette = utils.get_clinsig_palette(),
                         height=3,
                         aspect=.9,
+                        title_y=1,
                         sharex=True,
                         sharey=True,
                         return_df=False,
+                        save_path=None,
                         **kwargs):
 
     if suptitle is None and is_ref:
@@ -834,11 +862,16 @@ def plot_vep_percentiles(vep_df,
     g.set_xticklabels(rotation=45, ha='right')
 
     # Remove subplot titles and add margin titles
-    g.figure.suptitle(suptitle)  # Remove overall title if any
+    g.figure.suptitle(suptitle, y=title_y)  # Remove overall title if any
 
     _rm_subplot_prefixes(g)
 
     plt.tight_layout()
+    
+    # Save figure if save_path is provided
+    if save_path is not None:
+        plt.savefig(save_path)
+        
     plt.show()
 
     if return_df:
@@ -861,7 +894,7 @@ def plot_vep_bpratios(vep_df,
                         y_label='VEP_Benign /\nVEP_Benign + VEP_Pathogenic',
                         row="scoring_strategy",
                         func=sns.violinplot,
-                        palette = get_models_palette(),
+                        palette = None,
                         height=4,
                         aspect=.9,
                         sharex=True,
@@ -871,6 +904,9 @@ def plot_vep_bpratios(vep_df,
                         **kwargs):
 
     y = utils.one_only(y) 
+    
+    if palette is None:
+        palette = get_models_palette()
 
     # Get filtered data
     vep_pbratios = vep_df.groupby(groupby_cols)['VEP'].mean().reset_index().pivot(
@@ -1087,9 +1123,10 @@ def plot_precision_recall(vep_pr,
                           hue='scoring_strategy',
                           size='n_samples',
                           alpha=0.7,
-                          figsize=(8, 6),
+                          figsize=[8, 6],
                           markers=None,
                           plot_types=['scatter_AUCROC','bar_AUCROC','bar_coef'],
+                          save_path=None,
                           **kwargs):
     """
     Plot precision and recall for a given scoring strategy and model location.
@@ -1106,8 +1143,13 @@ def plot_precision_recall(vep_pr,
     >>> vep_pr = compute_precision_recall(vep_df, x='VEP', y='DMS_bin_score')
     >>> plot_precision_recall(vep_pr, x='VEP', y='DMS_bin_score')
     """
-    if markers is None:
-        markers=utils.get_marker_map(max(vep_pr['edits']))
+    if markers is None and style is not None:
+        markers = utils.get_marker_map(max(vep_pr[style]), 
+                                       is_ref_marker=style == 'is_ref')
+    
+    if style is not None:
+        if style not in vep_pr.columns:
+            style = None
 
     vep_pr = utils.sort_by_reverse_string(vep_pr, 
                                         column='scoring_strategy', 
@@ -1128,6 +1170,9 @@ def plot_precision_recall(vep_pr,
         plt.xlabel('Model Location')
         plt.legend(bbox_to_anchor=(1.05, 1), loc='upper left')
         plt.tight_layout()
+        if save_path is not None:
+            plt.savefig(os.path.splitext(save_path)[0] + "_scatter_AUCROC.png")
+            
         plt.show()
 
     if 'bar_AUCROC' in plot_types:
@@ -1150,6 +1195,8 @@ def plot_precision_recall(vep_pr,
         # Add legend
         g.add_legend(bbox_to_anchor=(0.05, 1), loc='upper left', title=style)
         plt.tight_layout()
+        if save_path is not None:
+            plt.savefig(os.path.splitext(save_path)[0] + "_bar_AUCROC.png")
         plt.show()
     
     if 'bar_coef' in plot_types:
@@ -1163,6 +1210,8 @@ def plot_precision_recall(vep_pr,
         plt.xlabel('Model Location')
         plt.legend(bbox_to_anchor=(1.05, 1), loc='upper left')
         plt.tight_layout()
+        if save_path is not None:
+            plt.savefig(os.path.splitext(save_path)[0] + "_bar_coef.png")
         plt.show()
 
 def plot_auprc(vep_df,
@@ -1172,7 +1221,7 @@ def plot_auprc(vep_df,
                figsize=(10, 6),
                xlim=None,
                binarize=True,
-               palette=get_models_palette(),
+               palette=None,
                verbose: bool = True):
     """
     Plot the AUPRC for a given scoring strategy and model location.
@@ -1190,6 +1239,9 @@ def plot_auprc(vep_df,
     # Create precision-recall curves using matplotlib
     from sklearn.metrics import precision_recall_curve, average_precision_score
 
+    if palette is None:
+        palette = get_models_palette()
+        
     vep_df = utils.sort_by_reverse_string(vep_df, 
                                             column='scoring_strategy', 
                                             extra_sort_cols=['model_location'],
@@ -1253,15 +1305,16 @@ def plot_auc_by_edits(vep_pr,
                       x="edits_scaled",
                       y="auc",
                       row="model_location",
-                     col="scoring_strategy", 
-                     style="edits",
-                     markers=None,
-                     height=4, 
-                     aspect=1,
-                    alpha=0.7,
-                    add_smooth=True,
-                    frac=0.6666666666666666, 
-                    it=3,
+                      col="scoring_strategy", 
+                      style="edits",
+                      markers=None,
+                      height=4, 
+                      aspect=1,
+                      alpha=0.7,
+                      add_smooth=True,
+                      frac=0.6666666666666666, 
+                      it=3,
+                      save_path=None,
                       **kwargs):
     # Create scatter plot of AUC-ROC scores by number of edits with fitted curves
     import seaborn as sns
@@ -1271,8 +1324,13 @@ def plot_auc_by_edits(vep_pr,
     
     vep_pr = vep_pr.copy()
 
-    if markers is None:
-        markers = utils.get_marker_map(max(vep_pr['edits']))
+    if markers is None and style in vep_pr.columns:
+        markers = utils.get_marker_map(max(vep_pr[style]), 
+                                       is_ref_marker=style == 'is_ref')
+
+    if style is not None:
+        if style not in vep_pr.columns:
+            style = None
     
     # Fit the LOESS curve
     lowess = sm.nonparametric.lowess
@@ -1321,6 +1379,11 @@ def plot_auc_by_edits(vep_pr,
 
         g.add_legend()
         plt.tight_layout()
+
+        if save_path is not None:
+            plt.savefig(save_path)
+            
+        plt.show()
 
 def csv_to_parquet(save_dir: str = os.path.join(config.DATA_DIR,"1KG","vep"), 
                    pattern: str = "*.csv.gz",

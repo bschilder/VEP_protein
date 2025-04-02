@@ -5,7 +5,6 @@ from tqdm import tqdm
 import glob
 
 import src.utils as utils
-import src.gprofiler as gp
 import src.ensembl_rest as er
 
 ##### Usage example #####
@@ -315,6 +314,7 @@ def map_resources(df,
     if method == 'gprofiler':
         # Using gprofiler
         for tn in target_namespace:
+            import src.gprofiler as gp
             df = gp.map_ids(df,
                             on_left=input_col,
                             target_namespace=tn, 

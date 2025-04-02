@@ -607,20 +607,29 @@ def _create_semicircle_marker():
     codes = [Path.MOVETO] + [Path.LINETO]*(len(verts)-2) + [Path.CLOSEPOLY]
     return mpath.Path(verts, codes)
 
-def get_marker_map(n=8, subset=None, n_plus_marker="*"):
+def get_marker_map(n=8, 
+                   subset=None, 
+                   n_plus_marker="*",
+                   is_ref_marker=False):
     """Get a map of markers for a given range of integers"""
-    marker_map = {0:_create_donut_marker(), 
-                  1:'o', 
-                #   2:_create_semicircle_marker(), 
-                2:'X',
-                  3:'^', 
-                  4:'D', 
-                  5:'p', 
-                  6:'H', 
-                  7:_create_polygon_marker(7), 
-                  8:'8'
-                  }
-    if n > 8:
+    if is_ref_marker:
+        marker_map = {
+            True: _create_donut_marker(),
+            False: "o"
+        }
+    else:
+        marker_map = {
+            0:_create_donut_marker(), 
+            1:'o', 
+            2:'X',
+            3:'^', 
+            4:'D', 
+            5:'p', 
+            6:'H', 
+            7:_create_polygon_marker(7), 
+            8:'8'
+            }
+    if n > 8 and not is_ref_marker:
         for i in range(9, n+1):
             if n_plus_marker is not None:
                 marker_map[i] = n_plus_marker

@@ -9,11 +9,13 @@ import seaborn as sns
 import src.config as config
 import src.utils as utils
 import src.haplosaurus as hs
-import src.ESM_predict as ESMp
-import src.ESM as ESM
-import src.gprofiler as gp
 import src.proteingym as pg
 import src.biopython as bp
+try:
+    import src.ESM_predict as ESMp
+    import src.ESM as ESM
+except:
+    pass
 
 def list_models(as_list=True):
     """Get available ESM models.
@@ -168,7 +170,8 @@ def vep_pipeline(prot_df: pd.DataFrame = None,
     save_paths = {}
     
     # Iterate over models
-    for model_location in models:
+    for model_location in tqdm(models,
+                               desc="Processing models"):
 
         # Get scoring strategies for this model
         scoring_strategy = scoring_strategies[model_location]
@@ -274,6 +277,152 @@ def vep_pipeline(prot_df: pd.DataFrame = None,
                             raise ValueError(f"Model {model_location} not supported")
     return save_paths
 
+def vep_pipeline_batched(prot_df: pd.DataFrame = None, 
+                        models: list[str] = ["esm1v_t33_650M_UR90S_1"],
+                        scoring_strategies: dict[str, list[str]] = None,
+                        protein_ids: list[str] = None,
+                        source_types: list[str] = None,
+                        ens_id_col: str = None,
+                        haplotypes: dict[str, dict[str, str]] = None, 
+                        hap_dir: str = hs.DIR_DICT["haplotypes"],
+                        run_filter_prot_df: bool = True,
+                        save_dir: str = os.path.join(config.DATA_DIR,"1KG","vep"), 
+                        save_format: str = "parquet",
+                        force: bool = False,
+                        batch_size: int = 100,
+                        encode_haplotype_name_threshold: int = 10,
+                        mutation_col: str = "mutant",
+                        verbose: bool = True):
+    """Batched version of vep_pipeline that processes multiple sequences at once.
+    
+    Args:
+        prot_df (pd.DataFrame, optional): DataFrame containing protein information.
+        models (list[str], optional): List of models to use for prediction. Defaults to ["esm1v_t33_650M_UR90S_1"].
+        scoring_strategies (dict[str, list[str]], optional): Dictionary mapping model names to scoring strategies.
+        protein_ids (list[str], optional): List of protein IDs to process.
+        source_types (list[str], optional): List of source types to process.
+        ens_id_col (str, optional): Column name for Ensembl IDs.
+        haplotypes (dict[str, dict[str, str]], optional): Dictionary of haplotypes.
+        hap_dir (str, optional): Directory containing haplotype files. Defaults to hs.DIR_DICT["haplotypes"].
+        run_filter_prot_df (bool, optional): Whether to filter protein DataFrame. Defaults to True.
+        save_dir (str, optional): Directory to save results. Defaults to os.path.join(config.DATA_DIR,"1KG","vep").
+        save_format (str, optional): Format to save results. Defaults to "parquet".
+        force (bool, optional): Whether to force recomputation. Defaults to False.
+        batch_size (int, optional): Number of sequences to process in each batch. Defaults to 100.
+        encode_haplotype_name_threshold (int, optional): Threshold for encoding haplotype names. Defaults to 10.
+        mutation_col (str, optional): Column name for mutations. Defaults to "mutant".
+        verbose (bool, optional): Whether to print verbose output. Defaults to True.
+    """
+    # Initial setup same as vep_pipeline
+    models = _check_models(models)
+    
+    if ens_id_col is None:
+        ens_id_col = _infer_ens_id_col(
+            prot_df=prot_df, 
+            haplotypes=haplotypes, 
+            verbose=verbose
+        )
+    scoring_strategies = _check_scoring_strategies(
+        scoring_strategies=scoring_strategies, 
+        models=models
+    )
+    
+    prot_df = _check_prot_df(
+        prot_df=prot_df
+    )
+    
+    haplotypes = _check_haplotypes(
+        haplotypes=haplotypes, 
+        hap_dir=hap_dir, 
+        verbose=verbose
+    )
+    
+    hap_seqs = _check_hap_seqs(
+        haplotypes=haplotypes, 
+        use_protein_ids=False, 
+        verbose=verbose
+    )
+    if run_filter_prot_df:
+        prot_df = filter_prot_df(prot_df=prot_df, 
+                                protein_ids=protein_ids, 
+                                ens_id_col=ens_id_col,
+                                source_types=source_types, 
+                                haplotypes=haplotypes,
+                                verbose=verbose)
+
+    save_paths = {}
+
+    # Iterate over models
+    for model_location in tqdm(models, desc="Processing models"):
+        scoring_strategy = scoring_strategies[model_location]
+        _warn_scoring_strategies(scoring_strategy=scoring_strategy, verbose=verbose)
+
+        if run_filter_prot_df:
+            prot_df_model = filter_model_seq_len(prot_df=prot_df, 
+                                               model_location=model_location,
+                                               haplotypes=haplotypes,
+                                               verbose=verbose)
+        else:
+            prot_df_model = prot_df
+
+        # Collect all sequences and their metadata that need processing
+        batch_data = []
+        for pid in tqdm(prot_df_model['protein'].unique(), desc="Collecting sequences"):
+            prot_df_i = prot_df_model.loc[prot_df_model['protein']==pid]
+            ens_id = prot_df_i[ens_id_col].tolist()[0]
+            
+            for _, row in prot_df_i.iterrows():
+                variants_path = row['source_file']
+                variants_type = row['source_type']
+                
+                for seq_name, seqs in hap_seqs[ens_id]:
+                    is_ref = seq_name.endswith('REF')
+                    seq_name_save = utils.encode_haplotype_name(seq_name) if seq_name.count(",") > encode_haplotype_name_threshold else seq_name
+                    
+                    # Check if sequence is too long for model
+                    if not _check_model_seq_len(seqs=seqs, model_location=model_location, 
+                                              pid=pid, seq_name=seq_name, verbose=verbose):
+                        continue
+
+                    # For each scoring strategy
+                    for ss in scoring_strategy:
+                        save_path = os.path.join(save_dir, model_location, pid, 
+                                               seq_name_save, variants_type, f"{ss}.{save_format}")
+                        save_paths[(pid, seq_name, ss)] = save_path
+                        
+                        # Skip if file exists and not force
+                        if os.path.exists(save_path) and not force:
+                            continue
+                            
+                        # Create output directory
+                        os.makedirs(os.path.dirname(save_path), exist_ok=True)
+                        
+                        # Add to batch
+                        msa = bp.as_msa(seqs)
+                        batch_data.append({
+                            'dms_input': variants_path,
+                            'dms_output': save_path,
+                            'sequence': msa,
+                            'mutation_col': mutation_col,
+                            'scoring_strategy': ss,
+                            'is_ref': is_ref
+                        })
+
+        # Process batches
+        for i in tqdm(range(0, len(batch_data), batch_size), desc="Processing batches"):
+            batch = batch_data[i:i + batch_size]
+            if model_location in ESM.list_models(return_list=True):
+                ESMp.batch_predict(
+                    batch_data=batch,
+                    model_location=model_location,
+                    offset_idx=1,
+                    force=force,
+                    verbose=verbose
+                )
+            else:
+                raise ValueError(f"Model {model_location} not supported")
+
+    return save_paths
 
 def _check_models(models: list[str],
                   error: bool = True):
@@ -689,6 +838,7 @@ def _filter_prot_df_gprofiler(prot_df: pd.DataFrame,
             # If ENSP is present, map it to ENSP
             if 'ENSP' in prot_df.columns: 
                 if run_mapping:
+                    import src.gprofiler as gp
                     haplotype_id_map = gp.get_id_map(ids=list(enst_to_ensp.values()),
                                                      rename_converted=True,
                                                      target_namespace='ENSP',
@@ -716,6 +866,7 @@ def _filter_prot_df_gprofiler(prot_df: pd.DataFrame,
             # If ENST is present, map it to ENSP
             elif 'ENST' in prot_df.columns:
                 if run_mapping:
+                    import src.gprofiler as gp
                     haplotype_id_map = gp.get_id_map(ids=list(enst_to_ensp.keys()),
                                                      rename_converted=True,
                                                      target_namespace='ENST',
