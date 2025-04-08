@@ -25,14 +25,13 @@ def get_zenodo(datasets: str = ['1KG',
     """
     import pooch
     files = {}
-    processor = pooch.Untar()
     # 1KG 
     if '1KG' in datasets:
         files['1KG'] = {}
         files['1KG']['data'] = pooch.retrieve(
             url="doi:10.5281/zenodo.12671237/240527_ProHap_ALL.tar.gz",
             known_hash="md5:0979e06586bb480c54fbf63ed06d46ed",
-            processor=processor,
+            processor=pooch.Untar(),
             progressbar=progressbar,
             fname='240527_ProHap_ALL.tar.gz',
             **kwargs
@@ -50,7 +49,7 @@ def get_zenodo(datasets: str = ['1KG',
         files['HRC']['data'] = pooch.retrieve(
             url="doi:10.5281/zenodo.12671302/240703_HRC1.1_GRCh38.tar.gz",
             known_hash="md5:96740e94a100738b5ac9bc4dc3af5362",
-            processor=processor,
+            processor=pooch.Untar(),
             progressbar=progressbar,
             fname='240703_HRC1.1_GRCh38.tar.gz',
             **kwargs
@@ -68,7 +67,7 @@ def get_zenodo(datasets: str = ['1KG',
         files['HPRC']['data'] = pooch.retrieve(
             url="doi:10.5281/zenodo.12686819/240703_ProHap_pangenome_ALL.tar.gz",
             known_hash="md5:3af7be4375a9ada3c0458579cafc3283",
-            processor=processor,
+            processor=pooch.Untar(),
             progressbar=progressbar,
             fname='240703_ProHap_pangenome_ALL.tar.gz',
             **kwargs
