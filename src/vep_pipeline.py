@@ -4,7 +4,7 @@ import argparse
 import pathlib 
 import warnings
 from tqdm.auto import tqdm
-import seaborn as sns
+
 # Local imports
 import src.config as config
 import src.utils as utils
@@ -77,6 +77,7 @@ def vep_pipeline(prot_df: pd.DataFrame = None,
                  force: bool = False,
                  encode_haplotype_name_threshold: int = 10,
                  mutation_col="mutant",
+                 enable_data_parallel: bool = True,
                  verbose: bool = True):
     """Run ESM variant effect prediction pipeline on protein sequences.
 
@@ -107,6 +108,7 @@ def vep_pipeline(prot_df: pd.DataFrame = None,
         encode_haplotype_name_threshold (int, optional): The number of variants in the haplotype name at which to encode the haplotype name using the `encode_haplotype_name` function. 
         Useful for avoiding excessively long file paths. Defaults to 10.
         mutation_col (str, optional): The column name of the mutation column in the input file (i.e. the column that contains values like "A123G" or "A123del"). Defaults to "mutant".
+        enable_data_parallel (bool, optional): Whether to enable data parallel processing. Defaults to True.
         verbose (bool, optional): Print verbose output. Defaults to True.
 
     Returns:
@@ -194,16 +196,17 @@ def vep_pipeline(prot_df: pd.DataFrame = None,
             
             assert 'protein' in prot_df_model.columns
             prot_df_i = prot_df_model.loc[prot_df_model['protein']==pid]
-            assert prot_df_i.shape[0] < 2, f"Multiple rows found for protein {pid}"
             assert len(prot_df_i)>0
             
             # Map protein id to ensp_id
             ens_id = prot_df_i[ens_id_col].tolist()[0]
             assert len(ens_id)>0
 
-            # Iterate over variant types (eg. substitutions, indels)
-            for _, row in prot_df_i.iterrows():
-                # print(prot_df_i)
+            # Iterate over variant types (e.g. substitutions, indels)
+            for _, row in tqdm(prot_df_i.iterrows(),
+                               desc="Processing variant source_types",
+                               total=prot_df_i.shape[0], 
+                               leave=False):
 
                 # Get path to variant file
                 variants_path = row['source_file']
@@ -214,8 +217,8 @@ def vep_pipeline(prot_df: pd.DataFrame = None,
                     
                 # Iterate over haplotypes
                 for seq_name, seqs in tqdm(hap_seqs[ens_id], 
-                                        desc="Processing haplotypes", 
-                                        leave=False): 
+                                           desc="Processing haplotypes", 
+                                           leave=False): 
 
                     is_ref = seq_name.endswith('REF')
                     assert len(seq_name)>0
@@ -271,10 +274,12 @@ def vep_pipeline(prot_df: pd.DataFrame = None,
                                 scoring_strategy=ss,
                                 is_ref=is_ref, 
                                 force=force,
+                                enable_data_parallel=enable_data_parallel,
                                 verbose=verbose
                             )
                         else:
                             raise ValueError(f"Model {model_location} not supported")
+                        
     return save_paths
 
 def vep_pipeline_batched(prot_df: pd.DataFrame = None, 
@@ -720,6 +725,7 @@ def filter_prot_df(prot_df: pd.DataFrame,
                    ens_id_col: str = None,
                    haplotypes: dict[str, dict[str, str]] = None,
                    run_filter_seq_len_mismatch: bool = True,
+                   drop_duplicates: list[str] = ['experiment_id'],
                    verbose: bool = True) -> pd.DataFrame:
     """Filter the protein dataframe.
     This function is used to filter the protein dataframe by protein ids, source types, and haplotypes.
@@ -769,6 +775,10 @@ def filter_prot_df(prot_df: pd.DataFrame,
                                       model_location=model_location,
                                       haplotypes=haplotypes,
                                       verbose=verbose)
+    # Drop duplicate experiment IDs
+    if drop_duplicates:
+        prot_df.drop_duplicates(subset=drop_duplicates, inplace=True)    
+    
     # Report the number of unique proteins 
     assert len(prot_df)>0
     if verbose:

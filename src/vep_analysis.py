@@ -1035,8 +1035,11 @@ def encode_labels(vec,
         return label_encoder.fit_transform(vec)
 
 def compute_precision_recall(vep_df,
-                             groupby_cols: List[str] = ['model_location', 'scoring_strategy', 'is_ref'],
+                             groupby_cols: List[str] = ['model_location', 'scoring_strategy',
+                                                        'protein',
+                                                         'is_ref'],
                              binarize: bool = True,
+                             agg_cols: List[str] = ['protein'],
                              x='VEP',
                              y='DMS_bin_score',
                              verbose: bool = True):
@@ -1046,6 +1049,9 @@ def compute_precision_recall(vep_df,
     # Train logistic regression models to predict DMS binary scores
     from sklearn.linear_model import LogisticRegression
     from sklearn.metrics import roc_auc_score, accuracy_score  
+
+
+    groupby_cols = utils.as_list(groupby_cols)
 
     vep_df = utils.sort_by_reverse_string(vep_df, 
                                             column='scoring_strategy', 
@@ -1112,8 +1118,27 @@ def compute_precision_recall(vep_df,
             
         results.append(result_dict)
 
+    vep_pr = pd.DataFrame(results)
+    
+    # Aggregate results by agg column
+    if agg_cols is not None:
+        agg_cols = utils.as_list(agg_cols)
+        remaining_cols = list(set(groupby_cols) - set(agg_cols))
+        vep_pr = vep_pr.groupby(remaining_cols).agg({'accuracy':'mean','auc': 'mean','coef':'mean','intercept':'mean','n_samples':'sum'}).reset_index()
+
+    # Add back in extra cols
+    if 'protein_sequence_len' not in vep_pr.columns and 'protein_sequence' in vep_pr.columns:
+        seq_lens = {seq:len(seq) for seq in vep_pr['protein_sequence']}
+        vep_pr['protein_sequence_len'] = vep_pr['protein_sequence'].map(seq_lens)
+
+    if 'edits_scaled' not in vep_pr.columns and ('edits' in vep_pr.columns and 'protein_sequence_len' in vep_pr.columns):
+        vep_pr['edits_scaled'] = vep_pr['edits'] / vep_pr['protein_sequence_len']
+            
+    if 'edits_clipped' not in vep_pr.columns and 'edits' in vep_pr.columns:
+        vep_pr['edits_clipped'] = vep_pr['edits'].clip(upper=20)
+
     # Convert results to dataframe
-    return pd.DataFrame(results)
+    return vep_pr
 
 
 def plot_precision_recall(vep_pr,
@@ -1122,6 +1147,7 @@ def plot_precision_recall(vep_pr,
                           style='is_ref',
                           hue='scoring_strategy',
                           size='n_samples',
+                          row='scoring_strategy',   
                           alpha=0.7,
                           figsize=[8, 6],
                           markers=None,
@@ -1177,9 +1203,10 @@ def plot_precision_recall(vep_pr,
 
     if 'bar_AUCROC' in plot_types:
         # Create faceted bar plots using FacetGrid
-        g = sns.FacetGrid(data=vep_pr, col='scoring_strategy',
-                         height=figsize[1], 
-                         aspect=figsize[0]/figsize[1])
+        g = sns.FacetGrid(data=vep_pr, 
+                          row=row,
+                          height=figsize[1], 
+                          aspect=figsize[0]/figsize[1])
         g.map_dataframe(sns.barplot, 
                         x=x, 
                         y=y,
@@ -1308,7 +1335,7 @@ def plot_auc_by_edits(vep_pr,
                       col="scoring_strategy", 
                       style="edits",
                       markers=None,
-                      height=4, 
+                      height=3, 
                       aspect=1,
                       alpha=0.7,
                       add_smooth=True,

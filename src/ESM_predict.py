@@ -192,6 +192,7 @@ def _fix_esm_model_name(model_name):
         model_name = "esmfold_3B_v1"
     return model_name
 
+
 def main(
     dms_input: str,
     dms_output: str, 
@@ -304,7 +305,8 @@ def main(
             (batch_labels, 
              batch_strs, 
              batch_tokens) = batch_converter(data)
- 
+            
+            # Compute token probabilities
             token_probs = vm.get_token_probs(model=model,
                                              batch_tokens=batch_tokens,
                                              alphabet=alphabet,
@@ -344,9 +346,10 @@ def main(
                 # Compute token probabilities
                 token_probs = vm.get_token_probs(model=model,
                                                  alphabet=alphabet,
-                                                 batch_tokens=batch_tokens,
+                                                 batch_tokens=batch_tokens, 
                                                  method="wt-marginals",
                                                  progress_bar=progress_bar)
+                
                 
                 tqdm.pandas(desc=f"Computing 'wt-marginals' for {model_loc}",
                             disable=not progress_bar,
@@ -375,11 +378,18 @@ def main(
                  batch_strs, 
                  batch_tokens) = seq_to_batch(sequence,
                                               alphabet)
+                
+                # Get the mutation indices
+                mutation_idx = vm.get_mutation_indices(df=df,
+                                                       mutation_col=mutation_col,
+                                                       sequence=sequence,
+                                                       offset_idx=offset_idx)
 
                 # Compute token probabilities
                 token_probs = vm.get_token_probs(model=model,
                                                  alphabet=alphabet,
                                                  batch_tokens=batch_tokens,
+                                                 token_indices=mutation_idx,
                                                  method="masked-marginals", 
                                                  progress_bar=progress_bar)
 

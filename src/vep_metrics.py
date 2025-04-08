@@ -129,7 +129,7 @@ def compute_mt_wt_score(row,
 
     # Check if the mutation position is out of bounds
     # Get preprocessed seq length
-    seq_len = token_probs.size(1) - 1  # -1 for BOS token
+    seq_len = token_probs.size(1) - 1  # -1 for the BOS (Beginning of Sentence) token
     if idx_preprocessed is None:
         if verbose:
             wrn = f"Mutation position {idx} is out of bounds for sequence length {seq_len}"
@@ -137,11 +137,85 @@ def compute_mt_wt_score(row,
         return None
     
     # Compute the log probability of the mutation vs the wildtype
-    # add 1 for BOS token
+    # add 1 for the BOS (Beginning of Sentence) token
     score = token_probs[0, 1 + idx_preprocessed, mt_encoded] - token_probs[0, 1 + idx_preprocessed, wt_encoded]
     
     # Return the score
     return score.item()
+    
+def get_mutation_index(sequence,
+                       pos,
+                       ref=0, 
+                       query=1, 
+                       offset_idx=1):
+    """
+    Get the index of the mutation in the non-reference sequence (even if there are indels in the non-reference sequence)
+
+    Args:
+        sequence: str
+            The sequence to get the mutation index of
+        pos: int
+            The position of the mutation
+        ref: int
+            The reference sequence index
+        query: int
+            The query sequence index
+        offset_idx: int
+            The offset index
+    Example:
+        sequence = "MALWMRLLPLLALLALWGPDPAAA"
+        pos = 195
+        ref = 0
+        query = 1
+        offset_idx = 1
+    Returns:
+        int
+            The index of the mutation in the non-reference sequence
+    """
+    if bp.is_msa(sequence):
+        idx = bp.query_msa(msa=sequence,
+                            pos=pos, 
+                            ref=ref, 
+                            query=query, 
+                            return_as='pos_idx')[0]  
+    else:
+        # Assumes there are no indels in non-reference sequence (i.e. an MSA with gaps)
+        idx = pos - offset_idx
+    return idx
+
+def get_mutation_indices(df,
+                         sequence,
+                         mutation_col="mutant",
+                         offset_idx=1):
+    """
+    Get the indices of each mutation in the non-reference sequence,
+     even if there are indels in the non-reference sequence
+
+    Args:
+        df: pd.DataFrame
+            The dataframe containing the mutation rows
+        sequence: str
+            The sequence to get the mutation indices of
+        mutation_col: str
+            The column containing the mutation rows
+        offset_idx: int
+            The offset index
+    Returns:
+        list
+            The indices of each mutation in the non-reference sequence
+    Example:
+        df = pd.DataFrame({'mutation': ['G195S', 'G195S']})
+        sequence = "MALWMRLLPLLALLALWGPDPAAA"
+    """
+    def func(mutation_row):
+        wt, pos, mt = _parse_mutation_row(mutation_row)
+        return get_mutation_index(sequence=sequence,
+                                  pos=pos,
+                                  offset_idx=offset_idx)
+    # Get the mutation row
+    mutation_idx = df[mutation_col].apply(func).to_list()
+    return mutation_idx
+    
 
 def mutate_sequence(mutation_row,
                     sequence, 
@@ -194,10 +268,16 @@ def mutate_sequence(mutation_row,
     # - sequence_mut: mutated sequence
     return wt, pos, idx, mt, sequence_mut
 
-def get_available_gpus(verbose=False):
+def get_available_gpus(verbose=False,
+                       min_free_memory=1e9):
     """
     Get the available devices
     Returns a list of tuples (device_id, free_memory)
+    Args:
+        verbose: bool
+            Whether to print the free memory of each GPU
+        min_free_memory: float
+            The minimum free memory (in bytes) to consider a GPU available
 
     Example:
         [(0, 10.0), (1, 8.0), (2, 6.0)]
@@ -209,7 +289,7 @@ def get_available_gpus(verbose=False):
             # Check if GPU is available by querying its memory
             free_memory = torch.cuda.get_device_properties(i).total_memory - torch.cuda.memory_allocated(i)
             # Only include GPUs with sufficient free memory (e.g., 1GB)
-            if free_memory > 1e9:  # 1GB threshold
+            if free_memory > min_free_memory:
                 available_gpus.append((i, free_memory))
                 if verbose:
                     print(f"GPU {i}: {free_memory/1e9:.2f}GB free")
@@ -290,6 +370,8 @@ def enable_data_parallel(model,
             print(f"Model is using single device: {next(model.parameters()).device}")
     
     return model
+
+
  
 def get_token_probs(model,
                     batch_tokens,
@@ -303,9 +385,17 @@ def get_token_probs(model,
                             "pseudo-ppl",
                             "pseudo-ppl-mlm"],
                     tokenizer=None,
+                    token_indices=None,
                     progress_bar=True,  
                     leave=False):
     
+    def _check_token_probs(token_probs,
+                           batch_tokens,
+                           alphabet):
+        assert token_probs.shape[0] == 1, f"Token probabilities must have a batch dimension of 1. Got {token_probs.shape[0]}."
+        assert token_probs.shape[1] == batch_tokens[0].shape[0], f"Token probabilities must have a sequence length of {batch_tokens[0].shape[0]}. Got {token_probs.shape[1]}."
+        assert token_probs.shape[2] == len(alphabet), f"Token probabilities must have a vocabulary size of {len(alphabet)}. Got {token_probs.shape[2]}."
+
     # Get method options from function defaults
     method = utils.one_only(method)
     method = utils.check_arg(func=get_token_probs,
@@ -324,7 +414,8 @@ def get_token_probs(model,
 
         with torch.no_grad():
             token_probs = torch.log_softmax(
-                model(batch_tokens.cuda())["logits"], dim=-1
+                model(batch_tokens.cuda())["logits"], 
+                dim=-1
             )
             for _ in tqdm(
                 range(1), 
@@ -338,20 +429,43 @@ def get_token_probs(model,
     ##### masked-marginals #####
     # Compute the log probabilities of the masked sequence
     elif method == "masked-marginals":
-
+        
+        # Get the device from batch_tokens
+        device = batch_tokens.device
+        
         all_token_probs = []
         for i in tqdm(range(batch_tokens.size(1)),
                         desc=f"Computing token probabilities: 'masked-marginals'",
                         disable=not progress_bar,
                         leave=leave):
+            
+            # Skip tokens that are not in the token_indices list
+            if token_indices is not None:
+                # Account for the BOS (Beginning of Sentence) token
+                if i-1 not in token_indices:
+                    # Create placeholder tensor on the same device as batch_tokens
+                    token_probs = torch.zeros(1, len(alphabet), device=device)
+                    all_token_probs.append(token_probs)
+                    continue
+
             batch_tokens_masked = batch_tokens.clone()
             batch_tokens_masked[0, i] = alphabet.mask_idx
             with torch.no_grad():
                 token_probs = torch.log_softmax(
-                    model(batch_tokens_masked.cuda())["logits"], dim=-1
+                    model(batch_tokens_masked.to(device))["logits"], 
+                    dim=-1
                 )
-            all_token_probs.append(token_probs[:, i])  # vocab size
+            all_token_probs.append(token_probs[:, i].to(device))  # vocab size
+        # Concatenate all token probabilities along dimension 0 (sequence length)
+        # and then add a batch dimension (unsqueeze at dim 0)
+        # This creates a tensor of shape [1, sequence_length, vocab_size]
         token_probs = torch.cat(all_token_probs, dim=0).unsqueeze(0)
+
+        # Check the shape of the token probabilities
+        _check_token_probs(token_probs=token_probs,
+                           batch_tokens=batch_tokens,
+                           alphabet=alphabet)
+        
         return token_probs
     
     ##### masked-marginals-msa #####
@@ -363,14 +477,28 @@ def get_token_probs(model,
                       desc="Computing token probabilities: 'masked-marginals-msa'",
                       disable=not progress_bar, 
                       leave=leave):
+            
+            # Skip tokens that are not in the token_indices list
+            if token_indices is not None:
+                if i not in token_indices:
+                    all_token_probs.append(None)
+                    continue
+
             batch_tokens_masked = batch_tokens.clone()
             batch_tokens_masked[0, 0, i] = alphabet.mask_idx  # mask out first sequence
             with torch.no_grad():
                 token_probs = torch.log_softmax(
-                    model(batch_tokens_masked.cuda())["logits"], dim=-1
+                    model(batch_tokens_masked.cuda())["logits"], 
+                    dim=-1
                 )
             all_token_probs.append(token_probs[:, 0, i])  # vocab size
         token_probs = torch.cat(all_token_probs, dim=0).unsqueeze(0)
+
+        # Check the shape of the token probabilities
+        _check_token_probs(token_probs=token_probs,
+                           batch_tokens=batch_tokens,
+                           alphabet=alphabet)
+        
         return token_probs
     
     ##### pseudo-ppl #####
@@ -387,10 +515,14 @@ def get_token_probs(model,
                       desc="Computing token probabilities: 'pseudo-ppl'",
                       disable=not progress_bar, 
                       leave=leave):
+            
             batch_tokens_masked = batch_tokens.clone()
             batch_tokens_masked[0, i] = alphabet.mask_idx
             with torch.no_grad():
-                token_probs = torch.log_softmax(model(batch_tokens_masked.cuda())["logits"], dim=-1)
+                token_probs = torch.log_softmax(
+                    model(batch_tokens_masked.cuda())["logits"], 
+                    dim=-1
+                )
             log_probs.append(token_probs[0, i, alphabet.get_idx(sequence_str[i])].item())  # vocab size
         return log_probs
     
@@ -413,6 +545,7 @@ def get_token_probs(model,
                       desc="Computing token probabilities: 'pseudo-ppl-mlm'",
                       disable=not progress_bar, 
                       leave=leave):
+            
             # Create a copy of the token IDs
             masked_token_ids = token_ids.clone()
             # Mask a token that we will try to predict back
@@ -420,7 +553,10 @@ def get_token_probs(model,
             
             with torch.no_grad():
                 output = model(masked_token_ids)
-                token_probs = torch.nn.functional.log_softmax(output.logits, dim=-1)
+                token_probs = torch.nn.functional.log_softmax(
+                    output.logits, 
+                    dim=-1
+                )
             log_probs.append(token_probs[0, i, token_ids[0, i]])
         return log_probs
     

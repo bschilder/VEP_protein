@@ -577,6 +577,7 @@ def _as_protein_ids(haplotypes: Dict[str, Dict]) -> Dict[str, Dict]:
     return dict(zip(get_haplotype_protein_ids(haplotypes, add_self=True).values(), haplotypes.values()))
 
 def get_haplotype_seqs(haplotypes: Union[Dict[str, Dict], Dict[str, List[Dict]]],
+                       key: str = 'protein_haplotypes',
                        aligned: int = 1,
                        as_msa: bool = False,
                        return_missing: bool = False,
@@ -587,16 +588,20 @@ def get_haplotype_seqs(haplotypes: Union[Dict[str, Dict], Dict[str, List[Dict]]]
 
     Args:
         haplotypes (Union[Dict[str, Dict], Dict[str, List[Dict]]]): The haplotype information.
-        aligned (int, optional): The alignment type. Defaults to 1.
-        If 0, will return the unaligned sequence of the haplotype (without gaps).
-        If 1, will return the aligned sequence of just the haplotype (with gaps).
-        If 2, will return the aligned sequence of the reference and the haplotype (with gaps).
+        key (str, optional): The key to use to get the haplotype sequences. 
+        Options include: 'protein_haplotypes' or 'cds_haplotypes'.
+            Defaults to 'protein_haplotypes'.
+            aligned (int, optional): The alignment type. Defaults to 1.
+            If 0, will return the unaligned sequence of the haplotype (without gaps).
+            If 1, will return the aligned sequence of just the haplotype (with gaps).
+            If 2, will return the aligned sequence of the reference and the haplotype (with gaps).
         return_missing (bool, optional): Whether to return missing sequences. Defaults to False.
         use_protein_ids (bool, optional): Whether to use protein IDs. Defaults to False.
         add_haplotype_names (bool, optional): Whether to add haplotype names. Defaults to False. 
-        If 1, will add haplotype names as first element in tuple, with the sequence as the second element.
-        If >1, will add haplotype names as keys, with the sequence as the value.
-        If >2, will unnest the haplotype names and sequences into a single dictionary with the haplotype name as the key and the sequence as the value.
+            If 0 (or False), will only return unnamed sequences.
+            If 1 (or True), will add haplotype names as first element in tuple, with the sequence as the second element.
+            If 2, will add haplotype names as keys, with the sequence as the value.
+            If 3, will unnest the haplotype names and sequences into a single dictionary with the haplotype name as the key and the sequence as the value.
         verbose (bool, optional): Whether to print progress messages. Defaults to False.
 
     Returns:
@@ -611,13 +616,13 @@ def get_haplotype_seqs(haplotypes: Union[Dict[str, Dict], Dict[str, List[Dict]]]
     for tx_id in tqdm(haplotypes.keys(),
                       desc="Getting haplotype sequences"):
         
-        if isinstance(haplotypes[tx_id], dict) and 'protein_haplotypes' in haplotypes[tx_id].keys():
+        if isinstance(haplotypes[tx_id], dict) and key in haplotypes[tx_id].keys():
             if aligned==1:
-                hap_seqs[tx_id] = [x['aligned_sequences'][1] for x in haplotypes[tx_id]['protein_haplotypes']]
+                hap_seqs[tx_id] = [x['aligned_sequences'][1] for x in haplotypes[tx_id][key]]
             elif aligned==2:
-                hap_seqs[tx_id] = [x['aligned_sequences'] for x in haplotypes[tx_id]['protein_haplotypes']]
+                hap_seqs[tx_id] = [x['aligned_sequences'] for x in haplotypes[tx_id][key]]
             elif aligned==0:
-                hap_seqs[tx_id] = [x['seq'] for x in haplotypes[tx_id]['protein_haplotypes']]
+                hap_seqs[tx_id] = [x['seq'] for x in haplotypes[tx_id][key]]
             else:
                 raise ValueError(f"Invalid alignment type: {aligned}")
         else:
@@ -641,7 +646,8 @@ def get_haplotype_seqs(haplotypes: Union[Dict[str, Dict], Dict[str, List[Dict]]]
                 
     # Add haplotype names
     if add_haplotype_names:
-        haplotype_names = get_haplotype_names(haplotypes) # list of haplotype names
+        haplotype_names = get_haplotype_names(haplotypes, 
+                                              key=key) # list of haplotype names
         hap_seqs = {tx_id:list(zip(haplotype_names[tx_id], tx_seqs)) for tx_id,tx_seqs in hap_seqs.items()}
         # Add haplotype names as keys
         if add_haplotype_names>1:
@@ -796,16 +802,17 @@ def filter_haplotype_freqs(df: pd.DataFrame,
     return df
 
 
-def get_haplotype_names(haplotypes: Dict[str, Dict]) -> Dict[str, List[str]]:
+def get_haplotype_names(haplotypes: Dict[str, Dict],
+                        key: str = 'protein_haplotypes') -> Dict[str, List[str]]:
     """
     Get the haplotype name from the haplotype entry,
         or a dict of haplotype entries indexed by transcript ID.
     """
-    if 'protein_haplotypes' in haplotypes.keys():
-        return [x['name'].split('_')[0] for x in haplotypes['protein_haplotypes']]
+    if key in haplotypes.keys():
+        return [x['name'].split('_')[0] for x in haplotypes[key]]
     hap_names = {}
     for tx_id in tqdm(haplotypes.keys()):
-        hap_names[tx_id] = [x['name'].split('_')[0] for x in haplotypes[tx_id]['protein_haplotypes']]
+        hap_names[tx_id] = [x['name'].split('_')[0] for x in haplotypes[tx_id][key]]
     return hap_names
 
 def get_haplotype_protein_ids(haplotypes: Dict[str, Dict], 

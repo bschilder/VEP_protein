@@ -491,3 +491,6 @@ def get_variation(variant_id: str,
     return variation
 
 
+def get_refseq_map():
+    return  pd.read_csv("https://ftp.ensembl.org/pub/current_tsv/homo_sapiens/Homo_sapiens.GRCh38.113.refseq.tsv.gz", sep="\t")
+
