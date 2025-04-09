@@ -1,0 +1,58 @@
+{
+  "HBB": {
+    "biopython_rmsd": 0.2617492377758026,
+    "biopython_aligned_length": 147,
+    "tm_score": 0.99732,
+    "tm_aligned_length": 147,
+    "tm_rmsd": 0.26
+  },
+  "RET": {
+    "biopython_rmsd": 23.537649154663086,
+    "biopython_aligned_length": 1114,
+    "tm_score": 0.61389,
+    "tm_aligned_length": 754,
+    "tm_rmsd": 4.47
+  },
+  "LRRK2": {
+    "biopython_rmsd": 3.9095311164855957,
+    "biopython_aligned_length": 2527,
+    "tm_score": 0.97365,
+    "tm_aligned_length": 2514,
+    "tm_rmsd": 2.57
+  },
+  "SERPINA1": {
+    "biopython_rmsd": 5.710750579833984,
+    "biopython_aligned_length": 418,
+    "tm_score": 0.89351,
+    "tm_aligned_length": 394,
+    "tm_rmsd": 2.52
+  },
+  "FGFR3": {
+    "biopython_rmsd": 14.479540824890137,
+    "biopython_aligned_length": 806,
+    "tm_score": 0.6968,
+    "tm_aligned_length": 666,
+    "tm_rmsd": 5.11
+  },
+  "HFE": {
+    "biopython_rmsd": 2.9794986248016357,
+    "biopython_aligned_length": 348,
+    "tm_score": 0.90528,
+    "tm_aligned_length": 345,
+    "tm_rmsd": 2.69
+  },
+  "F5": {
+    "biopython_rmsd": 44.69192123413086,
+    "biopython_aligned_length": 2224,
+    "tm_score": 0.7075,
+    "tm_aligned_length": 1673,
+    "tm_rmsd": 4.6
+  },
+  "ALDOB": {
+    "biopython_rmsd": 0.1947549432516098,
+    "biopython_aligned_length": 364,
+    "tm_score": 0.99923,
+    "tm_aligned_length": 364,
+    "tm_rmsd": 0.19
+  }
+}

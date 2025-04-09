@@ -1,0 +1,14 @@
+Structure Comparison Analysis Summary
+========================================
+
+RMSD Analysis:
+--------------------
+Min RMSD: 0.095 Å
+Max RMSD: 0.397 Å
+Mean RMSD: 0.238 Å
+
+TM-score Analysis:
+--------------------
+Min TM-score: 0.993
+Max TM-score: 1.000
+Mean TM-score: 0.997

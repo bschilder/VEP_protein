@@ -1,0 +1,170 @@
+{
+  "HBB": {
+    "mutations": [
+      {
+        "position": 6,
+        "ref_aa": "P",
+        "var_aa": "V"
+      }
+    ],
+    "local_structure_analysis": {
+      "mutation_P6V": {
+        "local_rmsd_mean": 0.11895208060741425,
+        "local_rmsd_max": 0.4397699534893036,
+        "window_size": 10,
+        "residues_in_window": 16,
+        "ref_solvent_accessibility": 40.0,
+        "var_solvent_accessibility": 41.0,
+        "ref_secondary_structure": "C",
+        "var_secondary_structure": "C"
+      }
+    }
+  },
+  "RET": {
+    "mutations": [
+      {
+        "position": 918,
+        "ref_aa": "M",
+        "var_aa": "T"
+      }
+    ],
+    "local_structure_analysis": {
+      "mutation_M918T": {
+        "local_rmsd_mean": 1.507851481437683,
+        "local_rmsd_max": 3.139920234680176,
+        "window_size": 10,
+        "residues_in_window": 21,
+        "ref_solvent_accessibility": 0,
+        "var_solvent_accessibility": 0,
+        "ref_secondary_structure": "C",
+        "var_secondary_structure": "C"
+      }
+    }
+  },
+  "LRRK2": {
+    "mutations": [
+      {
+        "position": 2019,
+        "ref_aa": "G",
+        "var_aa": "S"
+      }
+    ],
+    "local_structure_analysis": {
+      "mutation_G2019S": {
+        "local_rmsd_mean": 0.0896713137626648,
+        "local_rmsd_max": 0.21496684849262238,
+        "window_size": 10,
+        "residues_in_window": 21,
+        "ref_solvent_accessibility": 0,
+        "var_solvent_accessibility": 0,
+        "ref_secondary_structure": "H",
+        "var_secondary_structure": "H"
+      }
+    }
+  },
+  "SERPINA1": {
+    "mutations": [
+      {
+        "position": 342,
+        "ref_aa": "L",
+        "var_aa": "K"
+      }
+    ],
+    "local_structure_analysis": {
+      "mutation_L342K": {
+        "local_rmsd_mean": 0.12601518630981445,
+        "local_rmsd_max": 0.3266581594944,
+        "window_size": 10,
+        "residues_in_window": 21,
+        "ref_solvent_accessibility": 0,
+        "var_solvent_accessibility": 0,
+        "ref_secondary_structure": "C",
+        "var_secondary_structure": "C"
+      }
+    }
+  },
+  "FGFR3": {
+    "mutations": [
+      {
+        "position": 380,
+        "ref_aa": "G",
+        "var_aa": "R"
+      }
+    ],
+    "local_structure_analysis": {
+      "mutation_G380R": {
+        "local_rmsd_mean": 0.3516809344291687,
+        "local_rmsd_max": 0.8991191387176514,
+        "window_size": 10,
+        "residues_in_window": 21,
+        "ref_solvent_accessibility": 12.0,
+        "var_solvent_accessibility": 25.0,
+        "ref_secondary_structure": "H",
+        "var_secondary_structure": "H"
+      }
+    }
+  },
+  "HFE": {
+    "mutations": [
+      {
+        "position": 282,
+        "ref_aa": "C",
+        "var_aa": "Y"
+      }
+    ],
+    "local_structure_analysis": {
+      "mutation_C282Y": {
+        "local_rmsd_mean": 0.12516924738883972,
+        "local_rmsd_max": 0.2342359870672226,
+        "window_size": 10,
+        "residues_in_window": 21,
+        "ref_solvent_accessibility": 0,
+        "var_solvent_accessibility": 0,
+        "ref_secondary_structure": "C",
+        "var_secondary_structure": "C"
+      }
+    }
+  },
+  "F5": {
+    "mutations": [
+      {
+        "position": 506,
+        "ref_aa": "Y",
+        "var_aa": "Q"
+      }
+    ],
+    "local_structure_analysis": {
+      "mutation_Y506Q": {
+        "local_rmsd_mean": 0.10132059454917908,
+        "local_rmsd_max": 0.19234250485897064,
+        "window_size": 10,
+        "residues_in_window": 21,
+        "ref_solvent_accessibility": 0,
+        "var_solvent_accessibility": 0,
+        "ref_secondary_structure": "C",
+        "var_secondary_structure": "C"
+      }
+    }
+  },
+  "ALDOB": {
+    "mutations": [
+      {
+        "position": 149,
+        "ref_aa": "R",
+        "var_aa": "P"
+      }
+    ],
+    "local_structure_analysis": {
+      "mutation_R149P": {
+        "local_rmsd_mean": 0.08903709799051285,
+        "local_rmsd_max": 0.2666623890399933,
+        "window_size": 10,
+        "residues_in_window": 21,
+        "ref_solvent_accessibility": 0,
+        "var_solvent_accessibility": 0,
+        "ref_secondary_structure": "C",
+        "var_secondary_structure": "C"
+      }
+    }
+  }
+}

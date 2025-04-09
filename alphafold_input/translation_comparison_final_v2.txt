@@ -1,0 +1,470 @@
+HBB CDS Translation Analysis
+================================================================================
+
+Haplotype: ENST00000335295:9T>C
+--------------------------------------------------------------------------------
+
+CDS sequence (first 50 nt):
+ATGGTGCACCTGACTCCTGAGGAGAAGTCTGCCGTTACTGCCCTGTGGGG...
+
+Translated protein (first 50 aa):
+MVHLTPEEKSAVTALWGKVNVDEVGGEALGRLLVVYPWTQRFFESFGDLS...
+
+Matching protein variant: ENSP00000333994:REF
+Protein sequence (first 50 aa):
+MVHLTPEEKSAVTALWGKVNVDEVGGEALGRLLVVYPWTQRFFESFGDLS...
+
+Match Status: EXACT MATCH
+
+Sequence lengths:
+Translated CDS: 147 aa
+Protein: 147 aa
+
+================================================================================
+
+Haplotype: ENST00000335295:REF
+--------------------------------------------------------------------------------
+
+CDS sequence (first 50 nt):
+ATGGTGCATCTGACTCCTGAGGAGAAGTCTGCCGTTACTGCCCTGTGGGG...
+
+Translated protein (first 50 aa):
+MVHLTPEEKSAVTALWGKVNVDEVGGEALGRLLVVYPWTQRFFESFGDLS...
+
+Matching protein variant: ENSP00000333994:REF
+Protein sequence (first 50 aa):
+MVHLTPEEKSAVTALWGKVNVDEVGGEALGRLLVVYPWTQRFFESFGDLS...
+
+Match Status: EXACT MATCH
+
+Sequence lengths:
+Translated CDS: 147 aa
+Protein: 147 aa
+
+================================================================================
+
+Haplotype: ENST00000335295:9T>C,20A>T
+--------------------------------------------------------------------------------
+
+CDS sequence (first 50 nt):
+ATGGTGCACCTGACTCCTGTGGAGAAGTCTGCCGTTACTGCCCTGTGGGG...
+
+Translated protein (first 50 aa):
+MVHLTPVEKSAVTALWGKVNVDEVGGEALGRLLVVYPWTQRFFESFGDLS...
+
+Matching protein variant: ENSP00000333994:7E>V
+Protein sequence (first 50 aa):
+MVHLTPVEKSAVTALWGKVNVDEVGGEALGRLLVVYPWTQRFFESFGDLS...
+
+Match Status: EXACT MATCH
+
+Sequence lengths:
+Translated CDS: 147 aa
+Protein: 147 aa
+
+================================================================================
+
+Haplotype: ENST00000335295:9T>C,19G>A
+--------------------------------------------------------------------------------
+
+CDS sequence (first 50 nt):
+ATGGTGCACCTGACTCCTAAGGAGAAGTCTGCCGTTACTGCCCTGTGGGG...
+
+Translated protein (first 50 aa):
+MVHLTPKEKSAVTALWGKVNVDEVGGEALGRLLVVYPWTQRFFESFGDLS...
+
+Matching protein variant: ENSP00000333994:7E>K
+Protein sequence (first 50 aa):
+MVHLTPKEKSAVTALWGKVNVDEVGGEALGRLLVVYPWTQRFFESFGDLS...
+
+Match Status: EXACT MATCH
+
+Sequence lengths:
+Translated CDS: 147 aa
+Protein: 147 aa
+
+================================================================================
+
+Haplotype: ENST00000335295:9T>C,79G>A
+--------------------------------------------------------------------------------
+
+CDS sequence (first 50 nt):
+ATGGTGCACCTGACTCCTGAGGAGAAGTCTGCCGTTACTGCCCTGTGGGG...
+
+Translated protein (first 50 aa):
+MVHLTPEEKSAVTALWGKVNVDEVGGKALGRLLVVYPWTQRFFESFGDLS...
+
+Matching protein variant: ENSP00000333994:27E>K
+Protein sequence (first 50 aa):
+MVHLTPEEKSAVTALWGKVNVDEVGGKALGRLLVVYPWTQRFFESFGDLS...
+
+Match Status: EXACT MATCH
+
+Sequence lengths:
+Translated CDS: 147 aa
+Protein: 147 aa
+
+================================================================================
+
+Haplotype: ENST00000335295:402G>C
+--------------------------------------------------------------------------------
+
+CDS sequence (first 50 nt):
+ATGGTGCATCTGACTCCTGAGGAGAAGTCTGCCGTTACTGCCCTGTGGGG...
+
+Translated protein (first 50 aa):
+MVHLTPEEKSAVTALWGKVNVDEVGGEALGRLLVVYPWTQRFFESFGDLS...
+
+Matching protein variant: ENSP00000333994:REF
+Protein sequence (first 50 aa):
+MVHLTPEEKSAVTALWGKVNVDEVGGEALGRLLVVYPWTQRFFESFGDLS...
+
+Match Status: EXACT MATCH
+
+Sequence lengths:
+Translated CDS: 147 aa
+Protein: 147 aa
+
+================================================================================
+
+Haplotype: ENST00000335295:52A>T
+--------------------------------------------------------------------------------
+
+CDS sequence (first 50 nt):
+ATGGTGCATCTGACTCCTGAGGAGAAGTCTGCCGTTACTGCCCTGTGGGG...
+
+Translated protein (first 50 aa):
+MVHLTPEEKSAVTALWG...
+
+Matching protein variant: ENSP00000333994:18K>*,19del{130}
+Protein sequence (first 50 aa):
+MVHLTPEEKSAVTALWG*...
+
+Match Status: EXACT MATCH
+
+Sequence lengths:
+Translated CDS: 17 aa
+Protein: 17 aa
+
+================================================================================
+
+Haplotype: ENST00000335295:9T>C,246C>A
+--------------------------------------------------------------------------------
+
+CDS sequence (first 50 nt):
+ATGGTGCACCTGACTCCTGAGGAGAAGTCTGCCGTTACTGCCCTGTGGGG...
+
+Translated protein (first 50 aa):
+MVHLTPEEKSAVTALWGKVNVDEVGGEALGRLLVVYPWTQRFFESFGDLS...
+
+Matching protein variant: ENSP00000333994:REF
+Protein sequence (first 50 aa):
+MVHLTPEEKSAVTALWGKVNVDEVGGEALGRLLVVYPWTQRFFESFGDLS...
+
+Match Status: EXACT MATCH
+
+Sequence lengths:
+Translated CDS: 147 aa
+Protein: 147 aa
+
+================================================================================
+
+Haplotype: ENST00000335295:9T>C,364G>C
+--------------------------------------------------------------------------------
+
+CDS sequence (first 50 nt):
+ATGGTGCACCTGACTCCTGAGGAGAAGTCTGCCGTTACTGCCCTGTGGGG...
+
+Translated protein (first 50 aa):
+MVHLTPEEKSAVTALWGKVNVDEVGGEALGRLLVVYPWTQRFFESFGDLS...
+
+Matching protein variant: ENSP00000333994:122E>Q
+Protein sequence (first 50 aa):
+MVHLTPEEKSAVTALWGKVNVDEVGGEALGRLLVVYPWTQRFFESFGDLS...
+
+Match Status: EXACT MATCH
+
+Sequence lengths:
+Translated CDS: 147 aa
+Protein: 147 aa
+
+================================================================================
+
+Haplotype: ENST00000335295:9T>C,404T>C
+--------------------------------------------------------------------------------
+
+CDS sequence (first 50 nt):
+ATGGTGCACCTGACTCCTGAGGAGAAGTCTGCCGTTACTGCCCTGTGGGG...
+
+Translated protein (first 50 aa):
+MVHLTPEEKSAVTALWGKVNVDEVGGEALGRLLVVYPWTQRFFESFGDLS...
+
+Matching protein variant: ENSP00000333994:135V>A
+Protein sequence (first 50 aa):
+MVHLTPEEKSAVTALWGKVNVDEVGGEALGRLLVVYPWTQRFFESFGDLS...
+
+Match Status: EXACT MATCH
+
+Sequence lengths:
+Translated CDS: 147 aa
+Protein: 147 aa
+
+================================================================================
+
+Haplotype: ENST00000335295:47G>A
+--------------------------------------------------------------------------------
+
+CDS sequence (first 50 nt):
+ATGGTGCATCTGACTCCTGAGGAGAAGTCTGCCGTTACTGCCCTGTAGGG...
+
+Translated protein (first 50 aa):
+MVHLTPEEKSAVTAL...
+
+Matching protein variant: ENSP00000333994:16W>*,17del{132}
+Protein sequence (first 50 aa):
+MVHLTPEEKSAVTAL*...
+
+Match Status: EXACT MATCH
+
+Sequence lengths:
+Translated CDS: 15 aa
+Protein: 15 aa
+
+================================================================================
+
+Haplotype: ENST00000335295:9T>C,324C>T
+--------------------------------------------------------------------------------
+
+CDS sequence (first 50 nt):
+ATGGTGCACCTGACTCCTGAGGAGAAGTCTGCCGTTACTGCCCTGTGGGG...
+
+Translated protein (first 50 aa):
+MVHLTPEEKSAVTALWGKVNVDEVGGEALGRLLVVYPWTQRFFESFGDLS...
+
+Matching protein variant: ENSP00000333994:REF
+Protein sequence (first 50 aa):
+MVHLTPEEKSAVTALWGKVNVDEVGGEALGRLLVVYPWTQRFFESFGDLS...
+
+Match Status: EXACT MATCH
+
+Sequence lengths:
+Translated CDS: 147 aa
+Protein: 147 aa
+
+================================================================================
+
+Haplotype: ENST00000335295:9T>C,93G>T
+--------------------------------------------------------------------------------
+
+CDS sequence (first 50 nt):
+ATGGTGCACCTGACTCCTGAGGAGAAGTCTGCCGTTACTGCCCTGTGGGG...
+
+Translated protein (first 50 aa):
+MVHLTPEEKSAVTALWGKVNVDEVGGEALGSLLVVYPWTQRFFESFGDLS...
+
+Matching protein variant: ENSP00000333994:31R>S
+Protein sequence (first 50 aa):
+MVHLTPEEKSAVTALWGKVNVDEVGGEALGSLLVVYPWTQRFFESFGDLS...
+
+Match Status: EXACT MATCH
+
+Sequence lengths:
+Translated CDS: 147 aa
+Protein: 147 aa
+
+================================================================================
+
+Haplotype: ENST00000335295:9T>C,20A>T,34G>A
+--------------------------------------------------------------------------------
+
+CDS sequence (first 50 nt):
+ATGGTGCACCTGACTCCTGTGGAGAAGTCTGCCATTACTGCCCTGTGGGG...
+
+Translated protein (first 50 aa):
+MVHLTPVEKSAITALWGKVNVDEVGGEALGRLLVVYPWTQRFFESFGDLS...
+
+Matching protein variant: ENSP00000333994:7E>V,12V>I
+Protein sequence (first 50 aa):
+MVHLTPVEKSAITALWGKVNVDEVGGEALGRLLVVYPWTQRFFESFGDLS...
+
+Match Status: EXACT MATCH
+
+Sequence lengths:
+Translated CDS: 147 aa
+Protein: 147 aa
+
+================================================================================
+
+Haplotype: ENST00000335295:9T>C,16C>T
+--------------------------------------------------------------------------------
+
+CDS sequence (first 50 nt):
+ATGGTGCACCTGACTTCTGAGGAGAAGTCTGCCGTTACTGCCCTGTGGGG...
+
+Translated protein (first 50 aa):
+MVHLTSEEKSAVTALWGKVNVDEVGGEALGRLLVVYPWTQRFFESFGDLS...
+
+Matching protein variant: ENSP00000333994:6P>S
+Protein sequence (first 50 aa):
+MVHLTSEEKSAVTALWGKVNVDEVGGEALGRLLVVYPWTQRFFESFGDLS...
+
+Match Status: EXACT MATCH
+
+Sequence lengths:
+Translated CDS: 147 aa
+Protein: 147 aa
+
+================================================================================
+
+Haplotype: ENST00000335295:325A>C
+--------------------------------------------------------------------------------
+
+CDS sequence (first 50 nt):
+ATGGTGCATCTGACTCCTGAGGAGAAGTCTGCCGTTACTGCCCTGTGGGG...
+
+Translated protein (first 50 aa):
+MVHLTPEEKSAVTALWGKVNVDEVGGEALGRLLVVYPWTQRFFESFGDLS...
+
+Matching protein variant: ENSP00000333994:109N>H
+Protein sequence (first 50 aa):
+MVHLTPEEKSAVTALWGKVNVDEVGGEALGRLLVVYPWTQRFFESFGDLS...
+
+Match Status: EXACT MATCH
+
+Sequence lengths:
+Translated CDS: 147 aa
+Protein: 147 aa
+
+================================================================================
+
+Haplotype: ENST00000335295:9T>C,389C>T
+--------------------------------------------------------------------------------
+
+CDS sequence (first 50 nt):
+ATGGTGCACCTGACTCCTGAGGAGAAGTCTGCCGTTACTGCCCTGTGGGG...
+
+Translated protein (first 50 aa):
+MVHLTPEEKSAVTALWGKVNVDEVGGEALGRLLVVYPWTQRFFESFGDLS...
+
+Matching protein variant: ENSP00000333994:130A>V
+Protein sequence (first 50 aa):
+MVHLTPEEKSAVTALWGKVNVDEVGGEALGRLLVVYPWTQRFFESFGDLS...
+
+Match Status: EXACT MATCH
+
+Sequence lengths:
+Translated CDS: 147 aa
+Protein: 147 aa
+
+================================================================================
+
+Haplotype: ENST00000335295:9T>C,90C>A
+--------------------------------------------------------------------------------
+
+CDS sequence (first 50 nt):
+ATGGTGCACCTGACTCCTGAGGAGAAGTCTGCCGTTACTGCCCTGTGGGG...
+
+Translated protein (first 50 aa):
+MVHLTPEEKSAVTALWGKVNVDEVGGEALGRLLVVYPWTQRFFESFGDLS...
+
+Matching protein variant: ENSP00000333994:REF
+Protein sequence (first 50 aa):
+MVHLTPEEKSAVTALWGKVNVDEVGGEALGRLLVVYPWTQRFFESFGDLS...
+
+Match Status: EXACT MATCH
+
+Sequence lengths:
+Translated CDS: 147 aa
+Protein: 147 aa
+
+================================================================================
+
+Haplotype: ENST00000335295:9T>C,432C>T
+--------------------------------------------------------------------------------
+
+CDS sequence (first 50 nt):
+ATGGTGCACCTGACTCCTGAGGAGAAGTCTGCCGTTACTGCCCTGTGGGG...
+
+Translated protein (first 50 aa):
+MVHLTPEEKSAVTALWGKVNVDEVGGEALGRLLVVYPWTQRFFESFGDLS...
+
+Matching protein variant: ENSP00000333994:REF
+Protein sequence (first 50 aa):
+MVHLTPEEKSAVTALWGKVNVDEVGGEALGRLLVVYPWTQRFFESFGDLS...
+
+Match Status: EXACT MATCH
+
+Sequence lengths:
+Translated CDS: 147 aa
+Protein: 147 aa
+
+================================================================================
+
+Haplotype: ENST00000335295:79G>A
+--------------------------------------------------------------------------------
+
+CDS sequence (first 50 nt):
+ATGGTGCATCTGACTCCTGAGGAGAAGTCTGCCGTTACTGCCCTGTGGGG...
+
+Translated protein (first 50 aa):
+MVHLTPEEKSAVTALWGKVNVDEVGGKALGRLLVVYPWTQRFFESFGDLS...
+
+Matching protein variant: ENSP00000333994:27E>K
+Protein sequence (first 50 aa):
+MVHLTPEEKSAVTALWGKVNVDEVGGKALGRLLVVYPWTQRFFESFGDLS...
+
+Match Status: EXACT MATCH
+
+Sequence lengths:
+Translated CDS: 147 aa
+Protein: 147 aa
+
+================================================================================
+
+Haplotype: ENST00000335295:9T>C,118C>T
+--------------------------------------------------------------------------------
+
+CDS sequence (first 50 nt):
+ATGGTGCACCTGACTCCTGAGGAGAAGTCTGCCGTTACTGCCCTGTGGGG...
+
+Translated protein (first 50 aa):
+MVHLTPEEKSAVTALWGKVNVDEVGGEALGRLLVVYPWT...
+
+Matching protein variant: ENSP00000333994:40Q>*,41del{108}
+Protein sequence (first 50 aa):
+MVHLTPEEKSAVTALWGKVNVDEVGGEALGRLLVVYPWT*...
+
+Match Status: EXACT MATCH
+
+Sequence lengths:
+Translated CDS: 39 aa
+Protein: 39 aa
+
+================================================================================
+
+Haplotype: ENST00000335295:9T>C,382C>T
+--------------------------------------------------------------------------------
+
+CDS sequence (first 50 nt):
+ATGGTGCACCTGACTCCTGAGGAGAAGTCTGCCGTTACTGCCCTGTGGGG...
+
+Translated protein (first 50 aa):
+MVHLTPEEKSAVTALWGKVNVDEVGGEALGRLLVVYPWTQRFFESFGDLS...
+
+Matching protein variant: ENSP00000333994:128Q>*,129del{20}
+Protein sequence (first 50 aa):
+MVHLTPEEKSAVTALWGKVNVDEVGGEALGRLLVVYPWTQRFFESFGDLS...
+
+Match Status: EXACT MATCH
+
+Sequence lengths:
+Translated CDS: 127 aa
+Protein: 127 aa
+
+================================================================================
+
+
+Unmatched Protein Variants Analysis
+================================================================================
+
+All protein variants were matched with CDS variants!

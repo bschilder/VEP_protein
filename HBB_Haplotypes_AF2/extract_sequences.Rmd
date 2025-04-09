@@ -1,0 +1,168 @@
+---
+title: "Extract transcript sequences"
+author: "Sofia Salazar"
+date: "2025-03-27"
+output:
+  pdf_document: default
+  html_document: default
+---
+
+## Required packages
+
+```{r eval=FALSE}
+if (!require("BiocManager", quietly=TRUE))
+    install.packages("BiocManager")
+
+BiocManager::install("GenomicFeatures")
+BiocManager::install("BSgenome.Hsapiens.UCSC.hg38")
+BiocManager::install("TxDb.Hsapiens.UCSC.hg38.knownGene")
+```
+
+
+```{r warning=FALSE}
+suppressPackageStartupMessages(library(GenomicFeatures))
+suppressPackageStartupMessages(library(BSgenome.Hsapiens.UCSC.hg38))
+suppressPackageStartupMessages(library(TxDb.Hsapiens.UCSC.hg38.knownGene))
+```
+
+## TxDB object
+
+Create a TxDb object 
+
+```{r}
+hg38_txdb <- TxDb.Hsapiens.UCSC.hg38.knownGene
+hg38_txdb
+```
+
+## Extract GRanges object
+
+Extracting a GRanges object with genomic features from the TxDb object
+
+**Transcripts**
+
+I think the following function extracts transcripts from the genome in the format of a GRanges object.
+
+```{r eval=FALSE}
+?transcripts
+```
+
+```{r}
+GR <- transcripts(hg38_txdb)
+GR[10:13]
+```
+```{r}
+transcripts_df <- as.data.frame(GR)
+length(transcripts_df$tx_id)
+```
+
+Extracting transcripts from a given transcript ID
+
+```{r}
+transcripts(hg38_txdb, filter = list(
+  tx_name = "ENST00000456328.2"
+))
+```
+
+**Exons**
+
+Extract exons for each transcripts
+```{r}
+exons_tx <- exonsBy(hg38_txdb, by = "tx")
+length(exons_tx)
+```
+
+```{r}
+names(exons_tx)[10:13]
+```
+
+Here the names of the exons_tx column correspond to the tx_id from the transcripts
+
+```{r}
+tx_ids <- names(exons_tx)
+head(select(hg38_txdb, keys=tx_ids, columns="TXNAME", keytype="TXID"))
+```
+
+## Extract sequences
+
+Here, genes are queried by ENTREZ IDs, so I load a library to query the ENTREZ IDs for a couple of hemoglobin genes
+
+
+```{r}
+library(org.Hs.eg.db)
+my_genes <- c("HBA1", "HBA2", "HBB")
+my_entrez <- select(org.Hs.eg.db, 
+       keys = my_genes,
+       columns = "ENTREZID", "SYMBOL",
+       keytype = "SYMBOL")
+my_entrez$ENTREZID
+```
+
+**Query the transcripts for each gene**
+
+Here, each `name(txbygene)` has the transcripts for each gene
+
+```{r}
+txbygene <- transcriptsBy(hg38_txdb, "gene")[my_entrez$ENTREZID]
+txbygene[1:3]
+```
+
+**Extract UTR and coding regions**
+
+With `use.names` each `names(cds)` or `names(threeUTR)` will be a transcript ID
+
+```{r}
+cds <- cdsBy(hg38_txdb, by="tx", use.names=TRUE)
+threeUTR <- threeUTRsByTranscript(hg38_txdb, use.names=TRUE)
+fiveUTR <- fiveUTRsByTranscript(hg38_txdb, use.names=TRUE)
+```
+
+```{r}
+head(names(fiveUTR))
+```
+
+Extract transcript IDs from each gene
+
+```{r}
+map <- relist(unlist(txbygene, use.names=T)$tx_name, txbygene)
+map
+```
+
+```{r}
+my_transcripts <- unlist(map, use.names=F)
+head(my_transcripts)
+```
+
+
+```{r}
+my_coding_regions <- cds[names(cds) %in% my_transcripts]
+my_coding_regions
+```
+
+**Extract sequences**
+
+```{r}
+genome <- BSgenome.Hsapiens.UCSC.hg38
+my_coding_seqs <- extractTranscriptSeqs(genome, my_coding_regions)
+my_coding_seqs
+```
+
+**Translate**
+
+```{r}
+translate(my_coding_seqs)
+```
+
+## Try on HBB
+
+```{r}
+# Step 1: Get Entrez ID for HBB
+hbb_entrez <- AnnotationDbi::select(org.Hs.eg.db, 
+                                    keys = "HBB", 
+                                    keytype = "SYMBOL", 
+                                    columns = "ENTREZID")$ENTREZID
+hbb_transcripts <- transcripts(hg38_txdb, filter = list(gene_id = hbb_entrez))
+
+# View the result
+hbb_transcripts
+```
+
