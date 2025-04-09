@@ -867,7 +867,9 @@ def get_haplotype_names(haplotypes: Dict[str, Dict],
     if key in haplotypes.keys():
         return [x['name'].split('_')[0] for x in haplotypes[key]]
     hap_names = {}
-    for tx_id in tqdm(haplotypes.keys()):
+    for tx_id in tqdm(haplotypes.keys(), 
+                      desc="Getting haplotype names",
+                      leave=False):
         hap_names[tx_id] = [x['name'].split('_')[0] for x in haplotypes[tx_id][key]]
     return hap_names
 
