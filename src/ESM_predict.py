@@ -12,6 +12,7 @@ import pandas as pd
 from tqdm.auto import tqdm  
 import torch
 from esm2 import pretrained, MSATransformer
+from typing import List, Union, Tuple, Any
 
 import src.utils as utils
 import src.biopython as bp
@@ -196,7 +197,7 @@ def _fix_esm_model_name(model_name):
 def main(
     dms_input: str,
     dms_output: str, 
-    model_location: list,
+    model_location: List[Union[str, Tuple[Any, Any]]],  # List of strings or (model, alphabet) tuples
     sequence: str,
     mutation_col: str,
     offset_idx: int,
@@ -261,18 +262,21 @@ def main(
 
     # inference for each model
     for model_loc in model_location:
-        
+        #Check if the model_loc is passed as a string(model name)
+        if isinstance(model_loc, str):
         # Avoid an infinite loop of trying to download the model (internal to esm)
-        model_loc = _fix_esm_model_name(model_loc)
-        
-        # Load the model
-        with warnings.catch_warnings():
-            # Suppress warning about missing regression weights (not needed for current VEP metrics?)
-            if verbose < 2:
-                warnings.filterwarnings('ignore', 
-                                        category=UserWarning, 
-                                        message='Regression weights not found, predicting contacts will not produce correct results.')
-            model, alphabet = pretrained.load_model_and_alphabet(model_loc)
+            model_loc = _fix_esm_model_name(model_loc)
+
+            # Load the model
+            with warnings.catch_warnings():
+                # Suppress warning about missing regression weights (not needed for current VEP metrics?)
+                if verbose < 2:
+                    warnings.filterwarnings('ignore', 
+                                            category=UserWarning, 
+                                            message='Regression weights not found, predicting contacts will not produce correct results.')
+                model, alphabet = pretrained.load_model_and_alphabet(model_loc)
+        else:
+            model, alphabet = model_loc[0], model_loc[1]
         # Set the model to evaluation mode, which disables dropout and other training-specific behaviors
         # This is important for inference to ensure consistent predictions
         model.eval()

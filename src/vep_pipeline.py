@@ -16,6 +16,7 @@ try:
     import src.ESM as ESM
 except:
     pass
+from esm2 import pretrained
 
 def list_models(as_list=True):
     """Get available ESM models.
@@ -189,6 +190,16 @@ def vep_pipeline(prot_df: pd.DataFrame = None,
                                                  verbose=verbose)
         else:
             prot_df_model = prot_df
+            
+        model_loc_for_loading = _fix_esm_model_name(model_location)
+        # Load the model
+        with warnings.catch_warnings():
+            # Suppress warning about missing regression weights (not needed for current VEP metrics?) 
+            if verbose < 2:
+                warnings.filterwarnings('ignore', 
+                                        category=UserWarning, 
+                                        message='Regression weights not found, predicting contacts will not produce correct results.')
+            model, alphabet = pretrained.load_model_and_alphabet(model_loc_for_loading)
         
         # Iterate over proteins
         for pid in tqdm(prot_df_model['protein'].unique().tolist(),
@@ -267,7 +278,7 @@ def vep_pipeline(prot_df: pd.DataFrame = None,
                             ESMp.main(
                                 dms_input=variants_path,
                                 dms_output=save_path,
-                                model_location=[model_location],
+                                model_location=[(model, alphabet)],
                                 sequence=msa,
                                 mutation_col=mutation_col,
                                 offset_idx=1,
@@ -428,6 +439,15 @@ def vep_pipeline_batched(prot_df: pd.DataFrame = None,
                 raise ValueError(f"Model {model_location} not supported")
 
     return save_paths
+
+def _fix_esm_model_name(model_name):
+    if model_name == "esm1v_t33_650M_UR90S":
+        model_name = "esm1v_t33_650M_UR90S_1"
+    if model_name == "esmfold_v0":
+        model_name = "esmfold_3B_v0"
+    if model_name == "esmfold_v1":
+        model_name = "esmfold_3B_v1"
+    return model_name
 
 def _check_models(models: list[str],
                   error: bool = True):
