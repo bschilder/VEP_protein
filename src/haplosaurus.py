@@ -576,6 +576,44 @@ def get_haplotypes(tx_ids: Optional[List[str]] = None,
 def _as_protein_ids(haplotypes: Dict[str, Dict]) -> Dict[str, Dict]:
     return dict(zip(get_haplotype_protein_ids(haplotypes, add_self=True).values(), haplotypes.values()))
 
+def add_missing_ref_seqs(haplotypes: Dict[str, Dict],
+                         keys: List[str] = ['protein_haplotypes', 'cds_haplotypes'],
+                         verbose: bool = False) -> Dict[str, Dict]:
+    """
+    Add the seqeunce data for missing reference haplotypes.
+
+    Args:
+        haplotypes (Dict[str, Dict]): The haplotype information.
+        verbose (bool, optional): Whether to print progress messages. Defaults to False.
+
+    Returns:
+        Dict[str, Dict]: The haplotype information with reference sequences added.
+    """
+
+    # Iterate over transcripts
+    for tx_id in tqdm(haplotypes.keys(),
+                      desc="Adding reference haplotype",
+                      leave=False):
+        # Iterate over keys
+        for key in keys:
+            hap_names = get_haplotype_names(haplotypes[tx_id], key=key)
+            template_entry = haplotypes[tx_id][key][0]
+            if not any(["REF" in x for x in hap_names]):
+                if verbose:
+                    print(f"Adding reference haplotype for {tx_id}")
+                enst_id = template_entry['name'].split(':')[0]
+                # By definition, the ref sequence has no gaps when aligned to itself
+                ref_seq = template_entry['aligned_sequences'][0].replace('-', '')
+                ref_entry = {
+                    'name':enst_id+':REF',
+                    'seq':ref_seq,
+                    'aligned_sequences':[ref_seq]*2
+                    }
+                haplotypes[tx_id][key] = [ref_entry] + haplotypes[tx_id][key]
+
+    return haplotypes
+    
+
 def get_haplotype_seqs(haplotypes: Union[Dict[str, Dict], Dict[str, List[Dict]]],
                        key: str = 'protein_haplotypes',
                        aligned: int = 1,
@@ -583,6 +621,7 @@ def get_haplotype_seqs(haplotypes: Union[Dict[str, Dict], Dict[str, List[Dict]]]
                        return_missing: bool = False,
                        use_protein_ids: bool = False,
                        add_haplotype_names: bool = False,
+                       add_missing_ref: bool = True,
                        verbose: bool = False):
     """Get haplotype sequences from haplotype information.
 
@@ -602,6 +641,8 @@ def get_haplotype_seqs(haplotypes: Union[Dict[str, Dict], Dict[str, List[Dict]]]
             If 1 (or True), will add haplotype names as first element in tuple, with the sequence as the second element.
             If 2, will add haplotype names as keys, with the sequence as the value.
             If 3, will unnest the haplotype names and sequences into a single dictionary with the haplotype name as the key and the sequence as the value.
+        add_missing_ref (bool, optional): Whether to automatically add in the reference sequence when it is missing from the data.
+            Defaults to True.
         verbose (bool, optional): Whether to print progress messages. Defaults to False.
 
     Returns:
@@ -613,10 +654,21 @@ def get_haplotype_seqs(haplotypes: Union[Dict[str, Dict], Dict[str, List[Dict]]]
     if aligned!=2 and as_msa:
         warnings.warn('Aligned must be 2 to convert to MSA (`as_msa=True`)')
         as_msa = False
+
+    if add_missing_ref:
+        haplotypes = haplotypes.copy()
+        haplotypes =  add_missing_ref_seqs(haplotypes, verbose=verbose)
+    # Iterate over transcripts
     for tx_id in tqdm(haplotypes.keys(),
-                      desc="Getting haplotype sequences"):
-        
+                      desc="Getting haplotype sequences",
+                      leave=False):
+        # Initialize haplotype sequences entry
+        hap_seqs[tx_id] = {}
+         
+        # Get haplotype sequences when haplotypes is a dict
         if isinstance(haplotypes[tx_id], dict) and key in haplotypes[tx_id].keys():
+
+            # Add haplotype sequences
             if aligned==1:
                 hap_seqs[tx_id] = [x['aligned_sequences'][1] for x in haplotypes[tx_id][key]]
             elif aligned==2:
@@ -625,21 +677,25 @@ def get_haplotype_seqs(haplotypes: Union[Dict[str, Dict], Dict[str, List[Dict]]]
                 hap_seqs[tx_id] = [x['seq'] for x in haplotypes[tx_id][key]]
             else:
                 raise ValueError(f"Invalid alignment type: {aligned}")
+            
+        # Get haplotype sequences when haplotypes is a list 
         else:
+    
+            # Add haplotype sequences
             if len(haplotypes[tx_id])>0:
                 if aligned==1:
                     # Return aligned haplotype sequence only
-                    hap_seqs[tx_id] = haplotypes[tx_id][0]['aligned_sequences'][1] 
+                    hap_seqs[tx_id] = [haplotypes[tx_id][0]['aligned_sequences'][1]] 
                 elif aligned==2:
                     # Return both sequences (aligned reference and haplotype)
-                    hap_seqs[tx_id] = haplotypes[tx_id][0]['aligned_sequences']
+                    hap_seqs[tx_id] = [haplotypes[tx_id][0]['aligned_sequences']]
                 else:
                     # Return unaligned haplotype sequence only
-                    hap_seqs[tx_id] = haplotypes[tx_id][0]['seq']
+                    hap_seqs[tx_id] = [haplotypes[tx_id][0]['seq']]
             else:
                 if verbose:
                     warnings.warn(f"No seqs found for {tx_id}")
-                missing_seqs += [tx_id]
+                missing_seqs = [tx_id]
                 continue
     if as_msa:
         hap_seqs = {tx_id:[bp.as_msa(seqs) for seqs in tx_seqs] for tx_id,tx_seqs in hap_seqs.items()}
@@ -811,7 +867,9 @@ def get_haplotype_names(haplotypes: Dict[str, Dict],
     if key in haplotypes.keys():
         return [x['name'].split('_')[0] for x in haplotypes[key]]
     hap_names = {}
-    for tx_id in tqdm(haplotypes.keys()):
+    for tx_id in tqdm(haplotypes.keys(), 
+                      desc="Getting haplotype names",
+                      leave=False):
         hap_names[tx_id] = [x['name'].split('_')[0] for x in haplotypes[tx_id][key]]
     return hap_names
 
@@ -1483,6 +1541,7 @@ def get_offset_length(seq_name,
 def haplotypes_to_fasta(haplotypes, 
                         aligned=1,
                         add_haplotype_names=2,
+                        add_missing_ref=True,
                         save_dir=os.path.join(config.DATA_DIR,"1KG","fasta"),
                         strip='*',
                         force=False,
@@ -1493,7 +1552,10 @@ def haplotypes_to_fasta(haplotypes,
         haplotypes (Dict[str, Dict]): The haplotypes to convert to FASTA format.
         aligned (int, optional): The alignment type. Defaults to 1.
         add_haplotype_names (int, optional): The type of haplotype names to add. Defaults to 2.
-        save_dir (str, optional): The directory to save the FASTA files. Defaults to os.path.join(config.DATA_DIR,"1KG","fasta").
+        add_missing_ref (bool, optional): Whether to automatically add in the reference sequence when it is missing from the data.
+            Defaults to True.
+        save_dir (str, optional): The directory to save the FASTA files. 
+            Defaults to os.path.join(config.DATA_DIR,"1KG","fasta").
         force (bool, optional): Whether to force the conversion. Defaults to False.
         verbose (bool, optional): Whether to print verbose output. Defaults to True.
     
@@ -1502,7 +1564,8 @@ def haplotypes_to_fasta(haplotypes,
     """ 
     hap_seqs = get_haplotype_seqs(haplotypes, 
                                   aligned=aligned,
-                                  add_haplotype_names=add_haplotype_names)
+                                  add_haplotype_names=add_haplotype_names,
+                                  add_missing_ref=add_missing_ref)
     # Convert haplotype sequences to FASTA format
     fasta_paths = {}
     for tx_id in tqdm(hap_seqs.keys(),
@@ -1518,3 +1581,4 @@ def haplotypes_to_fasta(haplotypes,
                         seq = seq.replace(strip, '')
                     f.write(f'>{name}\n{seq}\n')
     return fasta_paths
+
