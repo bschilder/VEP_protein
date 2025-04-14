@@ -42,7 +42,7 @@ def get_ensembl_mappings(ensembl_ids,
         'attributes': attributes
     }, header=1)
     
-    return _results_to_df(results)
+    return _results_to_df(results, verbose=verbose)
 
 
 def get_id_map(dataset='hsapiens_gene_ensembl',
