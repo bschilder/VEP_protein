@@ -1,0 +1,56 @@
+ # ---------------- Global parameters ----------------
+Ensembl_FTP_URL: ftp.ensembl.org/pub/release-113/
+annotationFilename: Homo_sapiens.GRCh38.113.chr_patch_hapl_scaff # from https://ftp.ensembl.org/pub/release-113/gtf/homo_sapiens/
+ensembl_release: 113
+
+contaminants_fasta: "crap.fasta"      # Path to the FASTA file with contaminant sequences
+
+custom_transcript_list: ""
+included_transcript_biotypes: "protein_coding"
+only_MANE_select: True
+
+final_fasta_file: "results/1000_Genomes_on_GRCh38/concatenated_database.fa"
+fasta_simplify_headers: True
+haplo_cdna_file: "results/1000_Genomes_on_GRCh38/haplotype_cDNA.fa"
+
+# ---------------- ProHap parameters ----------------
+use_ProHap: True
+
+phased_FTP_URL: "http://ftp.1000genomes.ebi.ac.uk/vol1/ftp/data_collections/1000_genomes_project/release/20190312_biallelic_SNV_and_INDEL/"
+phased_local_path: "" # "$HOME/projects/data/1KG/vcf/1000_Genomes_on_GRCh38/"
+phased_vcf_file_name: "ALL.chr{chr}.shapeit2_integrated_snvindels_v2a_27022019.GRCh38.phased.vcf"
+sample_metadata_file: "data/1kg_meta.tsv" 
+
+working_dir_name_haplo: 1000_Genomes_on_GRCh38_haplotypes_tmp
+
+phased_min_af: 0
+phased_af_field: AF
+haplo_min_freq: 0
+haplo_min_count: 0
+
+x_par1_to: 2781479        # End position of the first pseudo-autosomal region (PAR) on the X chromosome
+x_par2_from: 155701383    # Start position of the second pseudo-autosomal region on the X chromosome
+
+haplo_require_start: 1
+haplo_ignore_UTR: 1
+haplo_skip_start_lost: 1
+max_cores: 50
+
+haplo_fasta_file: "results/1000_Genomes_on_GRCh38/haplotype_translations.fa"
+haplo_table_file: "results/1000_Genomes_on_GRCh38/haplotypes.tsv"
+
+# ---------------- ProVar parameters ----------------
+use_ProVar: False
+variant_vcf: {}
+
+working_dir_name_var: 1000_Genomes_on_GRCh38_variants_tmp
+
+var_require_start: 1
+
+var_fasta_file: ""
+var_table_file: ""
+
+add_existing_haplo: False
+haplo_added_table: ""
+haplo_added_fasta: ""
+var_cdna_file: ""     

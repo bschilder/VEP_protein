@@ -17,7 +17,7 @@ haplo_cdna_file: "results/hgdp/haplotype_cDNA.fa"
 use_ProHap: True
 
 phased_FTP_URL: "https://ngs.sanger.ac.uk/production/hgdp/hgdp_wgs.20190516/"
-phased_local_path: "$HOME/projects/data/1KG/vcf/Human_Genome_Diversity_Project/"
+phased_local_path: "" # "$HOME/projects/data/1KG/vcf/Human_Genome_Diversity_Project/"
 phased_vcf_file_name: "hgdp_wgs.20190516.full.chr{chr}.vcf"
 sample_metadata_file: "data/hgdp_meta.tsv" 
 
@@ -34,7 +34,7 @@ x_par2_from: 155701383    # Start position of the second pseudo-autosomal region
 haplo_require_start: 1
 haplo_ignore_UTR: 1
 haplo_skip_start_lost: 1
-max_cores: 4
+max_cores: 50
 
 haplo_fasta_file: "results/hgdp/haplotype_translations.fa"
 haplo_table_file: "results/hgdp/haplotypes.tsv"
