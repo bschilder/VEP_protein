@@ -1,10 +1,11 @@
+import torch
+from tqdm.auto import tqdm
+
 
 def get_patient_tensor(seq_reps,
                        sample_to_proteoform,
                        drop_nan=True):
-    import torch
-    from tqdm.auto import tqdm
-
+    
     # Create empty 3D tensor
     samples = set([x[1] for x in sample_to_proteoform.keys()])
     transcripts = set([x[0] for x in sample_to_proteoform.keys()])

@@ -1,8 +1,8 @@
-
-import sys
-sys.path.append("code")
+import src.utils as utils
 import src.pyensembl as PYE
 
+import os
+import pandas as pd
 import genvarloader as gvl
 import numba as nb
 import numpy as np
@@ -13,7 +13,7 @@ from tqdm.auto import tqdm
 
 def prepare_example(save_dir="/grid/koo/home/schilder/projects/GenomeEncoder/data/gvl",
                     bgzip_exec = "~/.conda/envs/genome-loader/bin/bgzip"):
-    import os
+    
     os.chdir(save_dir)
     # GRCh38 chromosome 22 sequence
     reference = pooch.retrieve(
@@ -62,8 +62,7 @@ def create_db(reference=None,
               variants=None, 
               save_path="gvl/geuvadis.chr22.gvl", 
               force = False):
-    import os
-    import polars as pl
+
     if not os.path.exists(save_path) or force is True:
         print("Creating database...")
         gvl.write(
@@ -163,16 +162,112 @@ def get_tx_seqs_spliced(ds,
     # Return sequence
     return seqs_spliced
 
+
+def string_to_bytearray(str):
+    return np.array(list(str)).astype('|S1')
+
+def bytearray_to_string(byte_arr):
+    return byte_arr.tobytes().decode()
+
 def bytearray_to_bioseq(byte_arr):
+
     from Bio.Seq import Seq 
     # Sample, Ploid, Sequence
     if byte_arr.ndim == 1:
-        return [Seq(byte_arr.tobytes().decode())]
+        return [Seq(bytearray_to_string(byte_arr))]
     elif byte_arr.ndim == 2:
         ploid_idx = range(byte_arr.shape[-2])
-        return [Seq(byte_arr[idx,:].tobytes().decode()) for idx in ploid_idx]
+        return [Seq(bytearray_to_string(byte_arr[idx,:])) for idx in ploid_idx]
     elif byte_arr.ndim == 3:
         ploid_idx = range(byte_arr.shape[-2])
-        return [Seq(byte_arr[:,idx,:].tobytes().decode()) for idx in ploid_idx]
+        return [Seq(bytearray_to_string(byte_arr[:,idx,:])) for idx in ploid_idx]
     else:
         raise ValueError(f"Invalid number of dimensions: {byte_arr.ndim}")
+
+def calculate_sequence_similarities(ds, 
+                                    tx_sample_seqs, 
+                                    add_exonic=False,
+                                    level = ["nt","aa"],
+                                    tx_ids=None):
+    """
+    Calculate pairwise sequence similarities between GVL and Haplosaurus sequences.
+    
+    Args:
+        ds: GVL dataset object
+        tx_sample_seqs: Dictionary of Haplosaurus sequences by transcript and sample
+        tx_ids: List of transcript IDs to process. 
+            If None, all transcripts in the GVL that are present in the Haplosaurus sequences will be processed.
+        level: "nt" for nucleotide level, "aa" for amino acid level
+        add_exonic: Whether to also run comparisons for the ds using ds.with_settings(var_filter='exonic'). 
+            This will be designated as GVLex[0] and GVLex[1]
+    Returns:
+        DataFrame containing all pairwise sequence similarities
+    """
+    level = utils.one_only(level)
+    
+    all_seq_sim_data = []
+    if tx_ids is None:
+        tx_ids = utils.intersect(ds.get_bed()['name'],
+                                 tx_sample_seqs.keys())
+    
+    for tx_id in tqdm(tx_ids, desc="Processing transcripts", leave=True):
+        samples = utils.intersect(ds.samples, tx_sample_seqs[tx_id].keys())
+
+        tx_metadata = ds.spliced_regions.filter(pl.col("splice_id")==tx_id)
+
+        for sample in tqdm(samples, desc="Processing samples", leave=False):
+            gvl_seqs = ds[tx_id, sample][0]
+
+            # Haplosaurus
+            hap_seqs = tx_sample_seqs[tx_id][sample]
+            if len(hap_seqs)==0:
+                continue
+
+            # Define sequence sources with labels
+            sequences = {
+                "GVL[0]": gvl_seqs[0],
+                "GVL[1]": gvl_seqs[1],
+                "HS[0]": string_to_bytearray(hap_seqs[0]),
+                "HS[1]": string_to_bytearray(hap_seqs[1])
+            }
+
+            # This method only injects variants that are fully within exons (not just overlapping)
+            if add_exonic is True:
+                dse = ds.with_settings(var_filter='exonic')
+                gvlex_seqs = dse[tx_id, sample][0]
+                sequences["GVLex[0]"] = gvlex_seqs[0]
+                sequences["GVLex[1]"] = gvlex_seqs[1]
+             
+            # Calculate similarity for all unique pairs
+            for i, (name1, seq1) in enumerate(sequences.items()):
+                for i2, (name2, seq2) in enumerate(sequences.items()):
+                    # Skip self-comparisons
+                    if i2 == i:
+                        continue
+                    all_seq_sim_data.append({
+                        'transcript_id': tx_id,
+                        'gene_name': tx_metadata['gene_name'][0][0],
+                        'exon_count': len(tx_metadata['regions'][0]),
+                        'sample': sample,
+                        'seq1': name1,
+                        'seq2': name2,
+                        'seq1_len': len(seq1),
+                        'seq2_len': len(seq2),
+                        'seq_sim': utils.get_sequence_similarity(seq1, seq2)
+                    })
+    
+    # Create the final dataframe with all results
+    seq_sim = pd.DataFrame(all_seq_sim_data)
+    # Add extra columns
+    seq_sim['group1'] = seq_sim['seq1'].str.split('[').str[0]
+    seq_sim['group2'] = seq_sim['seq2'].str.split('[').str[0]
+    seq_sim['seq1_phase'] = seq_sim['seq1'].str.split('[').str[1].str.split(']').str[0]
+    seq_sim['seq2_phase'] = seq_sim['seq2'].str.split('[').str[1].str.split(']').str[0]
+    # Only apply phase_match when comparing sequences from the same group
+    seq_sim['phase_match'] = np.where(
+        seq_sim['group1'] == seq_sim['group2'],
+        seq_sim['seq1_phase'] == seq_sim['seq2_phase'],
+        np.nan
+    )
+    return seq_sim
+

@@ -9,9 +9,9 @@ custom_transcript_list: ""
 included_transcript_biotypes: "protein_coding"
 only_MANE_select: True
 
-final_fasta_file: "results/hgdp/concatenated_database.fa"
+final_fasta_file: "results/Human_Genome_Diversity_Project/concatenated_database.fa"
 fasta_simplify_headers: True
-haplo_cdna_file: "results/hgdp/haplotype_cDNA.fa"
+haplo_cdna_file: "results/Human_Genome_Diversity_Project/haplotype_cDNA.fa"
 
 # ---------------- ProHap parameters ----------------
 use_ProHap: True
@@ -21,7 +21,7 @@ phased_local_path: "" # "$HOME/projects/data/1KG/vcf/Human_Genome_Diversity_Proj
 phased_vcf_file_name: "hgdp_wgs.20190516.full.chr{chr}.vcf"
 sample_metadata_file: "data/hgdp_meta.tsv" 
 
-working_dir_name_haplo: hgdp_haplotypes_tmp
+working_dir_name_haplo: Human_Genome_Diversity_Project_haplotypes_tmp
 
 phased_min_af: 0
 phased_af_field: AF
@@ -36,14 +36,14 @@ haplo_ignore_UTR: 1
 haplo_skip_start_lost: 1
 max_cores: 50
 
-haplo_fasta_file: "results/hgdp/haplotype_translations.fa"
-haplo_table_file: "results/hgdp/haplotypes.tsv"
+haplo_fasta_file: "results/Human_Genome_Diversity_Project/haplotype_translations.fa"
+haplo_table_file: "results/Human_Genome_Diversity_Project/haplotypes.tsv"
 
 # ---------------- ProVar parameters ----------------
 use_ProVar: False
 variant_vcf: {}
 
-working_dir_name_var: hgdp_variants_tmp
+working_dir_name_var: Human_Genome_Diversity_Project_variants_tmp
 
 var_require_start: 1
 

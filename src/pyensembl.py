@@ -1,18 +1,19 @@
-import sys
-sys.path.append("code")
-from src.utils import as_list, intersect, add_codon_buffer, is_VariantFile, save_pickle, load_pickle, as_seq
-from src.variant_annotation import filter_variants
-
+import pandas as pd
+import os
 from concurrent.futures import ThreadPoolExecutor, ProcessPoolExecutor
 # from multiprocessing import Pool
 from functools import partial
 from tqdm.auto import tqdm
-import os
 from Bio.Seq import Seq
 import numpy as np
 
+# from src.utils import as_list, intersect, add_codon_buffer, is_VariantFile, save_pickle, load_pickle, as_seq
+import src.utils as utils
+import src.variant_annotation as va
 
-def get_db(release=111, species="homo_sapiens"):
+
+def get_db(release=111, 
+           species="homo_sapiens"):
     from pyensembl import EnsemblRelease
     db = EnsemblRelease(release=release, species=species) 
     return db
@@ -24,7 +25,7 @@ def get_ids(objects):
 def transcript_to_gene(transcript_ids,
                        db=None, 
                        sort=False):
-    transcript_ids = as_list(transcript_ids)
+    transcript_ids = utils.as_list(transcript_ids)
     if db is None:
         db = get_db()
     gene_map = {k:db.gene_name_of_transcript_id(k) for k in transcript_ids}
@@ -37,7 +38,7 @@ def get_mane_transcripts(protein_coding_only=True,
                          db_only=True,
                          db=None, 
                          add_chr=True):
-    import pandas as pd
+    
     mane = pd.read_csv("https://ftp.ncbi.nlm.nih.gov/refseq/MANE/MANE_human/current/MANE.GRCh38.v1.4.summary.txt.gz", 
                        sep="\t")
     mane['TranscriptId'] = mane['Ensembl_nuc'].str.split('.').str[0]
@@ -77,19 +78,19 @@ def filter_transcripts(transcripts,
                        contig=[],
                        max_transcripts=None,
                        verbose=True):
-    from tqdm.auto import tqdm
-    contig = as_list(contig)
-    biotype = as_list(biotype)
+    
+    contig = utils.as_list(contig)
+    biotype = utils.as_list(biotype)
     if id is None:
         id = []
-    id = as_list(id)
+    id = utils.as_list(id)
     if len(contig)>0:
         contig = [str(x).replace("chr", "") for x in contig]
         transcripts = [x for x in tqdm(transcripts, desc="Filtering by contig", disable=not verbose) if x.contig in contig]
     if len(biotype)>0:
         transcripts = [x for x in tqdm(transcripts, desc="Filtering by biotype", disable=not verbose) if x.biotype in biotype]
     if len(id)>0:
-        ids = intersect([x.id for x in transcripts], id)
+        ids = utils.intersect([x.id for x in transcripts], id)
         transcripts = [x for x in tqdm(transcripts, desc="Filtering by id", disable=not verbose) if x.id in ids]
     if max_transcripts is not None:
         transcripts = transcripts[:max_transcripts]
@@ -100,7 +101,6 @@ def filter_transcripts(transcripts,
 def get_protein_coding_transcripts(db=None, 
                                    ids_only=False,
                                    verbose=True):
-    from tqdm.auto import tqdm
     if db is None:
         db = get_db()
     protein_ids = db.protein_ids()
@@ -120,6 +120,7 @@ def get_transcripts(db,
                     biotypes=[], 
                     complete=True):
     print("Getting all transcripts.")
+
     def get_transcripts_inner():
         return db.transcripts()
     all_transcripts = get_transcripts_inner()
@@ -132,8 +133,7 @@ def get_transcripts(db,
     return all_transcripts
 
 def get_transcript_seqs(db, transcript_ids, translate=True):
-    from Bio.Seq import Seq
-    from tqdm.auto import tqdm
+
     seqs = {}
     aa_seqs = {}
     for transcript_id in tqdm(transcript_ids):

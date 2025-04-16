@@ -902,6 +902,7 @@ def get_haplotype_protein_ids(haplotypes: Dict[str, Dict],
     return hap_protein_ids
 
 def get_haplotype_ref(haplotypes: Union[List[Dict], Dict[str, Dict]],
+                      key: str = 'protein_haplotypes',
                       verbose: bool = True) -> Union[List[Dict], Dict[str, Dict]]:
     """Get the reference haplotype from a list of haplotypes.
 
@@ -922,15 +923,15 @@ def get_haplotype_ref(haplotypes: Union[List[Dict], Dict[str, Dict]],
             hap_ref = [x for x in haplotypes if ":REF" in tqdm(x,
                                                             disable=not verbose,
                                                             leave=False)]
-    elif 'protein_haplotypes' in haplotypes.keys():
-        hap_ref = [x for x in haplotypes['protein_haplotypes'] if ":REF" in tqdm(x['name'])]
+    elif key in haplotypes.keys():
+        hap_ref = [x for x in haplotypes[key] if ":REF" in tqdm(x['name'], leave=False)]
     elif isinstance(haplotypes, dict):
         hap_ref = {}
         for tx_id in tqdm(haplotypes.keys(),
                           desc="Processing transcripts",
                           disable=not verbose,
                           leave=False):
-            hap_ref[tx_id] = [x for x in haplotypes[tx_id]['protein_haplotypes'] if ":REF" in x['name']]
+            hap_ref[tx_id] = [x for x in haplotypes[tx_id][key] if ":REF" in x['name']]
             if isinstance(hap_ref[tx_id], list) and len(hap_ref[tx_id])>0:
                 hap_ref[tx_id] = hap_ref[tx_id]
     else:
@@ -1582,3 +1583,137 @@ def haplotypes_to_fasta(haplotypes,
                     f.write(f'>{name}\n{seq}\n')
     return fasta_paths
 
+
+def get_haplotype_samples(haplotypes, 
+                          unnest=False,
+                          remove_prefix=False,
+                          key='cds_haplotypes'):
+    """
+    Extract all unique sample IDs from a haplotype dictionary.
+    
+    Args:
+        haplotypes: Dictionary containing haplotype information
+        key: The key in the haplotype dictionary containing sample information (default: 'cds_haplotypes')
+        
+    Returns:
+        Set of unique sample IDs
+    """
+    
+    all_sample_ids = {}
+    for tx_id in tqdm(haplotypes.keys(), desc="Extracting sample IDs"):
+        sample_ids = set()
+        if key in haplotypes[tx_id]:
+            for haplotype in haplotypes[tx_id][key]:
+                if 'samples' in haplotype:
+                    # Add all sample IDs from this haplotype
+                    if remove_prefix:
+                        sample_ids.update(
+                            {sample_id.split(":")[-1] 
+                             for sample_id in haplotype['samples'].keys()})
+                    else:
+                        sample_ids.update(haplotype['samples'].keys())
+            all_sample_ids[tx_id] = sample_ids
+
+    if unnest:
+        return set.union(*all_sample_ids.values())
+    else:
+        return all_sample_ids
+
+
+def haplotypes_to_samples(haplotypes, 
+                          tx_ids=None, 
+                            samples=None, 
+                            cohort="1000GENOMES:phase_3", 
+                            verbose=False):
+    """
+    Process transcript haplotypes and organize sequences by sample.
+    
+    Args:
+        tx_ids: List of transcript IDs to process
+        haplotypes: Dictionary containing haplotype information
+        ds: Dataset containing sample information
+        cohort: Cohort identifier string to prepend to sample IDs
+        verbose: Whether to print detailed processing information
+        
+    Returns:
+        Dictionary mapping transcript IDs to sample sequences
+    """
+    if tx_ids is None:
+        tx_ids = haplotypes.keys()
+    if samples is None:
+        samples = get_haplotype_samples(haplotypes, 
+                                        unnest=True, 
+                                        remove_prefix=True)
+
+    if verbose:
+        print(f"Number of samples: {len(samples)}")
+        print(f"Number of transcripts to process: {len(tx_ids)}")
+    
+    tx_sample_seqs = {}
+    # Iterate over all transcript IDs
+    for tx_id in tqdm(tx_ids, desc="Processing transcripts", leave=False):
+        sample_seqs = {sample: [] for sample in samples}
+        
+        # Iterate over all haplotype indices for this transcript
+        for hap_idx in range(len(haplotypes[tx_id]['cds_haplotypes'])):
+            sample_map = haplotypes[tx_id]['cds_haplotypes'][hap_idx]['samples']
+            seq = haplotypes[tx_id]['cds_haplotypes'][hap_idx]['seq']
+            if verbose:
+                print(f"  Haplotype index {hap_idx}, sequence length: {len(seq)}")
+            
+            for sample in samples:
+                sample_id = cohort+":"+sample
+                if sample_id in sample_map.keys():
+                    sample_count = sample_map[sample_id]
+                    sample_seqs[sample] += [seq]*sample_count
+                    # Reduce verbosity to avoid excessive output
+                    if hap_idx == 0 and tx_id == tx_ids[0]:
+                        if verbose:
+                            print(f"  Sample {sample}: added {sample_count} sequences from haplotype {hap_idx}")
+                elif hap_idx == 0 and tx_id == tx_ids[0]:  # Only print this message once per sample for the first transcript
+                    if verbose:
+                        print(f"  Sample {sample}: not found in sample_map")
+
+        tx_sample_seqs[tx_id] = sample_seqs
+    
+    return tx_sample_seqs
+
+
+
+def count_haplotype_samples(tx_sample_seqs, 
+                            verbose=False):
+    """
+    Count the number of sequences of each length for each transcript.
+    
+    Args:
+        tx_seqs: Dictionary mapping transcript IDs to sample sequences
+        verbose: Whether to print detailed per-transcript counts
+        
+    Returns:
+        tuple: (tx_seq_counts, total_counts) where tx_seq_counts is a dictionary
+               mapping transcript IDs to Counter objects of sequence lengths,
+               and total_counts is a Counter of all sequence lengths
+    """
+    from collections import Counter
+    # Count sequences per transcript
+    tx_seq_counts = {}
+    for tx_id, samples in tx_sample_seqs.items():
+        # Count how many sequences of each length exist for this transcript
+        length_counts = Counter([len(seqs) for seqs in samples.values()])
+        tx_seq_counts[tx_id] = length_counts
+
+    # Create a total tally across all transcripts
+    total_counts = Counter()
+    for counts in tx_seq_counts.values():
+        total_counts.update(counts)
+    
+    print("Total sequence length counts across all transcripts:")
+    print(total_counts)
+    
+    # Display per-transcript counts if verbose
+    if verbose:
+        print("\nPer-transcript sequence length counts:")
+        for tx_id, counts in tx_seq_counts.items():
+            print(f"{tx_id}: {dict(counts)}")
+            
+    return tx_seq_counts, total_counts
