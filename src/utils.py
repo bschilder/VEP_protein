@@ -306,24 +306,35 @@ def plot_density(df,
                  x='UMAP_1',
                  y='UMAP_2',
                  alpha=0.5,
+                 color='white',
+                 s=1,
+                 facecolor='#2F0154',
                  cmap='viridis',
+                 fill=True,
+                 add_density=True,
                  figsize=(10, 8),
                  **kwargs):
+    
     import seaborn as sns
     import matplotlib.pyplot as plt
+    
     plt.figure(figsize=figsize)  # Set figure size
-    plt.gca().set_facecolor('#2F0154') # Set background to slightly darker than darkest viridis color
-    sns.kdeplot(data=df, x=x, y=y, 
-                fill=True, 
-                cmap=cmap,
-                **kwargs
-                ) 
+    
+    if facecolor is not None:
+        plt.gca().set_facecolor(facecolor) # Set background to slightly darker than darkest viridis color
+    
+    if add_density:
+        sns.kdeplot(data=df, x=x, y=y, 
+                    fill=fill, 
+                    cmap=cmap,
+                    **kwargs
+                    ) 
     # Then overlay scatter points with some transparency
     plt.scatter(data=df,
                 x=x, y=y,
                 alpha=alpha, # Make points semi-transparent
-                s=1, # Small point size
-                color='white') # White points
+                s=s, # Small point size
+                color=color) # White points
     
 def is_VariantFile(x):
     import pysam
@@ -502,6 +513,41 @@ def load_json(save_path,
                 print(f"Failed to load JSON file: {e}")
                 return None
     return None
+
+
+def save_torch(obj, 
+                save_path,
+                verbose=True):
+    """
+    Save an object to a torch file (.pth).
+    """
+    if save_path is not None:
+        import torch
+        import os
+        if verbose:
+            print(f"Saving ==> {save_path}")
+        if os.path.dirname(save_path) != "":
+            os.makedirs(os.path.dirname(save_path), exist_ok=True)
+        torch.save(obj, save_path)
+
+
+def load_torch(save_path,
+               verbose=True):
+    """
+    Load an object from a torch file (.pth).
+    """
+    import torch
+    if save_path is not None:
+        if not os.path.exists(save_path):
+            if verbose:
+                print(f"File does not exist: {save_path}")
+            return None
+        else:
+            if verbose:
+                print(f"Loading ==> {save_path}")
+            return torch.load(save_path)
+    else:
+        return None
 
 def save_vcf(recs, save_path, header, mode="wb", index=True):
     import pysam
@@ -940,3 +986,85 @@ def check_arg(func,
     assert arg in options, f"Invalid argument: '{arg}'. Must be one of {','.join(options)}"
     return arg
 
+def load_embeddings_from_pth(db_path):
+    """
+    Load embeddings from a PyTorch .pth file into a dictionary
+    
+    Args:
+        db_path (str): Path to the PyTorch .pth file
+        
+    Returns:
+        dict: Dictionary mapping sequence identifiers to their embeddings
+    """
+    import torch
+    
+    if not os.path.exists(db_path):
+        raise FileNotFoundError(f"Embeddings file not found at {db_path}")
+    
+    try:
+        # Load the PyTorch file
+        embeddings_dict = torch.load(db_path)
+        print(f"Successfully loaded embeddings from {db_path}")
+        print(f"Number of sequences: {len(embeddings_dict)}")
+        
+        # Print a sample key and embedding shape if available
+        if embeddings_dict:
+            sample_key = next(iter(embeddings_dict))
+            sample_embedding = embeddings_dict[sample_key]
+            print(f"Sample key: {sample_key}")
+            print(f"Sample embedding shape: {sample_embedding.shape}")
+        
+        return embeddings_dict
+    
+    except Exception as e:
+        print(f"Error loading embeddings: {str(e)}")
+        return {}
+
+from contextlib import contextmanager
+import sys
+
+@contextmanager
+def ignore_stderr():
+    """
+    Ignore stderr output.
+
+    Example:
+        with ignore_stderr():
+            ## Call code that calls tqdm
+    """
+    devnull = open(os.devnull, "w")
+    stderr = sys.stderr
+    sys.stderr = devnull
+    try:
+        yield
+    finally:
+        sys.stderr = stderr
+
+@contextmanager
+def ignore_stdout(disable=False):
+    """
+    Ignore stdout output.
+    """
+    if disable:
+        yield
+    else:
+        devnull = open(os.devnull, "w")
+        stdout = sys.stdout
+        sys.stdout = devnull
+        try:
+            yield
+        finally:
+            sys.stdout = stdout
+
+
+def read_sql_db(sequences,
+                sql_db_path):
+    """
+    Read a SQL database.
+    """
+    import sqlite3
+    conn = sqlite3.connect(sql_db_path)
+    c = conn.cursor()
+    c.execute('CREATE TABLE IF NOT EXISTS embeddings (sequence text PRIMARY KEY, embedding blob)')
+    already_embedded = self._read_sequences_from_db(sql_db_path)
+    conn.close()

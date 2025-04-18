@@ -146,7 +146,7 @@ def map_ids(df,
     existing_cols = utils.intersect(df.columns, [target_namespace,'incoming','converted','name'])
     if len(existing_cols) > 0:
         if verbose:
-            warnings.warn('Dropping columns in df and id_map overlap:',",".join(existing_cols))        
+            print('Dropping columns in df and id_map overlap:',",".join(existing_cols))        
         df = df.drop(columns=existing_cols)
 
     if id_map is None:
@@ -171,7 +171,7 @@ def map_ids(df,
     overlap_cols = list(set(df.columns) & set(id_map.columns) - set([on_left, on_right]))
     if len(overlap_cols) > 0:
         if verbose:
-            warnings.warn('Dropping columns in df and id_map overlap:',",".join(overlap_cols))
+            print('Dropping columns in df and id_map overlap:',",".join(overlap_cols))
         df = df.drop(columns=overlap_cols)
     
     # Merge the ID mapping
@@ -187,6 +187,7 @@ def map_and_filter(df1,
                    input_col2=None,
                    target_namespace='ENSP',
                    rows_per_id=(1,1), 
+                   merge_on=None,
                    verbose=True): 
     """
     Map and filter two DataFrames.
@@ -236,4 +237,8 @@ def map_and_filter(df1,
             print("df2: Keeping only the first",rows_per_id[1],"row(s) per ID.")
             id_map2 = id_map2.groupby([input_col2]).head(rows_per_id[1])
 
-    return id_map1, id_map2
+    if merge_on is not None:
+        return id_map1.merge(id_map2, on=merge_on, how='left')
+    else:
+        return id_map1, id_map2
+    

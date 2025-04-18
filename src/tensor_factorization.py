@@ -2,7 +2,7 @@ import torch
 from tqdm.auto import tqdm
 
 
-def get_patient_tensor(seq_reps,
+def make_patient_tensor(seq_reps,
                        sample_to_proteoform,
                        drop_nan=True):
     
@@ -42,16 +42,19 @@ def get_patient_tensor(seq_reps,
             'phases':phases}
 
 def run_tensor_factorization(patient_tensor,
-                              n_components={'samples':10,
-                                            'transcripts':10,
-                                            'phases':10,
-                                            'features':10},
-                              n_epochs=500,
+                              n_components=10,
+                              n_epochs=50,
                               learning_rate=0.01):
     import torch
     import torch.nn as nn
     import torch.optim as optim
     from tqdm.auto import tqdm
+
+    if isinstance(n_components, int):
+        n_components = {'samples':n_components,
+                        'transcripts':n_components,
+                        'phases':n_components,
+                        'features':n_components}
 
     # Get tensor dimensions
     n_samples, n_transcripts, n_phases, n_features = patient_tensor.shape
@@ -90,9 +93,9 @@ def run_tensor_factorization(patient_tensor,
     } 
     return factors
 
-def get_transcript_contributions(factors, 
-                                 patient_tensor, 
-                                 l2_norm=True):
+def get_tx_contributions(factors,
+                         tensor_dict, 
+                         l2_norm=True):
     import torch
     import pandas as pd
     A = factors['samples']
@@ -101,20 +104,21 @@ def get_transcript_contributions(factors,
     D = factors['features']
     transcript_contributions = torch.einsum('ac,bc,dc,ec->ab', A, B, C, D)
     tx_contrib_df = pd.DataFrame(transcript_contributions.numpy(), 
-                            index=patient_tensor['samples'], 
-                            columns=patient_tensor['transcripts'])
+                                 index=list(tensor_dict['samples']), 
+                                 columns=list(tensor_dict['transcripts']))
     if l2_norm is True:
         l2_contrib = torch.norm(transcript_contributions, dim=0)
         # rescale to 0-1
         l2_contrib = l2_contrib / torch.max(l2_contrib)
         l2_contrib_df = pd.DataFrame(l2_contrib.numpy(), 
-             index=patient_tensor['transcripts'],
+             index=list(tensor_dict['transcripts']),
              columns=["contribution"]).sort_values(by="contribution", ascending=False)   
     else:
         l2_contrib_df = None
     return tx_contrib_df, l2_contrib_df
 
 def plot_tensor_factorization(factors, 
+                              max_factors=None,
                               keys=None):
     import matplotlib.pyplot as plt
     import seaborn as sns
@@ -123,6 +127,8 @@ def plot_tensor_factorization(factors,
     for factor_name in keys:
         factor_matrix = factors[factor_name]
         plt.figure(figsize=(10, 6))
+        if max_factors is not None:
+            factor_matrix = factor_matrix[:,:max_factors]
         sns.heatmap(factor_matrix.T, annot=True, cmap='viridis', fmt='.2f')
         plt.title(f'Learned {factor_name} matrix')
         plt.show()

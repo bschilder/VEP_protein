@@ -170,8 +170,8 @@ def _map_ids_lookup_post(df: pd.DataFrame,
         dict: A dictionary mapping IDs to Ensembl IDs.
     """
     # Map Protein ID to Transcript ID
-    res = lookup_post(ids=df[input_col].tolist(),
-                            client=client)
+    map_dict = lookup_post(ids=df[input_col].tolist(),
+                      client=client)
     map_dict = {k:{v['object_type'].lower():v['Parent']} for k,v in res.items() if v['object_type'] in ['Gene','Transcript','Translation']}
     # Get all possible keys
     from itertools import chain
@@ -199,9 +199,11 @@ def _map_ids_xref_external(df,
     map_dict = xref_external(ids=df[input_col], 
                                 force=force, 
                                 verbose=verbose)
-    col_key = {'ENSG':'gene','ENSP':'translation','ENST':'transcript'}
+    col_key = {'ENSG':'gene',
+               'ENSP':'translation',
+               'ENST':'transcript'}
     for col, key in col_key.items():
-        map_k_v = {k:v[key] for k,v in map_dict.items()}
+        map_k_v = {k:v[key] for k,v in map_dict.items() if key in v.keys()}
         if col in df.columns:
             if verbose:
                 warnings.warn(f"Overwriting column '{col}'")
@@ -225,7 +227,6 @@ def map_ids(df,
     elif method == 'lookup_post':
         return _map_ids_lookup_post(df=df, 
                                     input_col=input_col, 
-                                    force=force, 
                                     return_df=True,
                                     verbose=verbose)
     else:
@@ -243,6 +244,7 @@ def transcript_haplotypes_get(ids: Optional[List[str]] = None,
                               cache_only: bool = False,
                               error: bool = False,
                               timeout: int = TIMEOUT,
+                              leave: bool = True,
                               verbose: bool = True) -> dict:
     """Get haplotype information for transcript IDs from Ensembl REST API.
     For more information, see:
@@ -279,7 +281,9 @@ def transcript_haplotypes_get(ids: Optional[List[str]] = None,
 
     # Get haplotypes
     for tx_id in tqdm(ids,
-                      desc="Getting haplotypes"):
+                      desc="Getting haplotypes",
+                      disable=not verbose,
+                      leave=leave):
         save_path = os.path.join(cache,f"{tx_id}.json.gz")
         hap_tx_id = utils.load_json(save_path,
                                     force=force,
@@ -494,3 +498,5 @@ def get_variation(variant_id: str,
 def get_refseq_map():
     return  pd.read_csv("https://ftp.ensembl.org/pub/current_tsv/homo_sapiens/Homo_sapiens.GRCh38.113.refseq.tsv.gz", sep="\t")
 
+def map_to(ids):
+    mapp = get_refseq_map()

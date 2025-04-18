@@ -1,7 +1,6 @@
 name: esm3
 channels:
     - conda-forge
-    - nvidia
     - nodefaults
 dependencies:
     - python>=3.10,<3.13
@@ -15,11 +14,12 @@ dependencies:
     - cmake
     - pyarrow
     - scikit-learn
-    - conda-forge::biopython
     - huggingface_hub
     - pooch
     - pip
     - pip:
         - esm # New ESM module
+        - flash-attn --no-build-isolation
+        - biopython
         - python-Levenshtein
         - ensembl-rest
