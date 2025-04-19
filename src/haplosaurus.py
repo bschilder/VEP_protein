@@ -1629,7 +1629,8 @@ def haplotypes_to_fasta(haplotypes,
     return fasta_paths
 
 
-def get_haplotype_samples(haplotypes, 
+def get_haplotype_samples(haplotypes=None, 
+                          max_tx_ids=None,
                           cohort=None,
                           unnest=False,
                           remove_prefix=False,
@@ -1640,10 +1641,18 @@ def get_haplotype_samples(haplotypes,
     Args:
         haplotypes: Dictionary containing haplotype information
         key: The key in the haplotype dictionary containing sample information (default: 'cds_haplotypes')
-        
+        max_tx_ids: The maximum number of transcript IDs to process
+        cohort: The cohort to filter samples by
+        unnest: Whether to unnest the sample IDs
+        remove_prefix: Whether to remove the prefix from the sample IDs
+        key: The key in the haplotype dictionary containing sample information (default: 'cds_haplotypes')
+
     Returns:
         Set of unique sample IDs
     """
+    if haplotypes is None:
+        haplotypes = get_haplotypes(cache_only=True,
+                                     max_tx_ids=max_tx_ids)
     
     all_sample_ids = {}
     for tx_id in tqdm(haplotypes.keys(), 
@@ -1666,7 +1675,7 @@ def get_haplotype_samples(haplotypes,
             all_sample_ids[tx_id] = sample_ids
 
     if unnest:
-        return set.union(*all_sample_ids.values())
+        return list(set.union(*all_sample_ids.values()))
     else:
         return all_sample_ids
 
@@ -1706,7 +1715,9 @@ def haplotypes_to_samples(haplotypes,
     
     tx_sample_seqs = {}
     # Iterate over all transcript IDs
-    for tx_id in tqdm(tx_ids, desc="Processing transcripts", leave=False):
+    for tx_id in tqdm(tx_ids, 
+                      desc="Processing transcripts", 
+                      leave=False):
         sample_seqs = {sample: [] for sample in samples}
         
         # Iterate over all haplotype indices for this transcript
@@ -1846,3 +1857,37 @@ def dynamic_batching(hap_seqs,
     return batches
 
  
+def haplosaurus_dataloader(tx_ids,
+                           key='protein_haplotypes',
+                           preprocess=True,
+                           cache_only=True,
+                           verbose=True
+                          ):
+    """
+    Load haplotype data for specified transcript IDs into a DataFrame.
+    
+    This function provides a convenient way to retrieve haplotype data by chaining
+    together multiple processing steps: fetching haplotypes, extracting sequences,
+    and converting to a DataFrame format.
+    
+    Args:
+        tx_ids (str or list): Transcript ID(s) to retrieve haplotypes for.
+        key (str, optional): The haplotype key to use, typically 'protein_haplotypes'
+            or 'nucleotide_haplotypes'. Defaults to 'protein_haplotypes'.
+        preprocess (bool, optional): Whether to preprocess sequences in the DataFrame.
+            Defaults to True.
+        cache_only (bool, optional): Whether to only use cached data. Defaults to True.
+        verbose (bool, optional): Whether to display progress information. Defaults to True.
+    
+    Returns:
+        pandas.DataFrame: DataFrame containing haplotype information including sequences
+            and associated metadata.
+    """
+    haplotypes = get_haplotypes(tx_ids=tx_ids, 
+                                    leave=False,
+                                    cache_only=cache_only,
+                                    verbose=verbose)
+    hap_df = haplotypes_to_df(haplotypes,
+                                 preprocess=preprocess,
+                                 key=key)
+    return hap_df

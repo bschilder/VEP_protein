@@ -4,6 +4,9 @@ import io
 import pandas as pd
 import numpy as np
 from typing import List
+from contextlib import contextmanager
+import sys
+
 
 def is_pd(x):
     """
@@ -135,7 +138,6 @@ def get_chr_map(save_path=None,#'"../data/chr_name_conv.txt"'
 def download_url(args): 
     import time
     import requests
-    import os
     t0 = time.time() 
     url, fn = args[0], args[1] 
     if os.path.exists(fn):
@@ -521,7 +523,7 @@ def save_torch(obj,
     """
     Save an object to a torch file (.pth).
     """
-    if save_path is not None:
+    if save_path:
         import torch
         import os
         if verbose:
@@ -986,43 +988,6 @@ def check_arg(func,
     assert arg in options, f"Invalid argument: '{arg}'. Must be one of {','.join(options)}"
     return arg
 
-def load_embeddings_from_pth(db_path):
-    """
-    Load embeddings from a PyTorch .pth file into a dictionary
-    
-    Args:
-        db_path (str): Path to the PyTorch .pth file
-        
-    Returns:
-        dict: Dictionary mapping sequence identifiers to their embeddings
-    """
-    import torch
-    
-    if not os.path.exists(db_path):
-        raise FileNotFoundError(f"Embeddings file not found at {db_path}")
-    
-    try:
-        # Load the PyTorch file
-        embeddings_dict = torch.load(db_path)
-        print(f"Successfully loaded embeddings from {db_path}")
-        print(f"Number of sequences: {len(embeddings_dict)}")
-        
-        # Print a sample key and embedding shape if available
-        if embeddings_dict:
-            sample_key = next(iter(embeddings_dict))
-            sample_embedding = embeddings_dict[sample_key]
-            print(f"Sample key: {sample_key}")
-            print(f"Sample embedding shape: {sample_embedding.shape}")
-        
-        return embeddings_dict
-    
-    except Exception as e:
-        print(f"Error loading embeddings: {str(e)}")
-        return {}
-
-from contextlib import contextmanager
-import sys
-
 @contextmanager
 def ignore_stderr():
     """
@@ -1054,17 +1019,35 @@ def ignore_stdout(disable=False):
         try:
             yield
         finally:
-            sys.stdout = stdout
+            sys.stdout = stdout    
 
+def scan_pth_file(file_path):
+    """
+    Scan a PyTorch .pth file without loading it into memory.
+    Args:
+        file_path (str): Path to the PyTorch .pth file
+    Returns:
+        list: List of keys in the .pth file
+    """
+    try:
+        import torch
+        checkpoint = torch.load(file_path, 
+                                map_location=torch.device('cpu'), 
+                                mmap=True, 
+                                weights_only=True)
+        return checkpoint.keys()
+    except Exception as e:
+        print(f"Error scanning {file_path}: {e}")
+        return None
 
-def read_sql_db(sequences,
-                sql_db_path):
+def split_batches(lst,
+                  batch_size,
+                  verbose=True):
     """
-    Read a SQL database.
+    Split a list into batches of a given size.
     """
-    import sqlite3
-    conn = sqlite3.connect(sql_db_path)
-    c = conn.cursor()
-    c.execute('CREATE TABLE IF NOT EXISTS embeddings (sequence text PRIMARY KEY, embedding blob)')
-    already_embedded = self._read_sequences_from_db(sql_db_path)
-    conn.close()
+    
+    batches = [lst[i:i + batch_size] for i in range(0, len(lst), batch_size)]
+    if verbose:
+        print(f"Split {len(lst)} samples into {len(batches)} batches of ~{batch_size}")
+    return batches
