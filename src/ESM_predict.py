@@ -141,23 +141,42 @@ def seq_to_batch(sequence,
 
 
 def load_model(model_loc,
-               verbose):
-    #Check if the model_loc is passed as a string(model name)
-        if isinstance(model_loc, str):
-        # Avoid an infinite loop of trying to download the model (internal to esm)
-            model_loc = fix_esm_model_name(model_loc)
+               model_name=None,
+               verbose=True):
+    
+    #Check if the model_loc is passed as a string ( model name)
+    if isinstance(model_loc, str):
+    # Avoid an infinite loop of trying to download the model (internal to esm)
+        model_loc = fix_esm_model_name(model_loc)
 
-            # Load the model
-            with warnings.catch_warnings():
-                # Suppress warning about missing regression weights (not needed for current VEP metrics?)
-                if verbose < 2:
-                    warnings.filterwarnings('ignore', 
-                                            category=UserWarning, 
-                                            message='Regression weights not found, predicting contacts will not produce correct results.')
-                model, alphabet = pretrained.load_model_and_alphabet(model_loc)
-        else:
-            model, alphabet = model_loc
-        return model, alphabet
+        # Load the model
+        with warnings.catch_warnings():
+            # Suppress warning about missing regression weights (not needed for current VEP metrics?)
+            if verbose < 2:
+                warnings.filterwarnings('ignore', 
+                                        category=UserWarning, 
+                                        message='Regression weights not found, predicting contacts will not produce correct results.')
+            model, alphabet = pretrained.load_model_and_alphabet(model_loc)
+    elif isinstance(model_loc, tuple) and len(model_loc) == 2:
+        model, alphabet = model_loc[0], model_loc[1]
+    else:
+        raise ValueError(f"Model {model_loc} is not supported")
+
+    # Set the model name
+    if isinstance(model_name, str):
+        model.__class__.__name__ = model_name
+
+    # Return the model and alphabet
+    return model, alphabet
+
+def _get_model_name(model_loc):
+    if isinstance(model_loc, str):
+        model_name = model_loc
+    elif isinstance(model_loc, tuple) and len(model_loc) == 2:
+        model_name = model_loc[0]._get_name()
+    else:
+         model_name = model_loc._get_name()
+    return model_name
   
 def compute_pppl(row,
                  mutation_col,
@@ -236,7 +255,7 @@ def main(
             Example: "data/mutations.csv"
         dms_output: Path to save output CSV with predictions
             Example: "results/predictions.csv"
-        model_location: List of ESM model paths to use
+        model_location: List of ESM model paths to use, or model names, or (model, alphabet) tuples
             Example: ["esm2_t33_650M_UR50D"]
         sequence: Wild-type protein sequence
             Example: "MVKVGVNG..."
@@ -281,8 +300,13 @@ def main(
     # inference for each model
     for model_loc in model_location:
         
+        # get model name
+        model_name = _get_model_name(model_loc)
+        
         # Load the model
-        model, alphabet = load_model(model_loc, verbose)
+        model, alphabet = load_model(model_loc, 
+                                     model_name=model_name, 
+                                     verbose=verbose)
         # Set the model to evaluation mode, which disables dropout and other training-specific behaviors
         # This is important for inference to ensure consistent predictions
         model.eval()
@@ -323,10 +347,10 @@ def main(
                                              method="masked-marginals-msa",
                                              progress_bar=progress_bar)
 
-            tqdm.pandas(desc=f"Computing 'masked-marginals-msa' for {model_loc}", 
+            tqdm.pandas(desc=f"Computing 'masked-marginals-msa' for {model_name}", 
                         disable=not progress_bar,
                         leave=False)
-            df[model_loc] = df.progress_apply(
+            df.loc[:,model_name] = df.progress_apply(
                 lambda row: vm.compute_mt_wt_score(
                     row, 
                     mutation_col, 
@@ -361,10 +385,10 @@ def main(
                                                  progress_bar=progress_bar)
                 
                 
-                tqdm.pandas(desc=f"Computing 'wt-marginals' for {model_loc}",
+                tqdm.pandas(desc=f"Computing 'wt-marginals' for {model_name}",
                             disable=not progress_bar,
                             leave=False)
-                df[model_loc] = df.progress_apply(
+                df.loc[:,model_name] = df.progress_apply(
                     lambda row: vm.compute_mt_wt_score(
                         row, 
                         mutation_col,
@@ -403,10 +427,10 @@ def main(
                                                  method="masked-marginals", 
                                                  progress_bar=progress_bar)
 
-                tqdm.pandas(desc=f"Computing 'masked-marginals' for {model_loc}", 
+                tqdm.pandas(desc=f"Computing 'masked-marginals' for {model_name}", 
                             disable=not progress_bar,
                             leave=False)
-                df[model_loc] = df.progress_apply(
+                df.loc[:,model_name] = df.progress_apply(
                     lambda row: vm.compute_mt_wt_score(
                         row,
                         mutation_col,
@@ -426,13 +450,13 @@ def main(
             elif scoring_strategy == "pseudo-ppl":
                 
                 # Update compute_pppl to use device
-                tqdm.pandas(desc=f"Computing 'pseudo-ppl' for {model_loc}", 
+                tqdm.pandas(desc=f"Computing 'pseudo-ppl' for {model_name}", 
                             disable=not progress_bar,
                             leave=False)
                 # Create a new row for WT sequence
                 # df = df.append(pd.DataFrame(columns=[model_loc]))
 
-                df[model_loc] = df.progress_apply(
+                df.loc[:,model_name] = df.progress_apply(
                     lambda row: compute_pppl(
                         row=row,
                         mutation_col=mutation_col,
@@ -446,15 +470,15 @@ def main(
                     axis=1,
                 )
             elif scoring_strategy == "pseudo-ppl-mlm":
-                tqdm.pandas(desc=f"Computing 'pseudo-ppl-mlm' for {model_loc}", 
+                tqdm.pandas(desc=f"Computing 'pseudo-ppl-mlm' for {model_name}", 
                             disable=not progress_bar,
                             leave=False)
-                df[model_loc] = df.progress_apply(
+                df.loc[:,model_name] = df.progress_apply(
                     lambda row: compute_pppl(
                         row=row,
                         mutation_col=mutation_col,
                         sequence=sequence,
-                        model_name=model_loc,
+                        model_name=model_name,
                         model=model,
                         method="mlm",
                         is_ref=is_ref,
@@ -463,15 +487,18 @@ def main(
                     axis=1,
                 )
     # Check if there are any predictions
-    if df.dropna(subset=model_location, how="all").empty:
+    if df.dropna(subset=[model_name], how="all").empty:
         if verbose>1:
-            print(f"No predictions generated for {model_loc}. Skipping file save.")
+            print(f"No predictions generated for {model_name}. Skipping file save.")
     # Save the results
     else:
         if verbose>1:
             print(f"Saving results to {dms_output}")
         if dms_output.endswith(".parquet"):
-            df.to_parquet(dms_output, compression="gzip")
+            df.to_parquet(dms_output, 
+                          compression="gzip")
+                
+           
         else:
             df.to_csv(dms_output)
 

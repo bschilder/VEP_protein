@@ -127,7 +127,6 @@ def vep_pipeline(prot_df: pd.DataFrame = None,
     # Infer ens_id_col
     if ens_id_col is None:
         ens_id_col = _infer_ens_id_col(prot_df=prot_df,
-                                        haplotypes=haplotypes,
                                         verbose=verbose)
     assert ens_id_col in prot_df.columns
 
@@ -166,7 +165,8 @@ def vep_pipeline(prot_df: pd.DataFrame = None,
                                  protein_ids=protein_ids, 
                                  ens_id_col=ens_id_col,
                                  source_types=source_types, 
-                                 haplotypes=haplotypes,
+                                 tx_ids=list(hap_seqs.keys()),
+                                 hap_seqs=hap_seqs,
                                  verbose=verbose)
     
     # Save paths
@@ -186,14 +186,16 @@ def vep_pipeline(prot_df: pd.DataFrame = None,
         if run_filter_prot_df:
             prot_df_model = filter_model_seq_len(prot_df=prot_df, 
                                                  model_location=model_location,
-                                                 haplotypes=haplotypes,
+                                                 hap_seqs=hap_seqs,
                                                  verbose=verbose)
         else:
             prot_df_model = prot_df
             
         # Load the model
         if model_location in ESM.list_models(return_list=True):
-            model, alphabet = ESMp.load_model(model_location, verbose)
+            model, alphabet = ESMp.load_model(model_loc=model_location, 
+                                              model_name=model_location, 
+                                              verbose=verbose)
         else:
             raise ValueError(f"Model {model_location} not supported")
         
@@ -630,7 +632,8 @@ def _filter_protein_ids(prot_df: pd.DataFrame,
     return prot_df
 
 def add_sequence_checks(prot_df: pd.DataFrame,
-                        haplotypes: dict[str, dict[str, str]],
+                        hap_seqs: dict[str, dict[str, str]],
+                        haplotypes: dict[str, dict[str, str]] = None,
                         force: bool = False,
                         verbose: bool = True):
     """Add the sequence length to the protein dataframe.
@@ -646,21 +649,27 @@ def add_sequence_checks(prot_df: pd.DataFrame,
         return prot_df
     
     # Get haplotype sequences
-    hap_seqs = hs.get_haplotype_seqs(haplotypes,
-                                    aligned=2,
-                                    as_msa=True,
-                                    #   use_protein_ids=True,
-                                    add_haplotype_names=True)
+    if hap_seqs is None:
+        hap_seqs = hs.get_haplotype_seqs(haplotypes,
+                                        aligned=2,
+                                        as_msa=True,
+                                        #   use_protein_ids=True,
+                                        add_haplotype_names=True)
 
     # Check ref sequence length
     hap_seq_lens = {}
     mut_seq_lens = {}
     sequence_similarity = {}
     sequence_identical = {}
+
+    tx_ids = list(hap_seqs.keys())
+    ens_id_col = _infer_ens_id_col(prot_df=prot_df,
+                                   tx_ids=tx_ids,
+                                   verbose=verbose)
+    prot_df = prot_df.loc[prot_df[ens_id_col].isin(tx_ids),:].copy()
+
     for i, row in prot_df.iterrows():
-        ens_id_col = _infer_ens_id_col(prot_df=prot_df,
-                                       haplotypes=haplotypes,
-                                       verbose=verbose)
+       
         tx_id = row[ens_id_col]
         
         mut_df = pd.read_csv(row["source_file"], index_col=0)
@@ -683,6 +692,7 @@ def add_sequence_checks(prot_df: pd.DataFrame,
 
 def filter_model_seq_len(prot_df: pd.DataFrame,
                          model_location: str = None,
+                         hap_seqs: dict[str, dict[str, str]] = None,
                          haplotypes: dict[str, dict[str, str]] = None,
                          verbose: bool = True) -> pd.DataFrame:
     """Filter the protein dataframe by sequence length.
@@ -691,7 +701,8 @@ def filter_model_seq_len(prot_df: pd.DataFrame,
         prot_df = prot_df.copy()
         model_location = utils.one_only(model_location)
         prot_df = add_sequence_checks(prot_df=prot_df,
-                                      haplotypes=haplotypes, 
+                                      hap_seqs=hap_seqs, 
+                                      haplotypes=haplotypes,
                                       verbose=verbose)
         # Filter by sequence length
         proteins_before = prot_df['protein'].nunique()
@@ -710,12 +721,12 @@ def filter_model_seq_len(prot_df: pd.DataFrame,
     return prot_df
 
 def _filter_seq_len_mismatch(prot_df: pd.DataFrame,
-                             haplotypes: dict[str, dict[str, str]], 
+                             hap_seqs: dict[str, dict[str, str]], 
                              verbose: bool = True) -> pd.DataFrame:
     """Filter the protein dataframe by sequence length mismatch.
     """
     prot_df = add_sequence_checks(prot_df=prot_df,
-                                  haplotypes=haplotypes,
+                                  hap_seqs=hap_seqs,
                                   verbose=verbose) 
     # Filter by sequence length mismatch
     proteins_before = prot_df['protein'].nunique()
@@ -732,7 +743,8 @@ def filter_prot_df(prot_df: pd.DataFrame,
                    model_location: str = None,
                    protein_id_col: str = None,
                    ens_id_col: str = None,
-                   haplotypes: dict[str, dict[str, str]] = None,
+                   tx_ids: list[str] = None,
+                   hap_seqs: dict[str, dict[str, str]] = None,
                    run_filter_seq_len_mismatch: bool = True,
                    drop_duplicates: list[str] = ['experiment_id'],
                    verbose: bool = True) -> pd.DataFrame:
@@ -756,7 +768,8 @@ def filter_prot_df(prot_df: pd.DataFrame,
     # Infer haplotype id column
     if ens_id_col is None:
         ens_id_col = _infer_ens_id_col(prot_df=prot_df,
-                                        haplotypes=haplotypes,
+                                        tx_ids=tx_ids,
+                                        hap_seqs=hap_seqs,
                                         verbose=verbose)
 
     assert len(prot_df)>0
@@ -772,17 +785,17 @@ def filter_prot_df(prot_df: pd.DataFrame,
     # Filter by haplotypes
     prot_df = _filter_prot_df_ensembl_rest(prot_df=prot_df,
                                            ens_id_col=ens_id_col,
-                                           haplotypes=haplotypes,
+                                           tx_ids=tx_ids,
                                            verbose=verbose) 
     # Filter by sequence length mismatch
     if run_filter_seq_len_mismatch:
         prot_df = _filter_seq_len_mismatch(prot_df=prot_df,
-                                            haplotypes=haplotypes,
+                                            hap_seqs=hap_seqs,
                                             verbose=verbose)
     if model_location is not None:
         prot_df = filter_model_seq_len(prot_df=prot_df,
                                       model_location=model_location,
-                                      haplotypes=haplotypes,
+                                      hap_seqs=hap_seqs,
                                       verbose=verbose)
     # Drop duplicate experiment IDs
     if drop_duplicates:
@@ -796,14 +809,16 @@ def filter_prot_df(prot_df: pd.DataFrame,
     return prot_df
 
 def _infer_ens_id_col(prot_df: pd.DataFrame,
-                      haplotypes: dict[str, dict[str, str]] = None,
+                      tx_ids: list[str] = None,
+                      hap_seqs: dict[str, dict[str, str]] = None,
                       verbose: bool = True) -> str:
     """Infer the Ensembl ID column from the protein dataframe.
     """
-    if isinstance(haplotypes, dict):
-        tx_ids = list(haplotypes.keys())
-    else:
-        tx_ids = hs.list_haplotypes()
+    if tx_ids is None:
+        if hap_seqs is not None:
+            tx_ids = list(hap_seqs.keys())
+        else:
+            tx_ids = hs.list_haplotypes()
         
     if  utils.most_startswith(tx_ids, prefix='ENST'):
         assert 'ENST' in prot_df.columns
@@ -816,7 +831,7 @@ def _infer_ens_id_col(prot_df: pd.DataFrame,
 
 def _filter_prot_df_ensembl_rest(prot_df: pd.DataFrame,
                                  ens_id_col: str = None,
-                                 haplotypes: dict[str, dict[str, str]] = None,
+                                 tx_ids: list[str] = None,
                                  verbose: bool = True) -> pd.DataFrame:
     """Filter the protein dataframe using Ensembl REST API.
     
@@ -827,14 +842,14 @@ def _filter_prot_df_ensembl_rest(prot_df: pd.DataFrame,
     Returns:
         pd.DataFrame: The filtered protein dataframe.
     """
-    if haplotypes is None:
+    if tx_ids is None:
         if verbose:
-            print("No haplotypes provided. Returning original protein dataframe.")
+            print("No tx_ids provided. Returning original protein dataframe.")
         return prot_df
    
     if verbose:
         print("Filtering by",ens_id_col,"haplotypes")
-        prot_df = prot_df.loc[prot_df[ens_id_col].isin(haplotypes.keys())]
+        prot_df = prot_df.loc[prot_df[ens_id_col].isin(tx_ids)]
     assert len(prot_df)>0
     return prot_df
 
