@@ -244,10 +244,12 @@ def calculate_sequence_similarities(ds,
                     # Skip self-comparisons
                     if i2 == i:
                         continue
+                    gene_cols = utils.intersect(tx_metadata.columns, 
+                                                ['gene_name','hgnc'])
                     all_seq_sim_data.append({
                         'transcript_id': tx_id,
-                        'gene_name': tx_metadata['gene_name'][0][0],
-                        'exon_count': len(tx_metadata['regions'][0]),
+                        'gene_name': tx_metadata[gene_cols[0]][0],
+                        'exon_count': len(tx_metadata['index'][0]),
                         'sample': sample,
                         'seq1': name1,
                         'seq2': name2,

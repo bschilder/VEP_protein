@@ -4,6 +4,6 @@
         "titleBar.activeBackground": "#7D085E",
         "titleBar.activeForeground": "#FFFBFE"
     },
-    "python.analysis.typeCheckingMode": "basic",
+    "python.analysis.typeCheckingMode": "off",
     "python.analysis.autoImportCompletions": true
 }
