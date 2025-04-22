@@ -3,7 +3,7 @@ import glob
 import io
 import pandas as pd
 import numpy as np
-from typing import List
+from typing import List, Optional
 from contextlib import contextmanager
 import sys
 
@@ -787,6 +787,20 @@ def as_checksum(text, algorithm='md5'):
     raise ValueError("Unsupported algorithm. Choose 'md5' or 'sha256'.")
   return checksum
 
+
+def ids_to_checksum_filename(ids: List[str],
+                             dir: Optional[str] = None,
+                             suffix: Optional[str] = None,
+                             sep: str = "_"):
+    """
+    Get the checksum for a list of IDs.
+    """
+    checksum = as_checksum(sep.join(process_ids(ids)))
+    if suffix is not None:
+        checksum = checksum + suffix
+    if dir is not None:
+        checksum = os.path.join(dir, checksum)
+    return checksum
 
 def encode_haplotype_name(seq_name, 
                           include_counts=True):

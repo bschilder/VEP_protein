@@ -15,6 +15,7 @@ import src.onekg as onekg
 
 DIR_DICT = er.DIR_DICT
 DIR_DICT.update({
+    "haplotypes_merged": er.DIR_DICT['haplotypes'].replace('haplotypes', 'haplotypes_merged'),
     "variants": os.path.join(config.DATA_DIR, "haplosaurus","variants",""),
     "variant_sets": os.path.join(config.DATA_DIR, "haplosaurus","variant_sets","")
 })
@@ -499,6 +500,7 @@ def list_haplotypes(cache: Path = Path(DIR_DICT["haplotypes"]),
             print(f"Found haplotypes of {len(files)} transcripts in: '{cache}'")
         return [x.split('/')[-1].split('.')[0] for x in files]
     
+ 
 def get_haplotypes(tx_ids: Optional[List[str]] = None,
                    max_tx_ids: Optional[int] = None, 
                    species: str = "homo_sapiens",
@@ -508,6 +510,8 @@ def get_haplotypes(tx_ids: Optional[List[str]] = None,
                    force: bool = False,
                    cache: Path = Path(DIR_DICT["haplotypes"]),
                    cache_only: bool = False,
+                   cache_merged: Optional[Path] = None,
+                #    cache_merged: Path = Path(DIR_DICT["haplotypes_merged"]),
                    error: bool = False,
                    timeout: int = er.TIMEOUT,
                    leave: bool = True,
@@ -529,6 +533,9 @@ def get_haplotypes(tx_ids: Optional[List[str]] = None,
         force (bool, optional): Whether to force API request even if cached data exists. Defaults to False.
         cache (Path, optional): Directory to cache haplotype data. Defaults to DIR_DICT["haplotypes"].
         cache_only (bool, optional): Whether to only return cached data without making API requests. Defaults to False.
+        cache_merged (Path, optional): Directory to cache merged haplotype data. 
+            Defaults to DIR_DICT["haplotypes_merged"].
+            If None, will not cache merged haplotypes.
         error (bool, optional): Whether to raise exceptions on API errors. Defaults to False.
         verbose (bool, optional): Whether to print progress messages. Defaults to True.
 
@@ -539,7 +546,7 @@ def get_haplotypes(tx_ids: Optional[List[str]] = None,
     Raises:
         Exception: If error=True and API request fails for a transcript.
     """
-    client = er.get_ensembl_client(client=client)
+    
     haplotypes = {}
 
     # Get tx_ids if not provided
@@ -551,6 +558,22 @@ def get_haplotypes(tx_ids: Optional[List[str]] = None,
 
     # Convert IDs to Ensembl transcript IDs
     tx_ids = utils.process_ids(ids=tx_ids)
+
+    # Check if cached merged haplotypes exists
+    if cache_merged is not None:
+        checksum_path = utils.ids_to_checksum_filename(
+            tx_ids, 
+            dir=DIR_DICT["haplotypes_merged"],
+            suffix=".pkl")
+
+        checksum_loaded = utils.load_pickle(checksum_path, 
+                                            force=force,
+                                            verbose=verbose)
+        if checksum_loaded is not None:
+            return checksum_loaded
+
+
+
     # non_enst = [id for id in tx_ids if not id.startswith('ENST')]
     # if len(non_enst)>0:
     #     enst_map = er.xref_external(non_enst, 
@@ -570,9 +593,17 @@ def get_haplotypes(tx_ids: Optional[List[str]] = None,
                                             timeout=timeout,
                                             leave=leave,
                                             verbose=verbose)
+    
+    # Save haplotypes
+    if cache_merged is not None:
+        utils.save_pickle(haplotypes, 
+                          checksum_path, 
+                          verbose=verbose)
+    
     # Convert to protein IDs if requested
     if use_protein_ids:
         haplotypes = _as_protein_ids(haplotypes)
+
     # Return
     return haplotypes
 
@@ -727,8 +758,9 @@ def get_haplotype_seqs(haplotypes: Union[Dict[str, Dict], Dict[str, List[Dict]]]
     else:
         return hap_seqs
     
-def haplotypes_to_df(haplotypes: Dict[str, Dict],
+def haplotypes_to_df(haplotypes: Optional[Dict[str, Dict]] = None,
                      preprocess: bool = True,
+                     max_tx_ids: Optional[int] = None,
                      key: str = 'protein_haplotypes',
                     ) -> pd.DataFrame:
     """Convert haplotype sequences to a dataframe.
@@ -744,6 +776,10 @@ def haplotypes_to_df(haplotypes: Dict[str, Dict],
         pd.DataFrame: A dataframe of the haplotype sequences.
     """
 
+    # Get haplotypes
+    if haplotypes is None:
+        haplotypes = get_haplotypes(max_tx_ids=max_tx_ids)
+
     # Get haplotype sequences
     hap_seqs = get_haplotype_seqs(haplotypes, 
                                  aligned=0,
@@ -756,12 +792,18 @@ def haplotypes_to_df(haplotypes: Dict[str, Dict],
                    })
     
     # Add sequences to dataframe
+    # Create a list of records to build dataframe at once instead of concatenating repeatedly
+    records = []
     for tx_id, seqs in tqdm(hap_seqs.items(),
                             desc="Converting haplotypes to dataframe",
                             leave=False):
-        df = pd.concat([df, pd.DataFrame(seqs, index=['sequence']).T])
-        df['ENST'] = tx_id
-    df.index.name = 'haplotype'
+        for hap_name, seq in seqs.items():
+            records.append({'haplotype': hap_name, 'sequence': seq, 'ENST': tx_id})
+    
+    # Create dataframe from records in one operation
+    df = pd.DataFrame.from_records(records, index='haplotype')
+    
+    # Extract ENSP if needed (only once after dataframe is built)
     if key=='protein_haplotypes':
         df['ENSP'] = df.index.str.split(':').str[0]
     
@@ -1716,7 +1758,7 @@ def haplotypes_to_samples(haplotypes,
     tx_sample_seqs = {}
     # Iterate over all transcript IDs
     for tx_id in tqdm(tx_ids, 
-                      desc="Processing transcripts", 
+                      desc=f"Processing sample to haplotype {'sequence' if return_seqs else 'name'} maps", 
                       leave=False):
         sample_seqs = {sample: [] for sample in samples}
         
