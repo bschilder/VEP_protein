@@ -193,6 +193,7 @@ def vep_pipeline(prot_df: pd.DataFrame = None,
             
         # Load the model
         if model_location in ESM.list_models(return_list=True):
+            model_location = ESMp.fix_esm_model_name(model_location)
             model, alphabet = ESMp.load_model(model_loc=model_location, 
                                               model_name=model_location, 
                                               verbose=verbose)
