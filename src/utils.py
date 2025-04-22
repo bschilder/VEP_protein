@@ -4,6 +4,9 @@ import io
 import pandas as pd
 import numpy as np
 from typing import List
+from contextlib import contextmanager
+import sys
+
 
 def is_pd(x):
     """
@@ -135,7 +138,6 @@ def get_chr_map(save_path=None,#'"../data/chr_name_conv.txt"'
 def download_url(args): 
     import time
     import requests
-    import os
     t0 = time.time() 
     url, fn = args[0], args[1] 
     if os.path.exists(fn):
@@ -306,24 +308,35 @@ def plot_density(df,
                  x='UMAP_1',
                  y='UMAP_2',
                  alpha=0.5,
+                 color='white',
+                 s=1,
+                 facecolor='#2F0154',
                  cmap='viridis',
+                 fill=True,
+                 add_density=True,
                  figsize=(10, 8),
                  **kwargs):
+    
     import seaborn as sns
     import matplotlib.pyplot as plt
+    
     plt.figure(figsize=figsize)  # Set figure size
-    plt.gca().set_facecolor('#2F0154') # Set background to slightly darker than darkest viridis color
-    sns.kdeplot(data=df, x=x, y=y, 
-                fill=True, 
-                cmap=cmap,
-                **kwargs
-                ) 
+    
+    if facecolor is not None:
+        plt.gca().set_facecolor(facecolor) # Set background to slightly darker than darkest viridis color
+    
+    if add_density:
+        sns.kdeplot(data=df, x=x, y=y, 
+                    fill=fill, 
+                    cmap=cmap,
+                    **kwargs
+                    ) 
     # Then overlay scatter points with some transparency
     plt.scatter(data=df,
                 x=x, y=y,
                 alpha=alpha, # Make points semi-transparent
-                s=1, # Small point size
-                color='white') # White points
+                s=s, # Small point size
+                color=color) # White points
     
 def is_VariantFile(x):
     import pysam
@@ -502,6 +515,41 @@ def load_json(save_path,
                 print(f"Failed to load JSON file: {e}")
                 return None
     return None
+
+
+def save_torch(obj, 
+                save_path,
+                verbose=True):
+    """
+    Save an object to a torch file (.pth).
+    """
+    if save_path:
+        import torch
+        import os
+        if verbose:
+            print(f"Saving ==> {save_path}")
+        if os.path.dirname(save_path) != "":
+            os.makedirs(os.path.dirname(save_path), exist_ok=True)
+        torch.save(obj, save_path)
+
+
+def load_torch(save_path,
+               verbose=True):
+    """
+    Load an object from a torch file (.pth).
+    """
+    import torch
+    if save_path is not None:
+        if not os.path.exists(save_path):
+            if verbose:
+                print(f"File does not exist: {save_path}")
+            return None
+        else:
+            if verbose:
+                print(f"Loading ==> {save_path}")
+            return torch.load(save_path)
+    else:
+        return None
 
 def save_vcf(recs, save_path, header, mode="wb", index=True):
     import pysam
@@ -940,3 +988,66 @@ def check_arg(func,
     assert arg in options, f"Invalid argument: '{arg}'. Must be one of {','.join(options)}"
     return arg
 
+@contextmanager
+def ignore_stderr():
+    """
+    Ignore stderr output.
+
+    Example:
+        with ignore_stderr():
+            ## Call code that calls tqdm
+    """
+    devnull = open(os.devnull, "w")
+    stderr = sys.stderr
+    sys.stderr = devnull
+    try:
+        yield
+    finally:
+        sys.stderr = stderr
+
+@contextmanager
+def ignore_stdout(disable=False):
+    """
+    Ignore stdout output.
+    """
+    if disable:
+        yield
+    else:
+        devnull = open(os.devnull, "w")
+        stdout = sys.stdout
+        sys.stdout = devnull
+        try:
+            yield
+        finally:
+            sys.stdout = stdout    
+
+def scan_pth_file(file_path):
+    """
+    Scan a PyTorch .pth file without loading it into memory.
+    Args:
+        file_path (str): Path to the PyTorch .pth file
+    Returns:
+        list: List of keys in the .pth file
+    """
+    try:
+        import torch
+        checkpoint = torch.load(file_path, 
+                                map_location=torch.device('cpu'), 
+                                mmap=True, 
+                                weights_only=True)
+        return checkpoint.keys()
+    except Exception as e:
+        print(f"Error scanning {file_path}: {e}")
+        return None
+
+def split_batches(lst,
+                  batch_size,
+                  verbose=True):
+    """
+    Split a list into batches of a given size.
+    """
+    
+    batches = [lst[i:i + batch_size] for i in range(0, len(lst), batch_size)]
+    if verbose:
+        print(f"Split {len(lst)} samples into {len(batches)} batches of ~{batch_size}")
+    return batches

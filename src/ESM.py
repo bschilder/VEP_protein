@@ -9,7 +9,7 @@ import seaborn as sns
 import matplotlib.pyplot as plt
 import time
 from tqdm.auto import tqdm
-
+from typing import Optional
 import src.utils as utils 
 import src.haplosaurus as hs 
 import src.config as config
@@ -55,9 +55,12 @@ def list_models(prefix='esm',
         for model in models:
             print(f"- {model}")
 
-def list_scoring_strategies(model: str = None,
+def list_scoring_strategies(model: Optional[str] = None,
                             options: list = ["wt-marginals", "masked-marginals", "pseudo-ppl"]):
-    models = list_models(return_list=True)
+    if model is None:
+        models = list_models(return_list=True)
+    else:
+        models = utils.as_list(model)
     scoring_strategies = {} 
     for m in models:
         if model is None or m == model:
@@ -206,6 +209,7 @@ def get_embeddings(batches,
                    return_paths_only=False,
                    save_hdf5=True,
                    deterministic=True,
+                   save_mean_only=False,
                    **kwargs):  
     
     # Set seeds
@@ -249,8 +253,8 @@ def get_embeddings(batches,
                 continue
             if save_hdf5:
                 results_tx = load_esm_res_hdf5(save_path, 
-                                     force=force, 
-                                     verbose=verbose>1)
+                                                force=force, 
+                                                verbose=verbose>1)
             else:
                 results_tx = utils.load_pickle(save_path, 
                                                force=force, 
@@ -270,13 +274,24 @@ def get_embeddings(batches,
                                        return_contacts=False,
                                        **kwargs)
                     embed_time = time.time() - start_time
+                    
+                    # If save_mean_only is True, compute mean representations and discard full embeddings
+                    if save_mean_only:
+                        mean_representations = {}
+                        for layer in repr_layers:
+                            mean_representations[layer] = torch.stack([
+                                embeddings["representations"][layer][i, 1:len(batch_strs[i])+1].mean(0)
+                                for i in range(len(batch_labels))
+                            ])
+                        embeddings["representations"] = mean_representations
+                    
                     if return_paths_only is False:
                         results[tx_id] = {
-                            'embeddings':embeddings,
-                            'batch_labels':batch_labels, 
-                            'batch_strs':batch_strs,
-                            'batch_tokens':batch_tokens,
-                            'embed_time':embed_time
+                            'embeddings': embeddings,
+                            'batch_labels': batch_labels, 
+                            'batch_strs': batch_strs,
+                            'batch_tokens': batch_tokens,
+                            'embed_time': embed_time
                         }
                     else:
                         results[tx_id] = save_path

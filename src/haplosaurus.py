@@ -488,14 +488,15 @@ def get_variant_ids(variant_sets: Union[List[Dict], Dict[str, Dict[str, List[Dic
     return ids
 
 def list_haplotypes(cache: Path = Path(DIR_DICT["haplotypes"]),
+                    suffix: str = '.json.gz',
                     verbose: bool = True):
     import glob
-    files = glob.glob(os.path.join(cache, "*.json.gz"))
+    files = glob.glob(os.path.join(cache, f"*{suffix}"))
     if len(files)==0:
         raise ValueError(f"No haplotypes found in: '{cache}'")
     else:
         if verbose:
-            print(f"Found {len(files)} haplotypes in: '{cache}'")
+            print(f"Found haplotypes of {len(files)} transcripts in: '{cache}'")
         return [x.split('/')[-1].split('.')[0] for x in files]
     
 def get_haplotypes(tx_ids: Optional[List[str]] = None,
@@ -509,6 +510,7 @@ def get_haplotypes(tx_ids: Optional[List[str]] = None,
                    cache_only: bool = False,
                    error: bool = False,
                    timeout: int = er.TIMEOUT,
+                   leave: bool = True,
                    verbose: bool = True) -> dict:
     """Get haplotype information for transcript IDs from Ensembl REST API.
     For more information, see:
@@ -566,6 +568,7 @@ def get_haplotypes(tx_ids: Optional[List[str]] = None,
                                             cache_only=cache_only,
                                             error=error,
                                             timeout=timeout,
+                                            leave=leave,
                                             verbose=verbose)
     # Convert to protein IDs if requested
     if use_protein_ids:
@@ -718,13 +721,55 @@ def get_haplotype_seqs(haplotypes: Union[Dict[str, Dict], Dict[str, List[Dict]]]
                                                  add_self=True)
         hap_seqs = {enst_to_ensp[k]:v for k,v in hap_seqs.items()}
     
-       
-    
     # Return 
     if return_missing:
         return hap_seqs, missing_seqs
     else:
         return hap_seqs
+    
+def haplotypes_to_df(haplotypes: Dict[str, Dict],
+                     preprocess: bool = True,
+                     key: str = 'protein_haplotypes',
+                    ) -> pd.DataFrame:
+    """Convert haplotype sequences to a dataframe.
+    
+    Args:
+        hap_seqs (Dict[str, List[str]]): A dictionary mapping transcript IDs to their haplotype sequences.
+        add_tx_id (bool, optional): Whether to add the transcript ID. Defaults to True.
+        add_ensp (bool, optional): Whether to add the ENSP. Defaults to True.
+        add_ensg (bool, optional): Whether to add the ENSG. Defaults to True.
+        add_gene_symbol (bool, optional): Whether to add the gene symbol. Defaults to True.
+
+    Returns:
+        pd.DataFrame: A dataframe of the haplotype sequences.
+    """
+
+    # Get haplotype sequences
+    hap_seqs = get_haplotype_seqs(haplotypes, 
+                                 aligned=0,
+                                 add_haplotype_names=2,
+                                 key=key)
+    # Initialize dataframe
+    df = pd.DataFrame({'ENST':[],
+                   'ENSP':[],
+                   'sequence':[]
+                   })
+    
+    # Add sequences to dataframe
+    for tx_id, seqs in tqdm(hap_seqs.items(),
+                            desc="Converting haplotypes to dataframe",
+                            leave=False):
+        df = pd.concat([df, pd.DataFrame(seqs, index=['sequence']).T])
+        df['ENST'] = tx_id
+    df.index.name = 'haplotype'
+    if key=='protein_haplotypes':
+        df['ENSP'] = df.index.str.split(':').str[0]
+    
+    # Preprocess sequences
+    if preprocess:
+        df['sequence'] = df['sequence'].apply(bp.preprocess_sequence)
+    
+    return df
 
 def get_haplotype_counts(haplotypes: Dict[str, Dict],
                          key: str = 'protein_haplotypes') -> Dict[str, int]:
@@ -1584,7 +1629,9 @@ def haplotypes_to_fasta(haplotypes,
     return fasta_paths
 
 
-def get_haplotype_samples(haplotypes, 
+def get_haplotype_samples(haplotypes=None, 
+                          max_tx_ids=None,
+                          cohort=None,
                           unnest=False,
                           remove_prefix=False,
                           key='cds_haplotypes'):
@@ -1594,37 +1641,52 @@ def get_haplotype_samples(haplotypes,
     Args:
         haplotypes: Dictionary containing haplotype information
         key: The key in the haplotype dictionary containing sample information (default: 'cds_haplotypes')
-        
+        max_tx_ids: The maximum number of transcript IDs to process
+        cohort: The cohort to filter samples by
+        unnest: Whether to unnest the sample IDs
+        remove_prefix: Whether to remove the prefix from the sample IDs
+        key: The key in the haplotype dictionary containing sample information (default: 'cds_haplotypes')
+
     Returns:
         Set of unique sample IDs
     """
+    if haplotypes is None:
+        haplotypes = get_haplotypes(cache_only=True,
+                                     max_tx_ids=max_tx_ids)
     
     all_sample_ids = {}
-    for tx_id in tqdm(haplotypes.keys(), desc="Extracting sample IDs"):
+    for tx_id in tqdm(haplotypes.keys(), 
+                      desc="Extracting sample IDs",
+                      leave=False):
         sample_ids = set()
         if key in haplotypes[tx_id]:
             for haplotype in haplotypes[tx_id][key]:
                 if 'samples' in haplotype:
                     # Add all sample IDs from this haplotype
+                    sample_ids_tmp = haplotype['samples'].keys()
+                    if cohort is not None:
+                        sample_ids_tmp = [x for x in sample_ids_tmp if x.startswith(cohort)]
                     if remove_prefix:
                         sample_ids.update(
                             {sample_id.split(":")[-1] 
-                             for sample_id in haplotype['samples'].keys()})
+                             for sample_id in sample_ids_tmp})
                     else:
                         sample_ids.update(haplotype['samples'].keys())
             all_sample_ids[tx_id] = sample_ids
 
     if unnest:
-        return set.union(*all_sample_ids.values())
+        return list(set.union(*all_sample_ids.values()))
     else:
         return all_sample_ids
 
 
 def haplotypes_to_samples(haplotypes, 
                           tx_ids=None, 
-                            samples=None, 
-                            cohort="1000GENOMES:phase_3", 
-                            verbose=False):
+                          samples=None, 
+                          return_seqs=True,
+                          cohort="1000GENOMES:phase_3", 
+                          key='protein_haplotypes',
+                          verbose=False):
     """
     Process transcript haplotypes and organize sequences by sample.
     
@@ -1639,11 +1701,13 @@ def haplotypes_to_samples(haplotypes,
         Dictionary mapping transcript IDs to sample sequences
     """
     if tx_ids is None:
-        tx_ids = haplotypes.keys()
+        tx_ids = list(haplotypes.keys())
     if samples is None:
         samples = get_haplotype_samples(haplotypes, 
+                                        cohort=cohort,
                                         unnest=True, 
-                                        remove_prefix=True)
+                                        remove_prefix=True,
+                                        key=key)
 
     if verbose:
         print(f"Number of samples: {len(samples)}")
@@ -1651,24 +1715,43 @@ def haplotypes_to_samples(haplotypes,
     
     tx_sample_seqs = {}
     # Iterate over all transcript IDs
-    for tx_id in tqdm(tx_ids, desc="Processing transcripts", leave=False):
+    for tx_id in tqdm(tx_ids, 
+                      desc="Processing transcripts", 
+                      leave=False):
         sample_seqs = {sample: [] for sample in samples}
         
         # Iterate over all haplotype indices for this transcript
-        for hap_idx in range(len(haplotypes[tx_id]['cds_haplotypes'])):
-            sample_map = haplotypes[tx_id]['cds_haplotypes'][hap_idx]['samples']
-            seq = haplotypes[tx_id]['cds_haplotypes'][hap_idx]['seq']
+        for hap_idx in range(len(haplotypes[tx_id][key])):
+            
+            if 'samples' not in haplotypes[tx_id][key][hap_idx]:
+                if verbose:
+                    print(f"'samples' misssing from haplotypes for '{tx_id}'")
+                continue
+            
+            sample_map = haplotypes[tx_id][key][hap_idx]['samples']
+            seq = haplotypes[tx_id][key][hap_idx]['seq']
+            hap_name = haplotypes[tx_id][key][hap_idx]['name']
+            
             if verbose:
                 print(f"  Haplotype index {hap_idx}, sequence length: {len(seq)}")
             
             for sample in samples:
                 sample_id = cohort+":"+sample
                 if sample_id in sample_map.keys():
+
+                    # Get the number of haplotypes with this sequence for this sample
                     sample_count = sample_map[sample_id]
-                    sample_seqs[sample] += [seq]*sample_count
+
+                    # Return sequences
+                    if return_seqs:
+                        sample_seqs[sample] += [seq]*sample_count
+                    # Return haplotype names 
+                    else:
+                        sample_seqs[sample] += [hap_name]*sample_count
+                        
                     # Reduce verbosity to avoid excessive output
-                    if hap_idx == 0 and tx_id == tx_ids[0]:
-                        if verbose:
+                    if verbose:
+                        if hap_idx == 0 and tx_id == tx_ids[0]:
                             print(f"  Sample {sample}: added {sample_count} sequences from haplotype {hap_idx}")
                 elif hap_idx == 0 and tx_id == tx_ids[0]:  # Only print this message once per sample for the first transcript
                     if verbose:
@@ -1717,3 +1800,94 @@ def count_haplotype_samples(tx_sample_seqs,
             print(f"{tx_id}: {dict(counts)}")
             
     return tx_seq_counts, total_counts
+
+
+
+def dynamic_batching(hap_seqs, 
+                     max_batch_size=1000000):
+    
+    """
+    Convert dictionary to list of tuples (transcript_id, haplotype_id, sequence)
+    [(id, seq) for id, seq in hap_seqs.items()]
+
+    Batch sequences so that total amino acids in each batch doesn't exceed 1 million
+
+    Args:
+        hap_seqs: Dictionary mapping transcript IDs to haplotype sequences
+        max_batch_size: Maximum number of amino acids in each batch
+
+    Returns:
+        List of batches, each containing a dictionary of transcript IDs to haplotype sequences
+
+    Example:
+        hap_seqs = {
+            'ENST00000380152': {
+                'haplotype_1': 'MSEQWENCE',
+                'haplotype_2': 'MSEQWENCE'
+            },
+            'ENST00000380153': {
+                'haplotype_1': 'MSEQWENCE',
+                'haplotype_2': 'MSEQWENCE'
+            }
+        }
+        dynamic_batching(hap_seqs)
+    """
+    batches = []
+    current_batch = {}
+    current_batch_size = 0
+    
+    for seq_id, seq in hap_seqs.items():
+        seq = bp.preprocess_sequence(seq)
+        seq_length = len(seq)
+        
+        # If adding this sequence would exceed the limit, start a new batch
+        if current_batch_size + seq_length > max_batch_size and current_batch:
+            batches.append(current_batch)
+            current_batch = {}
+            current_batch_size = 0
+        
+        # Add sequence to current batch
+        current_batch[seq_id] = seq
+        current_batch_size += seq_length
+    
+    # Add the last batch if it's not empty
+    if current_batch:
+        batches.append(current_batch)
+    
+    return batches
+
+ 
+def haplosaurus_dataloader(tx_ids,
+                           key='protein_haplotypes',
+                           preprocess=True,
+                           cache_only=True,
+                           verbose=True
+                          ):
+    """
+    Load haplotype data for specified transcript IDs into a DataFrame.
+    
+    This function provides a convenient way to retrieve haplotype data by chaining
+    together multiple processing steps: fetching haplotypes, extracting sequences,
+    and converting to a DataFrame format.
+    
+    Args:
+        tx_ids (str or list): Transcript ID(s) to retrieve haplotypes for.
+        key (str, optional): The haplotype key to use, typically 'protein_haplotypes'
+            or 'nucleotide_haplotypes'. Defaults to 'protein_haplotypes'.
+        preprocess (bool, optional): Whether to preprocess sequences in the DataFrame.
+            Defaults to True.
+        cache_only (bool, optional): Whether to only use cached data. Defaults to True.
+        verbose (bool, optional): Whether to display progress information. Defaults to True.
+    
+    Returns:
+        pandas.DataFrame: DataFrame containing haplotype information including sequences
+            and associated metadata.
+    """
+    haplotypes = get_haplotypes(tx_ids=tx_ids, 
+                                    leave=False,
+                                    cache_only=cache_only,
+                                    verbose=verbose)
+    hap_df = haplotypes_to_df(haplotypes,
+                                 preprocess=preprocess,
+                                 key=key)
+    return hap_df
