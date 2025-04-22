@@ -17,7 +17,7 @@ haplo_cdna_file: "results/All_of_Us/{shard_id}/haplotype_cDNA.fa"
 use_ProHap: True
 
 phased_FTP_URL: ""
-phased_local_path: "/home/jupyter/workspaces/genomephenomefoundationmodelv8/WGS_EXOME_VCF"
+phased_local_path: "/home/jupyter/workspaces/genomephenomefoundationmodelv8/WGS_EXOME_VCF/"
 phased_vcf_file_name: "AoU_chr{chr}_{shard_id}.vcf"
 sample_metadata_file: "data/AoU_meta.tsv" 
 
