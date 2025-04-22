@@ -553,6 +553,11 @@ def get_haplotypes(tx_ids: Optional[List[str]] = None,
     if tx_ids is None:
         tx_ids = list_haplotypes(cache=cache,
                                  verbose=verbose)
+    elif cache_only:
+        tx_ids_all = list_haplotypes(cache=cache,
+                                     verbose=verbose)
+        tx_ids = utils.intersect(tx_ids, tx_ids_all)
+
     if max_tx_ids is not None:
         tx_ids = tx_ids[:max_tx_ids]
 

@@ -156,8 +156,9 @@ def download_resources(resources_df = None,
     file_dict = {}
     for i, row in tqdm(resources_df.iterrows(), 
                        total=len(resources_df), 
-                       desc='Gathering resources', 
-                       disable=progressbar<1): 
+                       desc='ProteinGym: Gathering resources', 
+                       disable=progressbar<1,
+                       leave=False): 
         try:
             unzipped_name = os.path.basename(row['URL']).removesuffix('.zip')
             if os.path.basename(row['URL']).endswith('.zip'):
