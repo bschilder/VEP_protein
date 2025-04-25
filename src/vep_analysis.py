@@ -22,6 +22,36 @@ def get_models_palette(palette="husl"):
                                 n_colors=len(models))
     return dict(zip(models, palette))
 
+
+def _get_default_save_dir(save_dir):
+    if save_dir is None:
+        save_dir = os.path.join(config.DATA_DIR,"1KG","vep")
+        print(f"No save_dir provided, using: {save_dir}")
+    return save_dir
+
+def list_vep_files(save_dir = None,
+                   scoring_strategy = ["wt-marginals", "masked-marginals", "pseudo-ppl"],
+                    save_format = "parquet",
+                    as_df=False
+                   ):
+    
+    save_dir = _get_default_save_dir(save_dir)
+    
+    all_files = []
+    for ss in scoring_strategy:
+         all_files.extend(glob.glob(
+            os.path.join(save_dir, "**", f"{ss}.{save_format}"), 
+                         recursive=True))
+    if as_df:
+        df = pd.DataFrame({'file': all_files})
+        df['protein'] = df['file'].str.split(os.sep).str[-4]
+        df['haplotype'] = df['file'].str.split(os.sep).str[-3]
+        df['variant_set'] = df['file'].str.split(os.sep).str[-2]
+        df['scoring_strategy'] = df['file'].str.split(os.sep).str[-1].str.split('.').str[0]
+        return df
+    else:
+        return all_files
+
 def merge_vep(save_dir = None,
               haplotypes = None,
               save_format = "parquet",
@@ -50,9 +80,7 @@ def merge_vep(save_dir = None,
         merged_df (pd.DataFrame): Merged dataframe containing all VEP results
     """
     
-    if save_dir is None:
-        save_dir = os.path.join(config.DATA_DIR,"1KG","vep")
-        print(f"No save_dir provided, using: {save_dir}")
+    save_dir = _get_default_save_dir(save_dir)
 
     if rename_model_location_col and not add_model_location:
         print("`add_model_location` must be set to True if `rename_model_location_col` is True.\nSetting `add_model_location` to True.")
@@ -65,9 +93,10 @@ def merge_vep(save_dir = None,
     dfs = []
     for ss in scoring_strategy:
         # Find all csv.gz files recursively
-        all_files = glob.glob(
-            os.path.join(save_dir, "**", f"{ss}.{save_format}"), 
-                         recursive=True)
+        all_files = list_vep_files(save_dir=save_dir, 
+                                   scoring_strategy=ss, 
+                                   save_format=save_format)
+        
         if max_files is not None:
             all_files = all_files[:max_files]
         if verbose:
