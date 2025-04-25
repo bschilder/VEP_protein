@@ -1,6 +1,7 @@
 import os
 import glob
 import io
+import re
 import pandas as pd
 import numpy as np
 import seaborn as sns
@@ -1113,7 +1114,7 @@ def get_kde(x,
 
     # Create a DataFrame with the KDE results
     kde_df = pd.DataFrame({'x': x_grid,
-                            'density': density}).reset_index()
+                            'y': density}).reset_index()
 
     # # Find peaks in the density to identify modes
     n_peaks = get_peaks(density)
@@ -1125,7 +1126,7 @@ def get_kde(x,
         x.hist(bins=bins, density=True, color="grey")
         sns.lineplot(data=kde_df, 
                      x='x', 
-                     y='density')
+                     y='y')
         plt.title(f"{title}\n Peaks = {n_peaks}")
     
     # Return the KDE dataframe
@@ -1147,64 +1148,74 @@ def get_peaks(x,
 
 def get_ecdf(x,
              bins=100,
-            title=None,
-            return_df=False,
-            plot=False):
+             title=None,
+             return_df=False,
+             plot=False, 
+             error=True):
     """
     Get the Empirical Cumulative Distribution Function of a list of values.
     """
-
+    
     def ecdf(data):
         x = np.sort(data)
         n = len(x)
         y = np.arange(1, n + 1) / n
         return x, y
 
-    x_cdf, y_cdf = ecdf(x)
-    # Get 
-    x_cdf_sampled = np.linspace(x_cdf.min(), x_cdf.max(), bins)
-    y_cdf_sampled = np.interp(x_cdf_sampled, x_cdf, y_cdf)
-    cdf_df = pd.DataFrame({'x': x_cdf_sampled, 
-                           'density': y_cdf_sampled})
-    n_peaks = get_peaks(y_cdf_sampled)
-    cdf_df['n_peaks'] = n_peaks
+    try:
+        x_cdf, y_cdf = ecdf(x)
+        # Get the ECDF as a dataframe
+        x_cdf_sampled = np.linspace(x_cdf.min(), x_cdf.max(), bins)
+        y_cdf_sampled = np.interp(x_cdf_sampled, x_cdf, y_cdf)
+        cdf_df = pd.DataFrame({'x': x_cdf_sampled, 
+                               'y': y_cdf_sampled})
+        
+        # Get the number of peaks in the KDE
+        n_peaks = get_kde(y_cdf_sampled, return_df=False)
+        cdf_df['n_peaks'] = n_peaks
 
-    if plot:
-        fig, ax = plt.subplots(figsize=(8, 6))
+        # Plot the ECDF
+        if plot:
+            fig, ax = plt.subplots(figsize=(8, 6))
 
-        # Create primary y-axis for histogram
-        sns.histplot(x, 
-                    bins=100, 
-                    kde=True, 
-                    ax=ax, 
-                    color='skyblue',
-                    alpha=0.6, 
-                    label='Histogram with KDE')
+            # Create primary y-axis for histogram
+            sns.histplot(x, 
+                        bins=100, 
+                        kde=True, 
+                        ax=ax, 
+                        color='skyblue',
+                        alpha=0.6, 
+                        label='Histogram with KDE')
 
-        # Create secondary y-axis for CDF
-        ax2 = ax.twinx()
-        sns.lineplot(data=cdf_df, x='x', y='y',
-                    ax=ax2, 
-                    color='red', 
-                    label='Empirical CDF')
+            # Create secondary y-axis for CDF
+            ax2 = ax.twinx()
+            sns.lineplot(data=cdf_df, x='x', y='y',
+                        ax=ax2, 
+                        color='red', 
+                        label='Empirical CDF')
 
-        # Add labels and title
-        ax.set_xlabel('VEP Score')
-        ax.set_ylabel('Frequency')
-        ax2.set_ylabel('Cumulative Probability')
-        plt.title(f"Distribution and CDF (Number of modes: {n_peaks})")
+            # Add labels and title
+            ax.set_xlabel('VEP Score')
+            ax.set_ylabel('Frequency')
+            ax2.set_ylabel('Cumulative Probability')
+            plt.title(f"Distribution and CDF (Number of modes: {n_peaks})")
 
-        # Add legend - only include one instance of each label
-        lines1, labels1 = ax.get_legend_handles_labels()
-        lines2, labels2 = ax2.get_legend_handles_labels()
-        # Create combined legend with unique labels
-        ax.legend(lines1 + lines2, 
-                labels1 + labels2, 
-                loc='upper left')
+            # Add legend - only include one instance of each label
+            lines1, labels1 = ax.get_legend_handles_labels()
+            lines2, labels2 = ax2.get_legend_handles_labels()
+            # Create combined legend with unique labels
+            ax.legend(lines1 + lines2, 
+                    labels1 + labels2, 
+                    loc='upper left')
 
-        plt.tight_layout()
-    # Return the CDF dataframe
-    if return_df:
-        return cdf_df
-    else:
-        return n_peaks
+            plt.tight_layout()
+        # Return the CDF dataframe
+        if return_df:
+            return cdf_df
+        else:
+            return n_peaks
+    except Exception as e:
+        if error:
+            raise e
+        else:
+            return None
