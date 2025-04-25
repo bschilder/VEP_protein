@@ -193,6 +193,7 @@ def vep_pipeline(prot_df: pd.DataFrame = None,
             
         # Load the model
         if model_location in ESM.list_models(return_list=True):
+            
             model_location = ESMp.fix_esm_model_name(model_location)
             model, alphabet = ESMp.load_model(model_loc=model_location, 
                                               model_name=model_location, 
@@ -235,10 +236,9 @@ def vep_pipeline(prot_df: pd.DataFrame = None,
                     assert len(seqs)>0
 
                     # Summarise really long seq_name
-                    if seq_name.count(",")>encode_haplotype_name_threshold: # More than X mutations
-                        seq_name_save = utils.encode_haplotype_name(seq_name)
-                    else:
-                        seq_name_save = seq_name
+                    seq_name_save = utils.encode_haplotype_name(
+                         seq_name=seq_name,
+                         encode_haplotype_name_threshold=encode_haplotype_name_threshold)
                         
                     if not _check_model_seq_len(seqs=seqs, 
                                                 model_location=model_location, 
@@ -474,7 +474,7 @@ def _check_model_seq_len(seqs: list,
                          pid: str = None,
                          seq_name: str = None,
                          model_checks: dict = {'esm1v':1024,
-                                                 'esm1b':1024},
+                                               'esm1b':1024},
                          verbose: bool = True) -> bool:
     """Check if sequence length is compatible with model constraints.
     

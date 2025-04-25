@@ -23,6 +23,7 @@ def get_models_palette(palette="husl"):
     return dict(zip(models, palette))
 
 def merge_vep(save_dir = None,
+              haplotypes = None,
               save_format = "parquet",
               scoring_strategy = ["wt-marginals", "masked-marginals", "pseudo-ppl"],
               add_model_location=True,
@@ -30,9 +31,10 @@ def merge_vep(save_dir = None,
               add_variant_set=True,
               add_filename=False,
               add_metadata=True,
-              target_namespace='ENST',
+              target_namespace=None,
               col_map= {'mutant': 'mutant', 
                         'protein': 'protein'},
+              max_files=None,
               verbose=True
               ):
     """
@@ -47,10 +49,7 @@ def merge_vep(save_dir = None,
     Returns:
         merged_df (pd.DataFrame): Merged dataframe containing all VEP results
     """
-    import pandas as pd
-    import glob
-    import os
-    from tqdm import tqdm
+    
     if save_dir is None:
         save_dir = os.path.join(config.DATA_DIR,"1KG","vep")
         print(f"No save_dir provided, using: {save_dir}")
@@ -69,6 +68,8 @@ def merge_vep(save_dir = None,
         all_files = glob.glob(
             os.path.join(save_dir, "**", f"{ss}.{save_format}"), 
                          recursive=True)
+        if max_files is not None:
+            all_files = all_files[:max_files]
         if verbose:
             print("Found", len(all_files), ss, save_format, "files") 
         if len(all_files) == 0:
@@ -89,8 +90,16 @@ def merge_vep(save_dir = None,
                 if add_model_location:
                     model_location = os.path.dirname(filename).split(os.sep)[-4]
                     df['model_location'] = model_location
+
+                    # Rename model location column
                     if rename_model_location_col:
                         df.rename(columns={model_location: 'VEP'}, inplace=True)
+
+                        # Hot fix for column naming bug
+                        hotfix_cols = [col for col in df.columns if "('ProteinBertModel(" in col]
+                        if len(hotfix_cols)>0:
+                            df.rename(columns=dict(zip(hotfix_cols, ["VEP"]*len(hotfix_cols))), inplace=True)
+
                 if add_variant_set:
                     df['variant_set'] = os.path.dirname(filename).split(os.sep)[-1]
                 if add_filename:
@@ -103,15 +112,24 @@ def merge_vep(save_dir = None,
         
     # Concatenate all dataframes
     if dfs:
+        if verbose:
+            print("Concatenating VEP dataframes")
         vep_df = pd.concat(dfs, ignore_index=True)
         if 'ENSP' not in vep_df.columns:
             vep_df['ENSP'] = vep_df['haplotype'].str.split(":").str[0]
+        
         # Map protein IDs to ENST and HGNC
+        ## Via GProfiler
         if target_namespace is not None:
             import src.gprofiler as gp
             vep_df = gp.map_ids(vep_df, 
                                 rows_per_id=1,
                                 target_namespace=target_namespace)
+        ## Via Haplosaurus
+        else: 
+            tx_id_map = hs.get_txid_map(haplotypes, invert=True)
+            vep_df['ENST'] = vep_df['ENSP'].map(tx_id_map)
+        
         # Check if reformatted mutant is in haplotype string
         vep_df['mutant_in_haplotype'] = vep_df.apply(lambda x: _reformat_mutant(x[col_map['mutant']]) in x['haplotype'], axis=1)
         assert len(vep_df)>0, "No VEP data found"
@@ -131,6 +149,9 @@ def merge_vep(save_dir = None,
                 assert len(vep_df)>0, "No PGD metadata found"
             else:
                 print("Cannot `add_metadata`: No 'protein' or 'mutant' columns found in VEP dataframe.")
+        
+        if verbose:
+            print(f"VEP dataframe shape: {vep_df.shape}")
         return vep_df
     else:
         print("No files were successfully read")
@@ -628,12 +649,13 @@ def _summarise_title(vep_df,
     labels = {}
     for col in label_cols:
         if col not in vep_df.columns:
+            label_cols.remove(col)
             continue
         if vep_df[col].nunique() > 1:
             labels[col] = f"{col}: {vep_df[col].nunique()}"
         else:
-            labels[col] = f"{col}: {vep_df[col].iloc[0]}"
-    return ', '.join([labels[col] for col in label_cols])
+            labels[col] = f"{col}: {vep_df[col].tolist()[0]}"
+    return ', '.join([labels[col] for col in label_cols if col in labels])
 
 def _get_model_location(vep_df):
     if 'model_location' in vep_df.columns:
@@ -751,6 +773,7 @@ def plot_vep_density(vep_df,
 def _rm_subplot_prefixes(g):
     g.set_titles(row_template='{row_name}', 
                  col_template='{col_name}')  # Only show model name without prefix
+    
 def plot_vep_variance(vep_df,
                       groupby_cols = ['model_location','protein','clinsig','mutant','scoring_strategy'],
                       x='clinsig',
@@ -954,6 +977,7 @@ def plot_vep_bpratios(vep_df,
     
 def add_haplotype_sequence(vep_df,
                            haplotypes: Dict[str, Dict] = None, 
+                           encode_haplotype_name_threshold: int = 10,
                            force: bool = False,
                            verbose: bool = True):
     """
@@ -970,21 +994,27 @@ def add_haplotype_sequence(vep_df,
     if 'haplotype_sequence' not in vep_df.columns or force:
         if haplotypes is None:
             haplotypes = hs.get_haplotypes(verbose=verbose)
+        
         if verbose:
             print("Getting haplotype sequences")
-        hap_seqs_flattened = hs.get_haplotype_seqs(haplotypes,
-                                                   add_haplotype_names=3)
+
+        hap_seqs_flattened = hs.get_haplotype_seqs(
+            haplotypes=haplotypes,
+            encode_haplotype_name_threshold=encode_haplotype_name_threshold,
+            add_haplotype_names=3) 
+        
         if verbose:
             print("Adding 'haplotype_sequence' column")
         vep_df["haplotype_sequence"] = vep_df["haplotype"].map(hap_seqs_flattened)
     if verbose:
         print("Adding 'haplotype_sequence_len' column")
-    vep_df['haplotype_sequence_len'] = vep_df['haplotype_sequence'].apply(len)
+    vep_df['haplotype_sequence_len'] = vep_df['haplotype_sequence'].apply(lambda x: len(x) if pd.notna(x) else np.nan)
     return vep_df
 
 def add_mutant_out_of_frame(vep_df,
                              haplotypes: Dict[str, Dict] = None, 
                              protein_position_col: str = 'Protein_position',
+                             encode_haplotype_name_threshold: int = 10,
                              force: bool = False,
                              verbose: bool = True):
     """
@@ -1007,6 +1037,7 @@ def add_mutant_out_of_frame(vep_df,
             print("Adding 'haplotype_sequence' column")
         vep_df = add_haplotype_sequence(vep_df=vep_df, 
                                         haplotypes=haplotypes, 
+                                        encode_haplotype_name_threshold=encode_haplotype_name_threshold,
                                         force=force,
                                         verbose=verbose)
 

@@ -3,6 +3,9 @@ import glob
 import io
 import pandas as pd
 import numpy as np
+import seaborn as sns
+import matplotlib.pyplot as plt
+
 from typing import List, Optional
 from contextlib import contextmanager
 import sys
@@ -57,11 +60,15 @@ def one_only(lst):
     lst = as_list(lst)
     return lst[0]
 
-def intersect(x, y, as_list=True):
+def intersect(x, y, return_list=True):
     """
     Intersect two lists or sets.
+
     """
-    if as_list:
+    x = as_list(x)
+    y = as_list(y)
+
+    if return_list:
         return list(set(x) & set(y))
     else:
         return set(x) & set(y)
@@ -803,6 +810,7 @@ def ids_to_checksum_filename(ids: List[str],
     return checksum
 
 def encode_haplotype_name(seq_name, 
+                          encode_haplotype_name_threshold=None,
                           include_counts=True):
     """
     Encode haplotype names that are far too long.
@@ -811,6 +819,10 @@ def encode_haplotype_name(seq_name,
         seq_name=  'ENSP00000382423:906V>I,948T>N,949del{12},962del{20},983delLS,986del{17},1004del{13},1018del{14},1033C>G,1034del{5},1040del{16},1057del{4},1062delPS,1065P>Q,1068del{5},1074delGDP,1078del{27},1106del{7},1114delTPV,1118del{4},1123del{5},1129delN,1131S>F,1133del{6},1140delMP,1143del{6},1150del{8},1159E>I,1160delKAE,1164del{7},1172del{24},1197delA,1199delQDA,1203delPI,1206del{6},1213del{11},1225ET>FF,1227del{27},1255delSSC,1259del{45},1305delN,1307I>C,1308del{5},1314delCEK,1318del{7},1326del{7},1334del{96},1431del{19},1451del{31},1483del{5},1490del{23}'
         encode_haplotype_name(seq_name)
     """ 
+
+    if encode_haplotype_name_threshold is not None:
+        if seq_name.count(",")<=encode_haplotype_name_threshold:
+            return seq_name
     # Encode entire sequence name
     checksum = as_checksum(seq_name)
 
@@ -1065,3 +1077,134 @@ def split_batches(lst,
     if verbose:
         print(f"Split {len(lst)} samples into {len(batches)} batches of ~{batch_size}")
     return batches
+
+
+
+def get_kde(x, 
+            title=None,
+            bw_method='scott', #'silverman',
+            bins=100,
+            return_df=False,
+            plot=False):
+    # Use scipy to get kernel density estimates
+    from scipy import stats
+    # Calculate kernel density estimate
+    # Use KDE with adaptive bandwidth for better handling of multimodal data
+    # Scott's rule or Silverman's rule might not be optimal for multimodal distributions
+    kde_scipy = stats.gaussian_kde(x, bw_method=bw_method)  # Start with Silverman's rule
+
+    # For more flexibility with multimodal data, we could use a mixture of Gaussians
+    # from sklearn.mixture import GaussianMixture
+    # gmm = GaussianMixture(n_components=3, 
+    #                       random_state=0).fit(dat['VEP'].values.reshape(-1, 1))
+    # gmm_df = pd.DataFrame(gmm.means_, columns=['mean'])
+    # gmm_df['std'] = np.sqrt(gmm.covariances_)
+    # gmm_df['weight'] = gmm.weights_
+    # gmm_df
+    # Or use a variable bandwidth KDE which adapts better to multimodal distributions
+
+    # Create a range of x values to evaluate the KDE
+    x_grid = np.linspace(x.min(), 
+                         x.max(), 
+                         num=bins)
+
+    # Evaluate the KDE at these points
+    density = kde_scipy(x_grid)
+
+    # Create a DataFrame with the KDE results
+    kde_df = pd.DataFrame({'x': x_grid,
+                            'density': density}).reset_index()
+
+    # # Find peaks in the density to identify modes
+    n_peaks = get_peaks(density)
+    kde_df['n_peaks'] = n_peaks
+
+    # # Plot the KDE
+    if plot:
+        plt.figure(figsize=(8, 6))
+        x.hist(bins=bins, density=True, color="grey")
+        sns.lineplot(data=kde_df, 
+                     x='x', 
+                     y='density')
+        plt.title(f"{title}\n Peaks = {n_peaks}")
+    
+    # Return the KDE dataframe
+    if return_df:
+        return  kde_df
+    else:
+        return n_peaks 
+    
+
+def get_peaks(x,
+              **kwargs):
+    """
+    Get the peaks of a list of values.
+    """
+    from scipy import signal
+    peaks, _ = signal.find_peaks(x, **kwargs)
+    n_peaks = len(peaks) if len(peaks) > 0 else 1
+    return n_peaks
+
+def get_ecdf(x,
+             bins=100,
+            title=None,
+            return_df=False,
+            plot=False):
+    """
+    Get the Empirical Cumulative Distribution Function of a list of values.
+    """
+
+    def ecdf(data):
+        x = np.sort(data)
+        n = len(x)
+        y = np.arange(1, n + 1) / n
+        return x, y
+
+    x_cdf, y_cdf = ecdf(x)
+    # Get 
+    x_cdf_sampled = np.linspace(x_cdf.min(), x_cdf.max(), bins)
+    y_cdf_sampled = np.interp(x_cdf_sampled, x_cdf, y_cdf)
+    cdf_df = pd.DataFrame({'x': x_cdf_sampled, 
+                           'density': y_cdf_sampled})
+    n_peaks = get_peaks(y_cdf_sampled)
+    cdf_df['n_peaks'] = n_peaks
+
+    if plot:
+        fig, ax = plt.subplots(figsize=(8, 6))
+
+        # Create primary y-axis for histogram
+        sns.histplot(x, 
+                    bins=100, 
+                    kde=True, 
+                    ax=ax, 
+                    color='skyblue',
+                    alpha=0.6, 
+                    label='Histogram with KDE')
+
+        # Create secondary y-axis for CDF
+        ax2 = ax.twinx()
+        sns.lineplot(data=cdf_df, x='x', y='y',
+                    ax=ax2, 
+                    color='red', 
+                    label='Empirical CDF')
+
+        # Add labels and title
+        ax.set_xlabel('VEP Score')
+        ax.set_ylabel('Frequency')
+        ax2.set_ylabel('Cumulative Probability')
+        plt.title(f"Distribution and CDF (Number of modes: {n_peaks})")
+
+        # Add legend - only include one instance of each label
+        lines1, labels1 = ax.get_legend_handles_labels()
+        lines2, labels2 = ax2.get_legend_handles_labels()
+        # Create combined legend with unique labels
+        ax.legend(lines1 + lines2, 
+                labels1 + labels2, 
+                loc='upper left')
+
+        plt.tight_layout()
+    # Return the CDF dataframe
+    if return_df:
+        return cdf_df
+    else:
+        return n_peaks

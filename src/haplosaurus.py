@@ -17,7 +17,8 @@ DIR_DICT = er.DIR_DICT
 DIR_DICT.update({
     "haplotypes_merged": er.DIR_DICT['haplotypes'].replace('haplotypes', 'haplotypes_merged'),
     "variants": os.path.join(config.DATA_DIR, "haplosaurus","variants",""),
-    "variant_sets": os.path.join(config.DATA_DIR, "haplosaurus","variant_sets","")
+    "variant_sets": os.path.join(config.DATA_DIR, "haplosaurus","variant_sets",""),
+    "tx_id_map": os.path.join(config.DATA_DIR, "haplosaurus","tx_id_map.pkl")
 })
 
 def get_figshare(fname: Union[str, List[str]] = ["haplotype_analysis_database.zip",
@@ -556,7 +557,10 @@ def get_haplotypes(tx_ids: Optional[List[str]] = None,
     elif cache_only:
         tx_ids_all = list_haplotypes(cache=cache,
                                      verbose=verbose)
+        
         tx_ids = utils.intersect(tx_ids, tx_ids_all)
+    if len(tx_ids)==0:
+        raise ValueError(f"No haplotypes found for {tx_ids}")
 
     if max_tx_ids is not None:
         tx_ids = tx_ids[:max_tx_ids]
@@ -661,6 +665,7 @@ def get_haplotype_seqs(haplotypes: Union[Dict[str, Dict], Dict[str, List[Dict]]]
                        use_protein_ids: bool = False,
                        add_haplotype_names: bool = False,
                        add_missing_ref: bool = True,
+                       encode_haplotype_name_threshold: int = None,
                        verbose: bool = False):
     """Get haplotype sequences from haplotype information.
 
@@ -757,6 +762,13 @@ def get_haplotype_seqs(haplotypes: Union[Dict[str, Dict], Dict[str, List[Dict]]]
                                                  add_self=True)
         hap_seqs = {enst_to_ensp[k]:v for k,v in hap_seqs.items()}
     
+    if encode_haplotype_name_threshold is not None:
+        if verbose:
+            print(f"Encoding haplotype names with threshold {encode_haplotype_name_threshold}")
+        hap_seqs = {k:utils.encode_haplotype_name(v, 
+                                                  encode_haplotype_name_threshold=encode_haplotype_name_threshold) 
+                    for k,v in hap_seqs.items()}
+
     # Return 
     if return_missing:
         return hap_seqs, missing_seqs
@@ -792,8 +804,8 @@ def haplotypes_to_df(haplotypes: Optional[Dict[str, Dict]] = None,
                                  key=key)
     # Initialize dataframe
     df = pd.DataFrame({'ENST':[],
-                   'ENSP':[],
-                   'sequence':[]
+                      'ENSP':[],
+                      'sequence':[]
                    })
     
     # Add sequences to dataframe
@@ -1492,11 +1504,12 @@ def get_suffix_dict(haplotypes: Dict[str, Dict],
         # Return dict of variant IDs to tx_ids
         return {hap_tx['variants'][0]['id']:prefix+tx_id for tx_id, hap_tx in haplotypes.items() if 'variants' in hap_tx.keys()}
     
-def get_txid_map(haplotypes: Dict[str, Dict],
+def get_txid_map(haplotypes: Optional[Dict[str, Dict]] = None,
                  to: str = "protein_id",
                  invert: bool = False,
                  check_all: bool = False,
-                 as_df: bool = False) -> Dict[str, str]:
+                 as_df: bool = False,
+                 cache: Path = DIR_DICT["tx_id_map"]) -> Dict[str, str]:
     """
     Get a dictionary of tx_ids to protein IDs or protein IDs to tx_ids.
 
@@ -1506,16 +1519,40 @@ def get_txid_map(haplotypes: Dict[str, Dict],
         invert (bool, optional): Whether to invert the dictionary. Defaults to False.
         check_all (bool, optional): Whether to check all protein IDs. Defaults to False.
         as_df (bool, optional): Whether to return a dataframe. Defaults to False.
+        cache (Path, optional): The cache to save the tx_id map to. Defaults to Path(DIR_DICT["haplotypes"]).
     """
+    if haplotypes is None:
+        if os.path.exists(cache):
+            # load from cache
+            tx_id_map = utils.load_pickle(cache)
+            if invert:
+                tx_id_map = utils.invert_dict(tx_id_map)
+            return tx_id_map
+        else:
+            raise ValueError(f"Haplotypes not found in cache at {cache}")
+
+
     if to == "protein_id":
         if check_all:
             if invert:
                 raise ValueError("Cannot invert dict if check_all is True")
             tx_id_map  = {tx_id:list(set([x['name'].split(':')[0] for x in hap_tx['protein_haplotypes']])) for tx_id, hap_tx in haplotypes.items()}
+            
+            # Save to cache
+            if cache is not None:
+                utils.save_pickle(tx_id_map, cache)
         else:
             tx_id_map = {tx_id:hap_tx['protein_haplotypes'][0]['name'].split(':')[0] for tx_id, hap_tx in haplotypes.items()}
+            
+            # Save to cache
+            if cache is not None:
+                utils.save_pickle(tx_id_map, cache)
+
+        # Invert the dictionary if requested
         if invert:
             tx_id_map  = utils.invert_dict(tx_id_map)
+
+        # Return as a dataframe if requested
         if as_df:
             return pd.DataFrame(tx_id_map, index=['id']).T
         else:
