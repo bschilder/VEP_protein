@@ -1066,10 +1066,22 @@ if __name__ == "__main__":
 
     # Parse arguments
     args = _parse_args()
-    prot_df = pd.read_csv(args.prot_df)
+
+    # Handle missing prot_df
+    if args.prot_df is not None and os.path.exists(args.prot_df):
+        prot_df = pd.read_csv(args.prot_df)
+    else:
+        prot_df = None
+    
+    # Parse scoring strategies
     scoring_strategies = _parse_scoring_strategies(args.scoring_strategies)
+    
+    # Parse models
     models = _parse_models(args.models)
+    
+    # Parse source types
     source_types = _parse_source_types(args.source_types)
+    
     # Run pipeline
     vep_pipeline(prot_df, 
                  models = models,
