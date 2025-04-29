@@ -157,6 +157,7 @@ def load_model(model_loc,
                                         category=UserWarning, 
                                         message='Regression weights not found, predicting contacts will not produce correct results.')
             model, alphabet = pretrained.load_model_and_alphabet(model_loc)
+    
     elif isinstance(model_loc, tuple) and len(model_loc) == 2:
         model, alphabet = model_loc[0], model_loc[1]
     else:
@@ -307,9 +308,6 @@ def main(
         model, alphabet = load_model(model_loc, 
                                      model_name=model_name, 
                                      verbose=verbose)
-        # Set the model to evaluation mode, which disables dropout and other training-specific behaviors
-        # This is important for inference to ensure consistent predictions
-        model.eval()
         
         # Move the model to the device
         if enable_data_parallel:
@@ -317,6 +315,11 @@ def main(
                                             verbose=verbose>1)
         else:
             model = model.to(device)
+            
+        # Set the model to evaluation mode, which disables dropout and other training-specific behaviors
+        # This is important for inference to ensure consistent predictions
+        # We do this after moving to device for optimal performance
+        model.eval()
 
         ####-- MSA models --####
         # Original code from: 
@@ -339,6 +342,9 @@ def main(
             (batch_labels, 
              batch_strs, 
              batch_tokens) = batch_converter(data)
+            
+            # Move batch tokens to device
+            batch_tokens = batch_tokens.to(device)
             
             # Compute token probabilities
             token_probs = vm.get_token_probs(model=model,

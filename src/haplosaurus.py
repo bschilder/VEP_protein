@@ -862,11 +862,11 @@ def get_haplotype_freqs(haplotypes: Dict[str, Dict],
     return pop_freqs, populations, cohorts
 
 def add_haplotype_freqs(df: pd.DataFrame, 
-                        haplotypes: Dict[str, Dict], 
+                        haplotypes: Optional[Dict[str, Dict]] = None, 
                         cohorts: Optional[List[str]] = ['1000GENOMES:phase_3'],
-                        haplotype_col: str = "label_base",
-                        protein_id_col: str = "ENSP_haplosaurus",
-                        tx_id_col: str = "ENST_haplosaurus",
+                        haplotype_col: str = "haplotype",
+                        protein_id_col: str = "ENSP",
+                        tx_id_col: str = "ENST",
                         add_top_pop: bool = True,
                         add_top_superpop: bool = True,
                         force: bool = False,
@@ -878,13 +878,15 @@ def add_haplotype_freqs(df: pd.DataFrame,
         haplotypes (Dict[str, Dict]): The haplotype information.
         cohorts (Optional[List[str]], optional): The cohorts to use. Defaults to ['1000GENOMES:phase_3'].
     """
-
+    df = df.copy()
     df = add_txid(df=df, 
                     haplotypes=haplotypes, 
                     protein_id_col=protein_id_col,
                     tx_id_col=tx_id_col,
                     force=force,
                     verbose=verbose)
+    if haplotypes is None:
+        haplotypes = get_haplotypes(tx_ids=df[tx_id_col].unique().tolist())
     # Get population frequencies dict
     (pop_freqs, 
      populations,
@@ -913,10 +915,10 @@ def add_haplotype_freqs(df: pd.DataFrame,
     freq_cols = [f'freq_{pop}' for pop in populations]
     if not all(col in df.columns for col in freq_cols) or force:  
         for i,pop in tqdm(enumerate(populations),
-                    desc="Adding haplotype frequencies",
+                    desc="Adding haplotype frequencies per population",
                     total=len(populations),
                     leave=True):
-            df[freq_cols[i]] = df.apply(
+            df.loc[:,freq_cols[i]] = df.apply(
                 lambda row: pop_freqs[row[tx_id_col]][row[haplotype_col]][pop] 
                     if row[tx_id_col] in pop_freqs 
                     and row[haplotype_col] in pop_freqs[row[tx_id_col]] 
@@ -941,10 +943,25 @@ def add_haplotype_freqs(df: pd.DataFrame,
     if add_top_superpop:
         if 'top_pop' in df.columns:
             if 'top_superpop' not in df.columns or force:
+                ### Approach 1:
+                # This approach does not consider the aggregate of freqs across populations,
+                # but only the max freq in each population.
                 pops = onekg.get_sample_metadata()
-                pop_map = dict(zip(pops['Population Code'], pops['Super Population']))
-                df['top_superpop'] = df['top_pop'].str.replace(f'{cohorts[0]}:', '').str.split('_').str[0].map(pop_map)
-                df['top_superpop'].fillna('N/A', inplace=True) 
+                superpops = pops["Super Population"].unique()
+                # pop_map = dict(zip(pops['Population Code'], pops['Super Population']))
+                # df.loc[:, 'top_superpop'] = df['top_pop'].str.replace(f'{cohorts[0]}:', '').str.split('_').str[0].map(pop_map)
+                # df['top_superpop'].fillna('N/A', inplace=True) 
+                
+                ### Approach 2:
+                # This approach considers the aggregate of freqs across populations,
+                # as long as the superpop is present as a column.
+                superpop_cols = [col for col in df.columns if any([col.endswith(sp) for sp in superpops])]
+                has_freqs = ~df[superpop_cols].isna().all(axis=1)
+                df.loc[has_freqs, 'top_superpop']  = df.loc[has_freqs, superpop_cols].idxmax(axis=1)
+
+                # Extract the frequency value from the top_pop column for each row
+                df.loc[has_freqs,'top_superpop_freq'] = df.loc[has_freqs,:].apply(lambda row: row[row['top_superpop']], axis=1)
+                
     return df
 
 def filter_haplotype_freqs(df: pd.DataFrame,
@@ -1561,9 +1578,9 @@ def get_txid_map(haplotypes: Optional[Dict[str, Dict]] = None,
         raise ValueError("to must be 'protein_id'")
     
 def add_txid(df: pd.DataFrame,
-             haplotypes: Dict[str, Dict],
-             protein_id_col: str = "ENSP_haplosaurus",
-             tx_id_col: str = "ENST_haplosaurus",
+             haplotypes: Optional[Dict[str, Dict]] = None,
+             protein_id_col: str = "ENSP",
+             tx_id_col: str = "ENST",
              force: bool = False,
              verbose: bool = True):
     """

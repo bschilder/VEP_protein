@@ -32,13 +32,15 @@ def _get_default_save_dir(save_dir):
 def list_vep_files(save_dir = None,
                    scoring_strategy = ["wt-marginals", "masked-marginals", "pseudo-ppl"],
                     save_format = "parquet",
-                    as_df=False
+                    as_df=False,
+                    verbose=True
                    ):
     
     save_dir = _get_default_save_dir(save_dir)
     
     all_files = []
-    for ss in scoring_strategy:
+    for ss in tqdm(scoring_strategy, 
+                   desc="Finding VEP files"):
          all_files.extend(glob.glob(
             os.path.join(save_dir, "**", f"{ss}.{save_format}"), 
                          recursive=True))
@@ -47,13 +49,25 @@ def list_vep_files(save_dir = None,
         df['protein'] = df['file'].str.split(os.sep).str[-4]
         df['haplotype'] = df['file'].str.split(os.sep).str[-3]
         df['variant_set'] = df['file'].str.split(os.sep).str[-2]
+        df['model_location'] = df['file'].str.split(os.sep).str[-5]
         df['scoring_strategy'] = df['file'].str.split(os.sep).str[-1].str.split('.').str[0]
+        if verbose:
+            print(f"Found {len(df)} {save_format} files in {save_dir}")
+            print("Unique values:")
+            print('>> model_location:', df['model_location'].nunique())
+            print('scoring_strategy:', df['scoring_strategy'].nunique())
+            print('variant_set:', df['variant_set'].nunique())
+            print('haplotype:', df['haplotype'].nunique())
+            print('protein:', df['protein'].nunique())
         return df
     else:
+        if verbose:
+            print(f"Found {len(all_files)} {save_format} files in {save_dir}")
         return all_files
 
 def merge_vep(save_dir = None,
               haplotypes = None,
+              vep_files = None,
               save_format = "parquet",
               scoring_strategy = ["wt-marginals", "masked-marginals", "pseudo-ppl"],
               add_model_location=True,
@@ -92,15 +106,29 @@ def merge_vep(save_dir = None,
     # Create empty list to store dataframes
     dfs = []
     for ss in scoring_strategy:
-        # Find all csv.gz files recursively
-        all_files = list_vep_files(save_dir=save_dir, 
-                                   scoring_strategy=ss, 
-                                   save_format=save_format)
         
+        # Find all csv.gz files recursively
+        if vep_files is None:
+            all_files = list_vep_files(save_dir=save_dir, 
+                                        scoring_strategy=ss, 
+                                        save_format=save_format)
+        else:
+            if isinstance(vep_files, pd.DataFrame):
+                all_files = vep_files.file.unique().tolist()
+            elif isinstance(vep_files, list):
+                all_files = vep_files
+            else:
+                raise ValueError(f"Invalid type for `vep_files`: {type(vep_files)}")
+        
+        # Limit the number of files
         if max_files is not None:
             all_files = all_files[:max_files]
+        
+        # Print the number of files
         if verbose:
             print("Found", len(all_files), ss, save_format, "files") 
+        
+        # Skip if no files are found
         if len(all_files) == 0:
             continue
         # Read each file and append to list
@@ -1592,3 +1620,369 @@ def recompress_parquet(save_dir: str = os.path.join(config.DATA_DIR,"1KG","vep")
             
         except Exception as e:
             print(f"Error recompressing {parquet_file}: {str(e)}")
+
+def plot_population_vep_violin_weighted(df, 
+                                        mutant=None, 
+                                        min_freq=0, 
+                                        top_pop_col = 'top_superpop',
+                                        freq_col = 'frequency',     
+                                        log_fold_change=False,
+                                        palette=None): 
+    """
+    Create weighted violin plots for VEP scores across different populations.
+    
+    Parameters:
+    -----------
+    df : pandas.DataFrame
+        The dataframe containing the data
+    mutant : str, default="M1775R"
+        The mutant to filter for
+    min_freq : float, default=0.005
+        Minimum frequency threshold for filtering
+    log_fold_change : bool, default=False
+        If True, display y-axis as log-fold change relative to the mean within each facet
+    
+    Returns:
+    --------
+    matplotlib.figure.Figure
+        The figure containing the violin plots
+    """
+    # From: https://stackoverflow.com/a/36904316
+    import weighted # pip install wquantiles
+    from matplotlib.cbook import violin_stats
+    import statsmodels.api as sm
+
+    if palette is None:
+        palette = utils.get_superpop_palette()
+
+    # Create a copy of the data with cleaned superpop labels
+    plot_data = df.dropna(subset=[top_pop_col,'VEP']).copy().sort_values(by=top_pop_col)
+    if mutant is not None:
+        plot_data = plot_data.loc[plot_data['mutant']==mutant]
+
+    # Filter out haplotypes that don't have a frequency > min_freq in their top superpopulation
+    if freq_col in plot_data.columns:
+        plot_data = plot_data.loc[plot_data[freq_col] > min_freq]
+    else:
+        freq_col = 'frequency'
+        plot_data = plot_data.loc[plot_data.apply(lambda row: row[row[top_pop_col]] > min_freq if row[top_pop_col] in row.index else False, axis=1)].copy()
+        # Remove the prefix from top_superpop for plotting
+        plot_data.loc[:, 'Top Superpopulation'] = plot_data[top_pop_col].str.replace('freq_1000GENOMES:phase_3:', '')
+    
+    plot_data.dropna(subset=[freq_col], inplace=True)
+
+    def vdensity_with_weights(weights):
+        ''' Outer function allows inner function access to weights. Matplotlib
+        needs function to take in data and coords, so this seems like only way
+        to 'pass' custom density function a set of weights '''
+        
+        def vdensity(data, coords):
+            ''' Custom matplotlib weighted violin stats function '''
+            # Using weights from closure, get KDE from statsmodels
+            weighted_cost = sm.nonparametric.KDEUnivariate(data)
+            weighted_cost.fit(fft=False, weights=weights)
+
+            # Return y-values for graph of KDE by evaluating on coords
+            return weighted_cost.evaluate(coords)
+        return vdensity
+
+    def custom_violin_stats(data, weights):
+        # Get weighted median and mean (using weighted module for median)
+        median = weighted.quantile_1D(data, weights, 0.5)
+        mean, sumw = np.ma.average(data, weights=list(weights), returned=True)
+        
+        # Use matplotlib violin_stats, which expects a function that takes in data and coords
+        # which we get from closure above
+        results = violin_stats(data, vdensity_with_weights(weights))
+        
+        # Update result dictionary with our updated info
+        results[0][u"mean"] = mean
+        results[0][u"median"] = median
+        
+        return results
+
+    ### Create violin plots for each superpopulation, faceted by model and scoring strategy
+    # Get unique superpopulations
+    superpops = plot_data[top_pop_col].unique()
+    # Get unique models and strategies for faceting
+    models = plot_data['model_location'].unique()
+    strategies = plot_data['scoring_strategy'].unique()
+
+    # Create figure with subplots
+    fig, axes = plt.subplots(len(models), len(strategies), 
+                            figsize=(4*len(strategies), 3*len(models)), 
+                            sharex=True, 
+                            sharey=False)
+
+    # Iterate through each model, strategy, and superpopulation
+    for i, model in enumerate(models):
+        for j, strategy in enumerate(strategies):
+            # Get the appropriate subplot
+            if len(models) == 1 and len(strategies) == 1:
+                ax = axes
+            elif len(models) == 1:
+                ax = axes[j]
+            elif len(strategies) == 1:
+                ax = axes[i]
+            else:
+                ax = axes[i, j]
+                
+            # Filter data for this model and strategy
+            subset = plot_data[(plot_data['model_location'] == model) & 
+                            (plot_data['scoring_strategy'] == strategy)].copy()
+            
+            # Calculate facet mean if using log fold change
+            if log_fold_change:
+                facet_mean = subset['VEP'].mean()
+                if facet_mean == 0:
+                    facet_mean = 1e-10  # Avoid division by zero
+            
+            # Create violin plots for each superpopulation
+            positions = []
+            for k, superpop in enumerate(superpops):
+                # Filter data for this superpopulation
+                superpop_data = subset[subset[top_pop_col] == superpop]
+                if len(superpop_data) > 0:
+                    # Transform data if using log fold change
+                    if log_fold_change:
+                        plot_values = np.log2(superpop_data['VEP'] / facet_mean)
+                    else:
+                        plot_values = superpop_data['VEP']
+                    
+                    # Calculate violin stats with weights
+                    vpstats = custom_violin_stats(plot_values.to_numpy(),
+                                                superpop_data[freq_col].to_numpy())
+                    # Plot violin
+                    vplot = ax.violin(vpstats, [k], 
+                                    vert=True, 
+                                    showmeans=True, 
+                                    showextrema=True, 
+                                    showmedians=False,  # Don't show default medians
+                                    )
+                    
+                    # Add dotted line for median
+                    median = vpstats[0]['median']
+                    ax.hlines(median, k-0.2, k+0.2, colors='black', linestyles='dotted', linewidth=1, alpha=0.75)
+                    
+                    # Set edge color
+                    for pc in vplot['bodies']:
+                        pc.set_edgecolor('black')
+                    positions.append(k)
+            
+            # Set title and labels
+            ax.set_title(f"{model}\n{strategy}")
+            ax.set_xticks(positions)
+            ax.set_xticklabels([p.split(':')[-1] for p in superpops], rotation=45)
+            # Apply color palette to violin plots
+            for pc, superpop in zip([pc for pc in vplot['bodies']], [p for p in superpops if p in subset[top_pop_col].values]):
+                pc.set_facecolor(palette[superpop.split(':')[-1]])
+                pc.set_alpha(0.8)
+            if j == 0:  # Only add y-label on leftmost plots
+                if log_fold_change:
+                    ax.set_ylabel("log2(VEP Score / Facet Mean)")
+                else:
+                    ax.set_ylabel("VEP Score")
+            if i == len(models) - 1:  # Only add x-label on bottom plots
+                ax.set_xlabel("Super Population")
+
+    plt.tight_layout()
+    return fig
+
+
+def plot_population_vep_violin_unweighted(df,
+                                          mutant=None, 
+                                          min_freq=0.005, 
+                                          top_pop_col = 'top_superpop',
+                                          freq_col = 'frequency',
+                                          palette=None):
+    import seaborn as sns
+    import matplotlib.pyplot as plt
+
+    if palette is None:
+        palette = utils.get_superpop_palette()
+
+    # Create a copy of the data with cleaned superpop labels
+    plot_data = df.dropna(subset=[top_pop_col,'VEP']).copy().sort_values(by=top_pop_col)
+    if mutant is not None:
+        plot_data = plot_data.loc[plot_data['mutant']==mutant]
+
+    # Filter out haplotypes that don't have a frequency >0.01 in their top superpopulation
+    plot_data = plot_data.loc[plot_data.apply(lambda row: row[row[top_pop_col]] > min_freq if row[top_pop_col] in row.index else False, axis=1)]
+
+    # Remove the prefix from top_superpop for plotting
+    plot_data['Top Superpopulation'] = plot_data[top_pop_col].str.replace('freq_1000GENOMES:phase_3:', '')
+
+
+    g = sns.FacetGrid(data=plot_data, 
+                    col="model_location", 
+                    row="scoring_strategy",
+                    sharex=True,
+                    sharey=False,
+                    margin_titles=True,
+                    height=4, 
+                    aspect=1.2)
+    g.map_dataframe(sns.violinplot, 
+                    x="Top Superpopulation", 
+                    y="VEP", 
+                    hue="Top Superpopulation",
+                    palette=palette
+                    )
+    g.set_axis_labels("Super Population", "VEP Score")
+    g.set_titles(col_template="{col_name}")
+
+    plt.tight_layout()
+
+
+def create_vep_frequency_df(df,
+                            keep_cols = ['haplotype','model_location','scoring_strategy','mutant','VEP'],
+                            pop_col = "Population",
+                            drop_na = True):
+    """
+    Create a dataframe of VEP scores and frequencies for each superpopulation.
+    """
+    # Get frequencies for every population (or superpopulation), not just the top one per haplotype
+    import src.onekg as onekg
+    new_dat = []
+    
+    superpops = onekg.get_sample_metadata()[pop_col].unique().tolist()
+    for p in ["freq_1000GENOMES:phase_3:"+str(p) for p in superpops]:
+        df_tmp = df.loc[:,keep_cols+[p]].rename(columns={p: 'frequency'})
+        df_tmp[pop_col] = p.split(':')[-1]
+        new_dat.append(df_tmp)
+    new_dat = pd.concat(new_dat, axis=0)
+    print(new_dat.shape)
+
+    if drop_na:
+        new_dat.dropna(subset=['frequency'], inplace=True)
+
+    return new_dat
+    
+    
+def compute_vep_mmr(df,
+                    lambda_param=0.5,
+                    k=10):
+    # Implement Maximal Marginal Relevance (MMR) to select diverse mutants
+    # MMR balances relevance (high VEP score differences) with diversity
+    import numpy as np
+    def compute_mmr(scores, lambda_param=0.5, k=10):
+        """
+        Compute Maximal Marginal Relevance to select diverse mutants
+        
+        Args:
+            scores: DataFrame with mutants as index and VEP scores
+            lambda_param: Balance between relevance and diversity (0-1)
+            k: Number of mutants to select
+            
+        Returns:
+            List of selected mutants
+        """
+        # Start with an empty set of selected mutants
+        selected = []
+        
+        # Convert to numpy for faster computation
+        mutants = scores.index.tolist()
+        score_matrix = scores.values
+        
+        # Relevance is the variance of scores across populations
+        relevance = np.var(score_matrix, axis=1)
+        
+        # Normalize relevance scores
+        if np.max(relevance) > 0:
+            relevance = relevance / np.max(relevance)
+        
+        while len(selected) < min(k, len(mutants)):
+            # Compute MMR score for each candidate
+            mmr_scores = []
+            
+            for i, mutant in enumerate(mutants):
+                if mutant in selected:
+                    mmr_scores.append(-np.inf)  # Already selected
+                    continue
+                    
+                # Relevance component
+                rel_score = relevance[i]
+                
+                # Diversity component (maximum similarity to already selected)
+                div_score = 0
+                if selected:
+                    # Calculate similarity as correlation between score patterns
+                    similarities = []
+                    for sel_mutant in selected:
+                        sel_idx = mutants.index(sel_mutant)
+                        # Use correlation as similarity measure
+                        sim = np.corrcoef(score_matrix[i], score_matrix[sel_idx])[0, 1]
+                        # Handle NaN values that might occur
+                        if np.isnan(sim):
+                            sim = 0
+                        similarities.append(sim)
+                    div_score = max(similarities) if similarities else 0
+                
+                # MMR score combines relevance and diversity
+                mmr_score = lambda_param * rel_score - (1 - lambda_param) * div_score
+                mmr_scores.append(mmr_score)
+            
+            # Select the mutant with highest MMR score
+            next_idx = np.argmax(mmr_scores)
+            selected.append(mutants[next_idx])
+        
+        return selected
+    # ---- end of compute_mmr function ---- #
+
+
+    # Group by model and scoring strategy to compute MMR for each group
+    mmr_results = {}
+
+    # Get unique combinations of model_location and scoring_strategy
+    model_strategy_combos = df.loc[df['mutant_in_haplotype']==False].groupby(['model_location', 'scoring_strategy']).size().reset_index()[['model_location', 'scoring_strategy']]
+
+    for _, row in tqdm(model_strategy_combos.iterrows(),
+                       total=len(model_strategy_combos),
+                       desc="Computing MMR for each model and strategy"):
+        model = row['model_location']
+        strategy = row['scoring_strategy']
+        
+        # Filter data for this model and strategy
+        filtered_data = df.loc[(df['mutant_in_haplotype']==False) & 
+                            (df['model_location']==model) & 
+                            (df['scoring_strategy']==strategy)]
+        
+        # Pivot to get populations as columns
+        if 'top_superpop' in filtered_data.columns and not filtered_data['top_superpop'].isna().all():
+            pop_scores = filtered_data.pivot_table(
+                index='mutant', 
+                columns='top_superpop', 
+                values='VEP',
+                aggfunc='mean'
+            )
+            
+            # Only proceed if we have enough data
+            if not pop_scores.empty and pop_scores.shape[1] > 1:
+                # Fill NaN values with the mean of the row
+                pop_scores = pop_scores.fillna(pop_scores.mean(axis=1))
+                
+                # Compute MMR
+                selected_mutants = compute_mmr(pop_scores, 
+                                               lambda_param=lambda_param,
+                                                k=k)
+                mmr_results[(model, strategy)] = selected_mutants
+
+    # Store the results in a dataframe
+    mmr_results_df = pd.DataFrame(columns=['model', 'strategy', 'rank', 'mutant'])
+
+    # Populate the dataframe with results
+    for (model, strategy), mutants in mmr_results.items():
+        for i, mutant in enumerate(mutants, 1):
+            new_row = pd.DataFrame({
+                'model': [model],
+                'strategy': [strategy],
+                'rank': [i],
+                'mutant': [mutant]
+            })
+            mmr_results_df = pd.concat([mmr_results_df, new_row], ignore_index=True)
+
+    # Compute mean rank for each mutant
+    mmr_results_df['mean_rank'] = mmr_results_df.groupby('mutant')['rank'].transform('mean')
+
+    # Sort by mean rank
+    mmr_results_df = mmr_results_df.sort_values('mean_rank')
+    return mmr_results_df

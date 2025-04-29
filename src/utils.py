@@ -856,6 +856,7 @@ def get_candidate_proteins():
     KCNH2	Potassium Voltage-Gated Channel Subfamily H Member 2	NP_000229.1	NM_000238.4	ENSP00000262186
     """), sep='\t')
     candidate_proteins['RefSeq Protein Stable'] = candidate_proteins['RefSeq Protein'].str.split(".").str[0]
+    candidate_proteins['Gene'] = candidate_proteins['Gene'].str.strip()
     return candidate_proteins
 
 def _make_palette(values,
@@ -867,6 +868,12 @@ def _make_palette(values,
 def get_clinsig_palette(values=['path', 'likely_path', 'likely_benign', 'benign'],
                          palette='bwr_r'):
     return _make_palette(values, palette) 
+
+
+def get_superpop_palette(values=['AFR', 'AMR', 'EAS', 'EUR', 'SAS'],
+                        palette='Set2'):
+    return _make_palette(values, palette)
+
 
 def list_to_df(lst,
                cols=None):

@@ -328,13 +328,12 @@ def enable_data_parallel(model,
         The model wrapped with DataParallel if multiple GPUs are available,
         otherwise the original model.
     """
-    # Enable multiple GPUs
-    if torch.cuda.device_count() > 1:
-        # First move model to CUDA before wrapping with DataParallel
-        model = model.cuda()
-        
+    # Get current device
+    device = next(model.parameters()).device
+    
+    # Only enable data parallel if on CUDA and multiple GPUs available
+    if device.type == 'cuda' and torch.cuda.device_count() > 1:
         if check_available:
-            
             available_gpus = get_available_gpus(verbose=verbose)
             # Use GPUs with most available memory
             if available_gpus:
@@ -350,16 +349,15 @@ def enable_data_parallel(model,
             else:
                 if verbose:
                     print("No GPUs with sufficient memory found, using single GPU")
-                model = model.cuda()
         else:
             if verbose:
                 print(f"Using all {torch.cuda.device_count()} GPUs")
             model = torch.nn.DataParallel(model)
     else:
-        # If only one GPU, just move to cuda
+        # If only one GPU or on CPU, just move to device
         if verbose:
-            print("Only one GPU available")
-        model = model.cuda()
+            print(f"Using single device: {device}")
+        model = model.to(device)
     
     # Verify which devices are being used
     if isinstance(model, torch.nn.DataParallel):
@@ -430,6 +428,7 @@ def get_token_probs(model,
     # Compute the log probabilities of the masked sequence
     elif method == "masked-marginals":
         
+        batch_tokens = batch_tokens.cuda()
         # Get the device from batch_tokens
         device = batch_tokens.device
         
