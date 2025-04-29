@@ -1083,7 +1083,7 @@ if __name__ == "__main__":
     source_types = _parse_source_types(args.source_types)
     
     # Run pipeline
-    vep_pipeline(prot_df, 
+    vep_pipeline(prot_df = prot_df, 
                  models = models,
                  scoring_strategies = scoring_strategies,
                  source_types = source_types,

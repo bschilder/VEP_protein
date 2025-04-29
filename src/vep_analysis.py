@@ -114,7 +114,7 @@ def merge_vep(save_dir = None,
                                         save_format=save_format)
         else:
             if isinstance(vep_files, pd.DataFrame):
-                all_files = vep_files.file.unique().tolist()
+                all_files = vep_files.loc[vep_files['scoring_strategy']==ss].file.unique().tolist()
             elif isinstance(vep_files, list):
                 all_files = vep_files
             else:
@@ -904,7 +904,7 @@ def plot_vep_percentiles(vep_df,
                         hue='clinsig',
                         row='model_location',
                         col='scoring_strategy',
-                        func=sns.boxplot,
+                        func=sns.violinplot,
                         palette = utils.get_clinsig_palette(),
                         height=3,
                         aspect=.9,
@@ -1627,7 +1627,9 @@ def plot_population_vep_violin_weighted(df,
                                         top_pop_col = 'top_superpop',
                                         freq_col = 'frequency',     
                                         log_fold_change=False,
-                                        palette=None): 
+                                        palette=None,
+                                        sharex=True,
+                                        sharey=False): 
     """
     Create weighted violin plots for VEP scores across different populations.
     
@@ -1709,10 +1711,11 @@ def plot_population_vep_violin_weighted(df,
     strategies = plot_data['scoring_strategy'].unique()
 
     # Create figure with subplots
-    fig, axes = plt.subplots(len(models), len(strategies), 
-                            figsize=(4*len(strategies), 3*len(models)), 
-                            sharex=True, 
-                            sharey=False)
+    fig, axes = plt.subplots(nrows=len(strategies), 
+                             ncols=len(models), 
+                            figsize=(3*len(models), 4*len(strategies)), 
+                            sharex=sharex, 
+                            sharey=sharey)
 
     # Iterate through each model, strategy, and superpopulation
     for i, model in enumerate(models):
