@@ -1090,16 +1090,15 @@ def split_batches(lst,
 
 def get_kde(x, 
             title=None,
-            bw_method='scott', #'silverman',
-            bins=100,
+            bw_method="ISJ", #'scott', #'silverman',
+            grid_points=100,
             return_df=False,
             plot=False):
-    # Use scipy to get kernel density estimates
-    from scipy import stats
+    
     # Calculate kernel density estimate
     # Use KDE with adaptive bandwidth for better handling of multimodal data
     # Scott's rule or Silverman's rule might not be optimal for multimodal distributions
-    kde_scipy = stats.gaussian_kde(x, bw_method=bw_method)  # Start with Silverman's rule
+  
 
     # For more flexibility with multimodal data, we could use a mixture of Gaussians
     # from sklearn.mixture import GaussianMixture
@@ -1111,17 +1110,26 @@ def get_kde(x,
     # gmm_df
     # Or use a variable bandwidth KDE which adapts better to multimodal distributions
 
-    # Create a range of x values to evaluate the KDE
-    x_grid = np.linspace(x.min(), 
-                         x.max(), 
-                         num=bins)
+   
 
     # Evaluate the KDE at these points
-    density = kde_scipy(x_grid)
+    if bw_method == "ISJ":
+        from KDEpy import FFTKDE
+        kde = FFTKDE(kernel='gaussian', bw=bw_method)
+        density = kde.fit(np.array(x)).evaluate(grid_points)
+    else:
+        from scipy import stats
+         # Create a range of x values to evaluate the KDE
+        x_grid = np.linspace(x.min(), 
+                             x.max(), 
+                             num=grid_points)  
+        kde_scipy = stats.gaussian_kde(x, bw_method=bw_method)  # Start with Silverman's rule
+        density = kde_scipy(x_grid)
 
     # Create a DataFrame with the KDE results
-    kde_df = pd.DataFrame({'x': x_grid,
-                            'y': density}).reset_index()
+    kde_df = pd.DataFrame({'grid_index': range(len(x_grid)),
+                           'x': x_grid,
+                           'y': density}).reset_index()
 
     # # Find peaks in the density to identify modes
     n_peaks = get_peaks(density)
@@ -1130,7 +1138,7 @@ def get_kde(x,
     # # Plot the KDE
     if plot:
         plt.figure(figsize=(8, 6))
-        x.hist(bins=bins, density=True, color="grey")
+        x.hist(bins=grid_points, density=True, color="grey")
         sns.lineplot(data=kde_df, 
                      x='x', 
                      y='y')
@@ -1144,42 +1152,75 @@ def get_kde(x,
     
 
 def get_peaks(x,
+              cwt=True,
               **kwargs):
     """
     Get the peaks of a list of values.
     """
     from scipy import signal
-    peaks, _ = signal.find_peaks(x, **kwargs)
+    if cwt:
+        peaks = signal.find_peaks_cwt(x, widths=np.arange(1,10), **kwargs)
+    else:
+        peaks, _ = signal.find_peaks(x, **kwargs)
     n_peaks = len(peaks) if len(peaks) > 0 else 1
     return n_peaks
 
+def ecdf(x):
+    #     x = np.sort(data)
+    #     n = len(x)
+    #     y = np.arange(1, n + 1) / n
+    #     return x, y
+    from scipy import stats
+    res = stats.ecdf(x)
+    return res
+    
 def get_ecdf(x,
-             bins=100,
-             title=None,
              return_df=False,
              plot=False, 
+             grid_points=100,
+             title=None,
              error=True):
     """
     Get the Empirical Cumulative Distribution Function of a list of values.
     """
     
-    def ecdf(data):
-        x = np.sort(data)
-        n = len(x)
-        y = np.arange(1, n + 1) / n
-        return x, y
-
     try:
-        x_cdf, y_cdf = ecdf(x)
+        x_array = np.array(x) # Get the number of peaks in the KDE
+        # Ensure x_array has no NaN values
+        x_array = x_array[~np.isnan(x_array)]
+        assert len(x_array) > 1, "Only one data point, cannot calculate density"
+
+       
+        # Create a grid that extends beyond the data points to avoid the "Every data point must be inside of the grid" error
+        from KDEpy import FFTKDE
+        kde_x, kde_y = FFTKDE(bw='ISJ').fit(x_array).evaluate(grid_points=grid_points)
+        n_peaks = get_peaks(kde_y)
+
         # Get the ECDF as a dataframe
-        x_cdf_sampled = np.linspace(x_cdf.min(), x_cdf.max(), bins)
-        y_cdf_sampled = np.interp(x_cdf_sampled, x_cdf, y_cdf)
-        cdf_df = pd.DataFrame({'x': x_cdf_sampled, 
-                               'y': y_cdf_sampled})
-        
-        # Get the number of peaks in the KDE
-        n_peaks = get_kde(y_cdf_sampled, return_df=False)
+        ecdf_res = ecdf(x_array)
+        x_cdf_sampled = np.linspace(x.min(), x.max(), grid_points)
+        y_cdf_sampled = ecdf_res.cdf.evaluate(x_cdf_sampled)
+        cdf_df = pd.DataFrame(
+            {'x': x_cdf_sampled,
+             'ecdf': y_cdf_sampled,
+             'kde': kde_y
+            })
         cdf_df['n_peaks'] = n_peaks
+        cdf_df['n_samples'] = len(x_array)
+
+         # Calculate summary statistics
+        stats = {
+            'min': x_array.min(),
+            'max': x_array.max(),
+            'range': x_array.max() - x_array.min(),
+            'mean': x_array.mean(),
+            'std': x_array.std(),
+            'var': x_array.var(),
+            'median': np.median(x_array)
+        }
+        # Add summary statistics to the dataframe
+        for stat_name, stat_value in stats.items():
+            cdf_df["x_"+stat_name] = stat_value
 
         # Plot the ECDF
         if plot:
@@ -1187,23 +1228,25 @@ def get_ecdf(x,
 
             # Create primary y-axis for histogram
             sns.histplot(x, 
-                        bins=100, 
+                        bins=grid_points, 
+                        stat='density',
                         kde=True, 
                         ax=ax, 
                         color='skyblue',
+                        # cumulative=True,
                         alpha=0.6, 
                         label='Histogram with KDE')
 
             # Create secondary y-axis for CDF
             ax2 = ax.twinx()
-            sns.lineplot(data=cdf_df, x='x', y='y',
+            sns.lineplot(data=cdf_df, x='x', y='ecdf',
                         ax=ax2, 
                         color='red', 
                         label='Empirical CDF')
-
+            ax.set_title(title)
             # Add labels and title
             ax.set_xlabel('VEP Score')
-            ax.set_ylabel('Frequency')
+            # ax.set_ylabel('Frequency')
             ax2.set_ylabel('Cumulative Probability')
             plt.title(f"Distribution and CDF (Number of modes: {n_peaks})")
 
@@ -1226,3 +1269,46 @@ def get_ecdf(x,
             raise e
         else:
             return None
+
+def prepare_umap_data(vep_df, 
+                      groupby_cols=['model_location', 'protein', 'scoring_strategy', 'mutant', 'clinsig'],
+                      grid_points=100):
+    """
+    Prepare data for UMAP by combining ECDF values with summary statistics.
+    
+    Args:
+        vep_df: DataFrame containing VEP scores
+        groupby_cols: Columns to group by when calculating ECDFs
+        grid_points: Number of points to use for ECDF grid
+        
+    Returns:
+        DataFrame with combined ECDF values and summary statistics
+    """
+    # Group by specified columns and calculate ECDF for each group
+    ecdf_dfs = []
+    for _, group in vep_df.groupby(groupby_cols):
+        ecdf_df = get_ecdf(group['VEP'], 
+                          return_df=True,
+                          grid_points=grid_points)
+        if ecdf_df is not None:
+            # Add group identifiers
+            for col in groupby_cols:
+                ecdf_df[col] = group[col].iloc[0]
+            ecdf_dfs.append(ecdf_df)
+    
+    # Combine all ECDF dataframes
+    combined_df = pd.concat(ecdf_dfs, ignore_index=True)
+    
+    # Create a pivot table with ECDF values and summary statistics
+    pivot_df = combined_df.pivot_table(
+        index=groupby_cols,
+        columns='x',
+        values='y'
+    )
+    
+    # Add summary statistics as additional columns
+    stats_cols = ['min', 'max', 'range', 'mean', 'std', 'median', 'q1', 'q3', 'iqr', 'n_peaks', 'n_samples']
+    for col in stats_cols:
+        pivot_df[col] = combined_df.groupby(groupby_cols)[col].first()
+    
+    return pivot_df

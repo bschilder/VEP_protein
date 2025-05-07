@@ -1065,7 +1065,15 @@ def add_haplotype_sequence(vep_df,
         vep_df["haplotype_sequence"] = vep_df["haplotype"].map(hap_seqs_flattened)
     if verbose:
         print("Adding 'haplotype_sequence_len' column")
-    vep_df['haplotype_sequence_len'] = vep_df['haplotype_sequence'].apply(lambda x: len(x) if pd.notna(x) else np.nan)
+
+    # Add reference sequence length column
+    if 'reference_sequence_len' not in vep_df.columns and 'protein_sequence' in vep_df.columns:
+        vep_df['reference_sequence_len'] = vep_df['protein_sequence'].apply(len)
+
+    # Add haplotype sequence length column
+    vep_df['haplotype_sequence_len'] = vep_df['haplotype_sequence'].apply(lambda x: len(bp.preprocess_sequence(x)) if pd.notna(x) else np.nan)
+    vep_df['haplotype_sequence_len_pct'] = vep_df['haplotype_sequence_len'] / vep_df['reference_sequence_len']
+
     return vep_df
 
 def add_mutant_out_of_frame(vep_df,

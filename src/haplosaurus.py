@@ -692,6 +692,9 @@ def get_haplotype_seqs(haplotypes: Union[Dict[str, Dict], Dict[str, List[Dict]]]
     Returns:
         Dict[str, List[str]]: A dictionary mapping transcript IDs to their haplotype sequences.
     """
+    if haplotypes is None:
+        haplotypes = get_haplotypes(cache_only=True, 
+                                    verbose=verbose)
     
     hap_seqs = {}
     missing_seqs = []
@@ -861,6 +864,55 @@ def get_haplotype_freqs(haplotypes: Dict[str, Dict],
     cohorts = set([':'.join(p.split(':')[:-1]) for p in populations])
     return pop_freqs, populations, cohorts
 
+
+def add_specific_superpops(df: pd.DataFrame, 
+                           verbose: bool = True):
+    """Add a column indicating which superpopulation is specific to a variant.
+    
+    Args:
+        df (pd.DataFrame): The dataframe to add the specific superpopulation to.
+        verbose (bool, optional): Whether to print verbose output. Defaults to True.
+
+    Returns:
+        pd.DataFrame: The dataframe with the specific superpopulation added.
+    """ 
+
+    if 'top_superpop' not in df.columns:
+        raise ValueError("top_superpop column not found in dataframe")
+    
+    # Add a new boolean col whether the haplotypes is specific to a population (all other populations are 0 or)
+    superpops = onekg.get_sample_metadata()["Super Population"].unique()
+    freq_cols = [col for col in df.columns if col.startswith('freq_') and col.endswith(tuple(superpops))]
+
+    if len(freq_cols)==0:
+        raise ValueError("No frequency columns found in dataframe")
+
+    # Add a column indicating how many frequency columns are non-zero and non-nan for each row
+    df['nonzero_superpop_freqs'] = df[freq_cols].apply(
+        lambda row: (row.notna() & (row > 0)).sum(), axis=1
+    )
+    # For rows where only one frequency column is non-zero, identify which population it is
+    def get_nonzero_population(row):
+        if row['nonzero_superpop_freqs'] == 1:
+            # Find the single non-zero frequency column
+            for col in freq_cols:
+                if pd.notna(row[col]) and row[col] > 0:
+                    # Extract the population name from the column name (after 'freq_')
+                    return col.replace('freq_', '')
+        return None
+
+    # Add a column indicating which population has the non-zero frequency (for population-specific variants)
+    df['specific_superpopulation'] = df.apply(get_nonzero_population, axis=1)
+
+    # Count how many variants are specific to each population
+    if verbose:
+        print("\nNumber of variants specific to each population:")
+        print(df[df['nonzero_superpop_freqs'] == 1]['specific_superpopulation'].value_counts())
+        # Calculate the percentage of variants that are population-specific
+        print(f"\nPercentage of population-specific haplotypes: {df.loc[df['nonzero_superpop_freqs'] == 1]['haplotype'].nunique()/df['haplotype'].nunique():.2%}")
+
+    return df
+
 def add_haplotype_freqs(df: pd.DataFrame, 
                         haplotypes: Optional[Dict[str, Dict]] = None, 
                         cohorts: Optional[List[str]] = ['1000GENOMES:phase_3'],
@@ -869,14 +921,28 @@ def add_haplotype_freqs(df: pd.DataFrame,
                         tx_id_col: str = "ENST",
                         add_top_pop: bool = True,
                         add_top_superpop: bool = True,
+                        add_specific_superpop: bool = True,
                         force: bool = False,
-                        verbose: bool = True): 
+                        verbose: bool = True,
+                        leave: bool = False): 
     """Add haplotype frequencies to a dataframe.
 
     Args:
         df (pd.DataFrame): The dataframe to add the haplotype frequencies to.
-        haplotypes (Dict[str, Dict]): The haplotype information.
+        haplotypes (Optional[Dict[str, Dict]], optional): The haplotype information. Defaults to None.
         cohorts (Optional[List[str]], optional): The cohorts to use. Defaults to ['1000GENOMES:phase_3'].
+        haplotype_col (str, optional): The column name of the haplotype. Defaults to "haplotype".
+        protein_id_col (str, optional): The column name of the protein ID. Defaults to "ENSP".
+        tx_id_col (str, optional): The column name of the transcript ID. Defaults to "ENST".
+        add_top_pop (bool, optional): Whether to add the top population. Defaults to True.
+        add_top_superpop (bool, optional): Whether to add the top superpopulation. Defaults to True.
+        add_specific_superpop (bool, optional): Whether to add the specific superpopulation. Defaults to True.
+        force (bool, optional): Whether to force the addition of the haplotype frequencies. Defaults to False.
+        verbose (bool, optional): Whether to print verbose output. Defaults to True.
+        leave (bool, optional): Whether to leave the haplotype frequencies in the dataframe. Defaults to False.
+
+    Returns:
+        pd.DataFrame: The dataframe with the haplotype frequencies added.
     """
     df = df.copy()
     df = add_txid(df=df, 
@@ -886,7 +952,9 @@ def add_haplotype_freqs(df: pd.DataFrame,
                     force=force,
                     verbose=verbose)
     if haplotypes is None:
-        haplotypes = get_haplotypes(tx_ids=df[tx_id_col].unique().tolist())
+        haplotypes = get_haplotypes(tx_ids=df[tx_id_col].unique().tolist(), 
+                                    leave=leave,
+                                    verbose=verbose)
     # Get population frequencies dict
     (pop_freqs, 
      populations,
@@ -917,7 +985,7 @@ def add_haplotype_freqs(df: pd.DataFrame,
         for i,pop in tqdm(enumerate(populations),
                     desc="Adding haplotype frequencies per population",
                     total=len(populations),
-                    leave=True):
+                    leave=leave):
             df.loc[:,freq_cols[i]] = df.apply(
                 lambda row: pop_freqs[row[tx_id_col]][row[haplotype_col]][pop] 
                     if row[tx_id_col] in pop_freqs 
@@ -961,8 +1029,11 @@ def add_haplotype_freqs(df: pd.DataFrame,
 
                 # Extract the frequency value from the top_pop column for each row
                 df.loc[has_freqs,'top_superpop_freq'] = df.loc[has_freqs,:].apply(lambda row: row[row['top_superpop']], axis=1)
-                
+    
+    if add_specific_superpop:
+        df = add_specific_superpops(df, verbose=verbose)
     return df
+    
 
 def filter_haplotype_freqs(df: pd.DataFrame,
                            freq_filters: Optional[Dict] = {}) -> pd.DataFrame:
@@ -1635,6 +1706,7 @@ def add_variant_freqs(df,
     variation_df = pd.concat([variation_to_dfs(x)[field].assign(variant_id=k) for k,x in variation.items()], axis=0)
     return df.merge(variation_df, on=variant_col, how='left')
 
+
 def align_pairwise(hap_seqs):
     # convert hap_seqs to a MSA
     from Bio.Align import PairwiseAligner  
@@ -1652,6 +1724,7 @@ def align_pairwise(hap_seqs):
             msa_dict[protein_id].append(alignments[0])
 
     return msa_dict
+    
 
 def get_offset_length(seq_name, 
                       base_offset=1):
@@ -1685,18 +1758,22 @@ def get_offset_length(seq_name,
     else:
         return base_offset
 
-def haplotypes_to_fasta(haplotypes, 
+def haplotypes_to_fasta(haplotypes=None, 
+                        key='protein_haplotypes',
                         aligned=1,
                         add_haplotype_names=2,
                         add_missing_ref=True,
                         save_dir=os.path.join(config.DATA_DIR,"1KG","fasta"),
                         strip='*',
+                        merge=False,
                         force=False,
+                        compress=True,
                         verbose=True):
     """Convert haplotype sequences to FASTA format.
     
     Args:
         haplotypes (Dict[str, Dict]): The haplotypes to convert to FASTA format.
+        key (str, optional): The key to use to get the haplotype sequences. Defaults to "protein_haplotypes".
         aligned (int, optional): The alignment type. Defaults to 1.
         add_haplotype_names (int, optional): The type of haplotype names to add. Defaults to 2.
         add_missing_ref (bool, optional): Whether to automatically add in the reference sequence when it is missing from the data.
@@ -1709,25 +1786,93 @@ def haplotypes_to_fasta(haplotypes,
     Returns:
         Dict[str, str]: A dictionary of tx_ids to FASTA file paths.
     """ 
+
+    # Check if merged FASTA file exists
+    if merge:
+        fasta_path = os.path.join(save_dir, f"haplotypes.fasta")
+        if os.path.exists(fasta_path) and not force:
+            if verbose:
+                print(f"Returning merged FASTA file: {fasta_path}")
+            return fasta_path
+
+    # Get haplotypes if not provided
+    if haplotypes is None:
+        haplotypes = get_haplotypes(cache_only=True, 
+                                    verbose=verbose)
+        
+    # Get haplotype sequences
     hap_seqs = get_haplotype_seqs(haplotypes, 
+                                  key=key,
                                   aligned=aligned,
                                   add_haplotype_names=add_haplotype_names,
-                                  add_missing_ref=add_missing_ref)
-    # Convert haplotype sequences to FASTA format
-    fasta_paths = {}
-    for tx_id in tqdm(hap_seqs.keys(),
-                      desc="Converting haplotypes to FASTA",
-                      leave=False,
-                      disable=not verbose):
-        fasta_path = os.path.join(save_dir, f"{tx_id}.fasta")
-        fasta_paths[tx_id] = fasta_path
+                                  add_missing_ref=add_missing_ref,
+                                  verbose=verbose>1)
+    
+    # Convert haplotype sequences to FASTA format 
+    os.makedirs(save_dir, exist_ok=True)
+    if merge:
+        
+        # Define the path to the merged FASTA file
+        fasta_path = os.path.join(save_dir, f"{key}.fasta")
+        if compress:
+            fasta_path = f"{fasta_path}.gz"
+            
+        # Check if the merged FASTA file exists
         if not os.path.exists(fasta_path) or force:
-            with open(fasta_path, 'w') as f:
-                for name, seq in hap_seqs[tx_id].items():
-                    if strip is not None:
-                        seq = seq.replace(strip, '')
-                    f.write(f'>{name}\n{seq}\n')
-    return fasta_paths
+
+            # Open file with gzip if needed
+            if compress:
+                import gzip
+                f = gzip.open(fasta_path, 'wt')
+            else:
+                f = open(fasta_path, 'w')
+                
+            # Write the merged FASTA file
+            try:
+                for tx_id in tqdm(hap_seqs.keys(),
+                            desc="Converting haplotypes to merged FASTA",
+                            leave=False,
+                            disable=not verbose):
+                    for name, seq in hap_seqs[tx_id].items():
+                        if strip is not None:
+                            seq = seq.replace(strip, '')
+                        f.write(f'>{tx_id}\t{name}\n{seq}\n')
+            finally:
+                f.close()
+        return fasta_path
+    else:
+        fasta_paths = {}
+        for tx_id in tqdm(hap_seqs.keys(),
+                            desc="Converting haplotypes to split FASTAs",
+                            leave=False,
+                            disable=not verbose):
+
+            # Define the path to the split FASTA file
+            fasta_path = os.path.join(save_dir, f"{tx_id}.fasta")
+            if compress:
+                fasta_path = f"{fasta_path}.gz"
+                
+            fasta_paths[tx_id] = fasta_path
+
+            # Check if the split FASTA file exists
+            if not os.path.exists(fasta_path) or force:
+
+                # Open file with gzip if needed
+                if compress:
+                    import gzip
+                    f = gzip.open(fasta_path, 'wt')
+                else:
+                    f = open(fasta_path, 'w')
+                    
+                # Write the split FASTA file
+                try:
+                    for name, seq in hap_seqs[tx_id].items():
+                        if strip is not None:
+                            seq = seq.replace(strip, '')
+                        f.write(f'>{name}\n{seq}\n')
+                finally:
+                    f.close()
+        return fasta_paths
 
 
 def get_haplotype_samples(haplotypes=None, 
@@ -1992,3 +2137,118 @@ def haplosaurus_dataloader(tx_ids,
                                  preprocess=preprocess,
                                  key=key)
     return hap_df
+
+
+def get_haplotype_diffs(haplotypes,
+                        key='protein_haplotypes',
+                        as_df=True,
+                        verbose=True):
+    """
+    Extract diffs (variants present in the haplotype sequence) 
+    from a haplotype dictionary and return a DataFrame.
+    
+    Args:
+        haplotypes: Dictionary containing haplotype information
+        key: The key in the haplotype dictionary containing the haplotype information
+        verbose: Whether to print verbose output
+
+    Returns:
+        pandas.DataFrame: DataFrame containing haplotype diffs
+    """
+
+    # Create a list to store all rows
+    rows = []
+
+    for tx_id in tqdm(list(haplotypes.keys()), 
+                    desc="Extracting haplotype diffs",
+                    leave=False):
+        for hap in haplotypes[tx_id][key]:
+            if 'diffs' not in hap:
+                continue
+            hap_diffs = hap['diffs']
+            if len(hap_diffs) > 0:
+                # For each diff in the list, create a separate row
+                for diff in hap_diffs:
+                    # Create a base dictionary with ENST and haplotype
+                    row_dict = {
+                        'ENST': tx_id,
+                        'haplotype': hap['name']
+                    }
+                    row_dict.update(diff)
+                    rows.append(row_dict)
+
+    if as_df:
+        # Create dataframe directly from the list of dictionaries
+        diff_df = pd.DataFrame.from_records(rows)
+
+        if verbose:
+            print(f"{len(diff_df)} diffs from {len(haplotypes)} haplotypes extracted")
+
+    return diff_df
+
+
+def add_haplotype_diffs(df,
+                        haplotype_col='haplotype',
+                        enst_col='ENST',
+                        haplotypes=None,
+                        hap_diffs=None,
+                        key='protein_haplotypes',
+                        prefix='diff_',
+                        columns=['diff_polyphen_prediction','diff_sift_prediction'],
+                        force=False,
+                        verbose=True):
+    """
+    Add haplotype diffs to a DataFrame.
+    
+    Args:
+        df: DataFrame to add haplotype diffs to
+        haplotype_col: Column name containing haplotype information
+        haplotypes: Dictionary containing haplotype information
+        hap_diffs: DataFrame containing haplotype diffs
+        key: The key in the haplotype dictionary containing the haplotype information
+        prefix: Prefix for the haplotype diff columns
+        force: Whether to force overwriting existing haplotype diff columns
+        verbose: Whether to print verbose output
+
+    Returns:
+        DataFrame with haplotype diffs added
+    """
+    # Check for existing diff cols
+    if any(df.columns.str.startswith(prefix)):
+        if not force:
+            return df
+        else:
+            if verbose:
+                print(f"Overwriting existing haplotype diff column '{prefix}'")
+            # Delete existing diff columns
+            df = df.drop(columns=[c for c in df.columns if c.startswith(prefix) or c in ['diff']])
+    
+    if hap_diffs is None:
+        if haplotypes is None:
+            haplotypes = get_haplotypes(tx_ids=df[enst_col].unique(),
+                                        key=key,
+                                        verbose=verbose, 
+                                        cache_only=True)
+        hap_diffs = get_haplotype_diffs(haplotypes,
+                                        key=key,
+                                        verbose=verbose)
+    # Make sure all columns start with the prefix
+    hap_diffs.columns = [prefix+col if not col.startswith(prefix) and col not in ['ENST','haplotype','diff'] else col for col in hap_diffs.columns]
+    
+    # Pivot the hap_diffs DataFrame
+    columns = ['diff_polyphen_prediction'] #'diff_polyphen_prediction'
+    hap_diffs_pivot = hap_diffs.groupby(['haplotype',*columns])['diff'].count().reset_index().sort_values('diff', ascending=False).pivot(
+        index='haplotype', 
+        columns=columns, 
+        values='diff'
+        ).add_prefix(prefix).fillna(0)
+    
+    df = df.merge(hap_diffs_pivot,
+                  left_on=haplotype_col,
+                  right_on='haplotype',
+                  how='left')
+     # Fill NA for diff columns only
+    df = df.fillna({col: 0 for col in df.columns if col.startswith(prefix)})
+
+    return df
+    

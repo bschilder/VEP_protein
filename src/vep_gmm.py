@@ -1,0 +1,639 @@
+import numpy as np
+import matplotlib.pyplot as plt
+import seaborn as sns
+from tqdm import tqdm
+import pandas as pd
+
+import src.utils as utils
+import src.haplosaurus as hs
+
+
+def train_vep_gmm(vep_df, 
+                    groupby_cols=['model_location', 'protein', 'scoring_strategy'],
+                    plot=True):
+    """
+    Train Gaussian Mixture Models to find decision boundaries between pathogenic and benign variants
+    
+    Parameters:
+    -----------
+    vep_df : pd.DataFrame
+        DataFrame containing VEP data
+    groupby_cols : list
+        List of columns to group by
+    plot : bool
+        Whether to plot the results
+    Returns:
+    --------
+    pd.DataFrame
+        DataFrame containing GMM results
+    """
+    from sklearn.mixture import GaussianMixture
+    from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score, roc_auc_score
+
+    # Group data by model, protein, and scoring strategy
+    model_groups = vep_df.groupby(groupby_cols)
+
+    # Store results
+    gmm_results = []
+
+    # Process each group
+    for (model, protein, scoring), group_data in tqdm(model_groups,
+                                                      desc="Training GMMs",
+                                                      total=len(model_groups)):
+        # Filter for variants with clear clinical significance (benign/likely_benign vs path/likely_path)
+        filtered_data = group_data[group_data['clinsig'].isin(['benign', 'likely_benign', 'path', 'likely_path'])]
+        
+        # Skip if we don't have enough data or if we don't have both classes
+        if len(filtered_data) < 10:
+            continue
+        
+        # Create binary labels (0 for benign, 1 for pathogenic)
+        filtered_data['binary_label'] = filtered_data['clinsig'].apply(
+            lambda x: 1 if x in ['path', 'likely_path'] else 0
+        )
+        
+        # Check if we have both classes
+        if filtered_data['binary_label'].nunique() < 2:
+            continue
+        
+        # Prepare data for GMM - drop NaN values to avoid ValueError
+        filtered_data_no_nan = filtered_data.dropna(subset=['VEP'])
+        
+        # Skip if we don't have enough data after dropping NaNs
+        if len(filtered_data_no_nan) < 10:
+            continue
+        
+        X = filtered_data_no_nan['VEP'].values.reshape(-1, 1)
+        y_true = filtered_data_no_nan['binary_label'].values
+        
+        # Train GMM with 2 components
+        try:
+            gmm = GaussianMixture(n_components=2, random_state=42)
+            gmm.fit(X)
+            
+            # Get predicted cluster assignments
+            y_pred_cluster = gmm.predict(X)
+            
+            # Determine which cluster corresponds to pathogenic variants
+            # We'll check which cluster has a higher proportion of pathogenic variants
+            cluster_0_path_ratio = np.mean(y_true[y_pred_cluster == 0])
+            cluster_1_path_ratio = np.mean(y_true[y_pred_cluster == 1])
+            
+            # Map clusters to binary labels (0 for benign, 1 for pathogenic)
+            if cluster_0_path_ratio > cluster_1_path_ratio:
+                y_pred = y_pred_cluster
+            else:
+                y_pred = 1 - y_pred_cluster
+            
+            # Calculate metrics
+            accuracy = accuracy_score(y_true, y_pred)
+            precision = precision_score(y_true, y_pred, zero_division=0)
+            recall = recall_score(y_true, y_pred, zero_division=0)
+            f1 = f1_score(y_true, y_pred, zero_division=0)
+            
+            # Calculate AUC if possible
+            try:
+                # Get probabilities for the pathogenic class
+                probs = gmm.predict_proba(X)
+                # Determine which column corresponds to the pathogenic class
+                if cluster_0_path_ratio > cluster_1_path_ratio:
+                    path_prob_col = 0
+                else:
+                    path_prob_col = 1
+                auc = roc_auc_score(y_true, probs[:, path_prob_col])
+            except:
+                auc = np.nan
+            
+            # Find the decision boundary
+            means = gmm.means_.flatten()
+            variances = gmm.covariances_.flatten()
+            weights = gmm.weights_
+            
+            # Store results
+            gmm_results.append({
+                'model': model,
+                'protein': protein,
+                'scoring_strategy': scoring,
+                'accuracy': accuracy,
+                'precision': precision,
+                'recall': recall,
+                'f1': f1,
+                'auc': auc,
+                'benign_count': sum(y_true == 0),
+                'path_count': sum(y_true == 1),
+                'mean_0': means[0],
+                'mean_1': means[1],
+                'var_0': variances[0],
+                'var_1': variances[1],
+                'weight_0': weights[0],
+                'weight_1': weights[1]
+            })
+        except Exception as e:
+            print(f"Error processing {protein} with {model}: {str(e)}")
+            continue
+
+    # Convert to DataFrame
+    gmm_df = pd.DataFrame(gmm_results)
+
+    if plot:
+        plot_vep_gmm(gmm_df, vep_df)
+
+    return gmm_df
+
+
+def _get_example_data(gmm_df, vep_df):
+    if len(gmm_df) > 0:
+       # Get the model with the highest accuracy
+        best_model_idx = gmm_df['accuracy'].idxmax()
+        best_model = gmm_df.loc[best_model_idx]
+        
+        # Filter data for this model
+        example_data = vep_df[(vep_df['protein'] == best_model['protein']) & 
+                            (vep_df['model_location'] == best_model['model']) &
+                            (vep_df['scoring_strategy'] == best_model['scoring_strategy']) &
+                            (vep_df['clinsig'].isin(['benign', 'likely_benign', 'path', 'likely_path']))]
+        
+        # Drop NaN values
+        example_data = example_data.dropna(subset=['VEP'])
+        
+        # Create binary labels
+        example_data['binary_label'] = example_data['clinsig'].apply(
+            lambda x: 1 if x in ['path', 'likely_path'] else 0
+        )
+
+        return best_model, example_data
+    else:
+        print("No valid GMM models could be created. Check your data for sufficient non-NaN values.")
+
+
+def plot_vep_gmm(gmm_df, vep_df):
+    # Display summary
+    if len(gmm_df) > 0:
+        print(f"Total model-protein-scoring combinations with GMM models: {len(gmm_df)}")
+        print(f"Average accuracy: {gmm_df['accuracy'].mean():.4f}")
+        print(f"Average AUC: {gmm_df['auc'].mean():.4f}")
+
+        # Display top performing models
+        print("\nTop 10 models by accuracy:")
+        print(gmm_df.sort_values('accuracy', ascending=False).head(10))
+
+        # Visualize an example
+        if len(gmm_df) > 0:
+            best_model, example_data = _get_example_data(gmm_df, vep_df)
+            
+            # Create plot
+            plt.figure(figsize=(12, 6))
+            
+            # Plot histograms
+            sns.histplot(data=example_data, 
+                         x='VEP', 
+                         hue='binary_label', 
+                         palette={'0': 'blue', '1': 'red'}, 
+                         bins=30, 
+                         element='step', 
+                         common_norm=False, 
+                         stat='density')
+            
+            # Plot GMM distributions
+            x = np.linspace(example_data['VEP'].min() - 1, example_data['VEP'].max() + 1, 1000)
+            
+            # Function to calculate Gaussian PDF
+            def gaussian_pdf(x, mean, var, weight):
+                return weight * np.exp(-(x - mean)**2 / (2 * var)) / np.sqrt(2 * np.pi * var)
+            
+            # Plot each Gaussian component
+            plt.plot(x, gaussian_pdf(x, best_model['mean_0'], best_model['var_0'], best_model['weight_0']), 
+                    'k--', linewidth=2, label='GMM Component 1')
+            plt.plot(x, gaussian_pdf(x, best_model['mean_1'], best_model['var_1'], best_model['weight_1']), 
+                    'k-.', linewidth=2, label='GMM Component 2')
+            
+            # Add title and labels
+            plt.title(f"GMM for {best_model['protein']} ({example_data['mutant'].nunique()} variants)\nModel: {best_model['model']}, Accuracy: {best_model['accuracy']:.4f}, AUC: {best_model['auc']:.4f}")
+            plt.xlabel("Variant Effect Prediction (VEP)")
+            plt.ylabel("Density")
+            plt.legend(title="")
+            plt.tight_layout()
+            plt.show()
+    else:
+        print("No valid GMM models could be created. Check your data for sufficient non-NaN values.")
+
+
+def get_example_data_for_decision_boundary(boundary_crossing_df, vep_df, top_n=3):
+    variant_data_list = []
+    for i, (_, row) in enumerate(boundary_crossing_df.sort_values('crossing_proportion', ascending=False).head(top_n).iterrows()):
+        protein, mutant = row['protein'], row['mutant']
+        variant_data = vep_df[(vep_df['protein'] == protein) & (vep_df['mutant'] == mutant)]
+        variant_data = hs.add_haplotype_freqs(variant_data, verbose=False) 
+        variant_data['Top Superpopulation'] = variant_data['top_superpop'].str.split(':').str[-1]
+        variant_data['decision_boundary'] = row['decision_boundary']
+        
+        variant_data_list.append(variant_data)
+    return variant_data_list
+
+def plot_decision_boundaries(boundary_crossing_df,
+                             vep_df, 
+                             gmm_df, 
+                             top_n=3):
+    """
+    Plot decision boundaries for each protein
+    """
+    print(f"Found {len(boundary_crossing_df)} variants across {boundary_crossing_df['protein'].nunique()} proteins that cross decision boundaries in different haplotypes")
+        
+   
+    # Filter to only path variants
+    # boundary_crossing_df = boundary_crossing_df.loc[boundary_crossing_df['clinsig'] == 'path']
+    
+    # Display the top variants with the most balanced crossing
+    print("\nTop variants with most balanced boundary crossing:")
+    print(boundary_crossing_df.sort_values('crossing_proportion', ascending=False).head(10))
+    
+    # Plot a few examples
+    if len(boundary_crossing_df) > 0:
+        fig, axes = plt.subplots(min(3, len(boundary_crossing_df)), 1, figsize=(10, 3*min(3, len(boundary_crossing_df))),
+                                constrained_layout=True)
+        if len(boundary_crossing_df) == 1:
+            axes = [axes]  # Make axes iterable if there's only one subplot
+        
+        # For storing unique handles and labels
+        all_handles, all_labels = [], []
+        ref_handle_added = False
+        variant_data_list = get_example_data_for_decision_boundary(boundary_crossing_df, vep_df, top_n=top_n)
+            
+        for i, variant_data in enumerate(variant_data_list):
+            protein, mutant = variant_data['protein'].iloc[0], variant_data['mutant'].iloc[0]
+            variant_data = hs.add_haplotype_freqs(variant_data, verbose=False) 
+            variant_data['Top Superpopulation'] = variant_data['top_superpop'].str.split(':').str[-1]
+
+            # Plot VEP scores for each haplotype
+            ax = axes[i]
+            scatter = sns.scatterplot(data=variant_data, 
+                            x='VEP',
+                            y="freq_1000GENOMES:phase_3:ALL",
+                            hue="Top Superpopulation",
+                            palette=utils.get_superpop_palette(),
+                            ax=ax, alpha=0.85, 
+                            size="top_superpop_freq",
+                            sizes=(20, 200)  # Set a fixed range for sizes
+                            )
+            
+            # Add decision boundary line
+            ax.axvline(x=variant_data['decision_boundary'].iloc[0], color='red', linestyle='--')
+            
+            ax.set_title(f"{protein}; {mutant} ({variant_data['clinsig'].iloc[0]}); Haplotypes: {variant_data['haplotype'].nunique()}")
+            ax.set_xlabel("VEP Score")
+            
+            # Add text annotation for decision boundary
+            ax.text(variant_data['decision_boundary'].iloc[0] + 0.1, 0.95, f"Decision Boundary: {variant_data['decision_boundary'].iloc[0]:.2f}", 
+                transform=ax.get_xaxis_transform(), va='top', color='red')
+            
+            # Get GMM stats for this protein
+            if protein in gmm_df['protein'].to_list():
+                gmm_df_protein = gmm_df.loc[gmm_df['protein'] == protein]
+                # Add GMM model stats to the plot
+                stats_text = (f"GMM Stats\n"
+                            f"Accuracy: {gmm_df_protein['accuracy'].iloc[0]:.3f}\n"
+                            f"Precision: {gmm_df_protein['precision'].iloc[0]:.3f}\n"
+                            f"Recall: {gmm_df_protein['recall'].iloc[0]:.3f}\n"
+                            f"AUC: {gmm_df_protein['auc'].iloc[0]:.3f}")
+                ax.text(0.02, 1-0.02, stats_text, transform=ax.transAxes, 
+                    fontsize=9, va='top', bbox=dict(boxstyle='round', 
+                                                        facecolor='white', 
+                                                        alpha=0.7))
+            
+            # Mark reference haplotypes with a black ring
+            ref_haplotypes = variant_data[variant_data['is_ref'] == True]
+            if not ref_haplotypes.empty:
+                ref_scatter = ax.scatter(ref_haplotypes['VEP'], 
+                        ref_haplotypes["freq_1000GENOMES:phase_3:ALL"],
+                        s=ref_haplotypes["top_superpop_freq"]*100 + 50,  # Slightly larger than the original points
+                        facecolors='none', 
+                        edgecolors='black', 
+                        linewidth=1,
+                        label='Reference Haplotype')
+                
+                # Add the reference haplotype to the legend handles only once
+                if not ref_handle_added:
+                    all_handles.append(ref_scatter)
+                    all_labels.append('Reference Haplotype')
+                    ref_handle_added = True
+            
+            # Get handles and labels for the legend before removing it
+            handles, labels = ax.get_legend_handles_labels()
+            
+            # Remove the size legend entries (they'll be added separately)
+            size_handles = []
+            size_labels = []
+            non_size_handles = []
+            non_size_labels = []
+            
+            for h, l in zip(handles, labels):
+                if l not in all_labels and l != "top_superpop_freq":
+                    if isinstance(l, float) or l.replace('.', '', 1).isdigit():
+                        # This is a size entry
+                        size_handles.append(h)
+                        size_labels.append(l)
+                    else:
+                        # This is a regular entry
+                        non_size_handles.append(h)
+                        non_size_labels.append(l)
+                        all_handles.append(h)
+                        all_labels.append(l)
+            
+            # Remove legend from individual subplots
+            if ax.get_legend() is not None:
+                ax.get_legend().remove()
+        
+        # Create a single legend for the entire figure
+        if all_handles and all_labels:
+            fig.legend(all_handles, all_labels, loc='center right', 
+                    title='Top Superpopulation', bbox_to_anchor=(1.2, 0.5))
+            
+            # Add a separate size legend with sorted values
+            if size_handles and size_labels:
+                # Convert labels to floats and sort
+                size_values = [(float(label), handle) for label, handle in zip(size_labels, size_handles)]
+                size_values.sort()  # Sort by frequency value
+                
+                # Create new handles and labels in sorted order
+                sorted_size_handles = [item[1] for item in size_values]
+                sorted_size_labels = [f"{item[0]:.2f}" for item in size_values]
+                
+                # Add size legend below the main legend
+                size_legend = fig.legend(sorted_size_handles, sorted_size_labels, 
+                                        loc='center right', 
+                                        title='Top Superpopulation\nFrequency', 
+                                        bbox_to_anchor=(1.17, 0.2))
+        
+        add_arrows = False
+        if add_arrows:
+            # Add arrows indicating pathogenic and benign directions
+            fig.subplots_adjust(bottom=0.15)  # Make room for the arrows
+            arrow_ax = fig.add_axes([0.2, 0.02, 0.6, 0.05])  # [left, bottom, width, height]
+            arrow_ax.set_xlim(0, 1)
+            arrow_ax.set_ylim(0, 1)
+            arrow_ax.axis('off')
+            
+            # Add left arrow (Pathogenic)
+            y_pos = 0.25
+            arrow_ax.annotate('Pathogenic', xy=(0.1, y_pos), xytext=(0.4, y_pos),
+                            arrowprops=dict(arrowstyle='->', color='red', lw=2, alpha=0.5),
+                            ha='right', va='center', fontsize=12, fontweight='bold')
+            
+            # Add right arrow (Benign)
+            arrow_ax.annotate('Benign', xy=(0.8, y_pos), xytext=(0.6, y_pos),
+                            arrowprops=dict(arrowstyle='->', color='blue', lw=2, alpha=0.5),
+                            ha='left', va='center', fontsize=12, fontweight='bold')
+                    
+        plt.tight_layout()
+        plt.show()
+
+def get_decision_boundaries(gmm_df, vep_df, plot=True):
+    """
+    Find variants where the VEP crosses the decision boundary for some haplotypes but not others
+
+    Parameters:
+    -----------
+    gmm_df : pd.DataFrame
+        DataFrame containing GMM results
+    vep_df : pd.DataFrame
+        DataFrame containing VEP data
+    plot : bool
+        Whether to plot the decision boundaries
+    Returns:
+    --------
+    pd.DataFrame
+        DataFrame containing decision boundaries
+    """
+    # First, we need to get the decision boundary for each protein from the GMM models
+
+    # Create a dictionary to store decision boundaries for each protein
+    protein_decision_boundaries = {}
+    variant_groups = vep_df.groupby(['protein', 'mutant'])
+
+    # For each protein with a valid GMM model, calculate the decision boundary
+    for _, model in gmm_df.iterrows():
+        protein = model['protein']
+        
+        # Calculate the decision boundary where the two Gaussian components have equal probability
+        # This is where: weight_0 * pdf_0(x) = weight_1 * pdf_1(x)
+        # Solving this equation for x gives us the decision boundary
+        
+        # Extract model parameters
+        mean_0, var_0, weight_0 = model['mean_0'], model['var_0'], model['weight_0']
+        mean_1, var_1, weight_1 = model['mean_1'], model['var_1'], model['weight_1']
+        
+        # Skip if any parameter is invalid
+        if np.isnan(mean_0) or np.isnan(mean_1) or np.isnan(var_0) or np.isnan(var_1) or var_0 <= 0 or var_1 <= 0:
+            continue
+        
+        # Calculate coefficients for the quadratic equation: ax^2 + bx + c = 0
+        a = 1/(2*var_0) - 1/(2*var_1)
+        b = mean_1/var_1 - mean_0/var_0
+        c = mean_0**2/(2*var_0) - mean_1**2/(2*var_1) + np.log(weight_1/weight_0) + np.log(np.sqrt(var_0)/np.sqrt(var_1))
+        
+        # If a is very close to zero, the boundary is linear
+        if abs(a) < 1e-10:
+            if b != 0:
+                boundary = -c/b
+                protein_decision_boundaries[protein] = boundary
+        else:
+            # Solve the quadratic equation
+            discriminant = b**2 - 4*a*c
+            if discriminant >= 0:
+                # Choose the boundary that's between the two means
+                x1 = (-b + np.sqrt(discriminant)) / (2*a)
+                x2 = (-b - np.sqrt(discriminant)) / (2*a)
+                
+                # Select the boundary that's between the two means
+                if min(mean_0, mean_1) <= x1 <= max(mean_0, mean_1):
+                    protein_decision_boundaries[protein] = x1
+                elif min(mean_0, mean_1) <= x2 <= max(mean_0, mean_1):
+                    protein_decision_boundaries[protein] = x2
+                else:
+                    # If neither solution is between the means, take the one closer to the midpoint
+                    midpoint = (mean_0 + mean_1) / 2
+                    protein_decision_boundaries[protein] = x1 if abs(x1 - midpoint) < abs(x2 - midpoint) else x2
+
+    # Now find variants where some haplotypes cross the decision boundary while others don't
+    boundary_crossing_variants = []
+
+    for (protein, mutant), variant_data in tqdm(variant_groups, 
+                                                total=len(variant_groups), 
+                                                desc="Finding boundary-crossing variants"):
+        # Skip if we don't have a decision boundary for this protein
+        if protein not in protein_decision_boundaries:
+            continue
+        
+        # Get the decision boundary for this protein
+        boundary = protein_decision_boundaries[protein]
+        
+        # Get VEP scores for this variant across different haplotypes
+        vep_scores = variant_data['VEP'].dropna().tolist()
+        
+        # Skip if we don't have at least two valid VEP scores
+        if len(vep_scores) < 2:
+            continue
+        
+        # Check if some scores are above the boundary and some are below
+        scores_above = [score for score in vep_scores if score > boundary]
+        scores_below = [score for score in vep_scores if score <= boundary]
+        
+        if scores_above and scores_below:
+            # This variant crosses the decision boundary
+            clinsig = variant_data['clinsig'].iloc[0]
+            
+            boundary_crossing_variants.append({
+                'protein': protein,
+                'mutant': mutant,
+                'clinsig': clinsig,
+                'decision_boundary': boundary,
+                'min_vep': min(vep_scores),
+                'max_vep': max(vep_scores),
+                'vep_range': max(vep_scores) - min(vep_scores),
+                'haplotype_count': len(vep_scores),
+                'scores_above_boundary': len(scores_above),
+                'scores_below_boundary': len(scores_below)
+            })
+
+    # Convert to DataFrame
+    boundary_crossing_df = pd.DataFrame(boundary_crossing_variants)
+     # Sort by the proportion of scores that cross the boundary
+    boundary_crossing_df['crossing_proportion'] = boundary_crossing_df.apply(
+        lambda x: min(x['scores_above_boundary'], x['scores_below_boundary']) / x['haplotype_count'], axis=1
+    )
+    # Display summary of boundary-crossing variants
+    if not boundary_crossing_df.empty and plot:
+        plot_decision_boundaries(boundary_crossing_df, vep_df, gmm_df)
+    else:
+        print("No variants found that cross decision boundaries in different haplotypes")
+    return boundary_crossing_df
+
+
+def get_overlapping_variants(vep_df, plot=True):
+    """
+    Find variants where the VEP crosses the decision boundary for some haplotypes but not others
+    """
+    # First, group by protein and mutant to get all haplotypes for each variant
+    variant_groups = vep_df.groupby(['protein', 'mutant'])
+
+    # Store results
+    overlap_results = []
+
+    for (protein, mutant), variant_data in tqdm(variant_groups,
+                                                total=len(variant_groups)):
+        # Skip if we only have one haplotype for this variant
+        if len(variant_data) <= 1:
+            continue
+        
+        # Get the clinical significance of this variant
+        clinsig = variant_data['clinsig'].iloc[0]
+        
+        # Skip if not clearly benign or pathogenic
+        if clinsig not in ['benign', 'path']:
+            continue
+        
+        # Get VEP scores for this variant across different haplotypes
+        vep_scores = variant_data['VEP'].dropna().tolist()
+        
+        # Skip if we don't have at least two valid VEP scores
+        if len(vep_scores) < 2:
+            continue
+        
+        # Calculate min and max VEP for this variant
+        min_vep = min(vep_scores)
+        max_vep = max(vep_scores)
+        
+        # Store the range information
+        overlap_results.append({
+            'protein': protein,
+            'mutant': mutant,
+            'clinsig': clinsig,
+            'min_vep': min_vep,
+            'max_vep': max_vep,
+            'vep_range': max_vep - min_vep,
+            'haplotype_count': len(vep_scores)
+        })
+
+    # Convert to DataFrame
+    haplotype_effect_df = pd.DataFrame(overlap_results)
+
+    # Now check for overlaps between benign and pathogenic variants
+    if len(haplotype_effect_df) > 0:
+        # Get ranges for benign and pathogenic variants
+        benign_ranges = haplotype_effect_df[haplotype_effect_df['clinsig'] == 'benign']
+        path_ranges = haplotype_effect_df[haplotype_effect_df['clinsig'] == 'path']
+        
+        # Find proteins that have both benign and pathogenic variants
+        common_proteins = set(benign_ranges['protein']) & set(path_ranges['protein'])
+        
+        # Check for each protein if there's overlap in some cases but not others
+        overlap_proteins = []
+        
+        for protein in common_proteins:
+            protein_benign = benign_ranges[benign_ranges['protein'] == protein]
+            protein_path = path_ranges[path_ranges['protein'] == protein]
+            
+            # Get overall min/max for benign and pathogenic
+            benign_min = protein_benign['min_vep'].min()
+            benign_max = protein_benign['max_vep'].max()
+            path_min = protein_path['min_vep'].min()
+            path_max = protein_path['max_vep'].max()
+            
+            # Check if there's overlap in the overall ranges
+            overall_overlap = (benign_min <= path_max) and (path_min <= benign_max)
+            
+            # Check individual variants for non-overlapping cases
+            has_non_overlapping = False
+            
+            for _, benign_var in protein_benign.iterrows():
+                for _, path_var in protein_path.iterrows():
+                    # Check if these specific variants don't overlap
+                    if (benign_var['max_vep'] < path_var['min_vep']) or (path_var['max_vep'] < benign_var['min_vep']):
+                        has_non_overlapping = True
+                        break
+                if has_non_overlapping:
+                    break
+            
+            # If we have overall overlap but also some non-overlapping cases
+            if overall_overlap and has_non_overlapping:
+                overlap_proteins.append({
+                    'protein': protein,
+                    'benign_variants': len(protein_benign),
+                    'path_variants': len(protein_path),
+                    'benign_min': benign_min,
+                    'benign_max': benign_max,
+                    'path_min': path_min,
+                    'path_max': path_max
+                })
+        
+        # Convert to DataFrame
+        haplotype_overlap_df = pd.DataFrame(overlap_proteins)
+        
+        # Display results
+        if len(haplotype_overlap_df) > 0:
+            print(f"\nFound {len(haplotype_overlap_df)} proteins where VEP of pathogenic variants overlaps with benign variants for some haplotypes but not others:")
+            print(haplotype_overlap_df)
+            
+            # Visualize an example if available
+            if len(haplotype_overlap_df) > 0 and plot:
+                example_protein = haplotype_overlap_df['protein'].iloc[0]
+                
+                # Get data for this protein
+                protein_data = vep_df[vep_df['protein'] == example_protein]
+                
+                # Plot distribution by haplotype
+                plt.figure(figsize=(12, 6))
+                sns.stripplot(data=protein_data, x='haplotype', y='VEP', hue='clinsig', 
+                            palette=utils.get_clinsig_palette(), dodge=True)
+                plt.title(f"VEP Distribution by Haplotype for {example_protein}")
+                plt.xlabel("Haplotype")
+                plt.ylabel("Variant Effect Prediction (VEP)")
+                plt.xticks(rotation=90)
+                plt.legend(title="Clinical Significance")
+                plt.tight_layout()
+                plt.show()
+        else:
+            print("\nNo proteins found where VEP of pathogenic variants overlaps with benign variants for some haplotypes but not others.")
+    else:
+        print("\nInsufficient data to analyze haplotype-specific VEP overlaps.")
+
