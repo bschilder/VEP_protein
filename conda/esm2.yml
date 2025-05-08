@@ -17,6 +17,8 @@ dependencies:
     - scikit-learn
     - pyarrow
     - conda-forge::biopython
+    # - bioconda::clustalw # Optional, for consensus sequence
+    # - bioconda::clustalo # Optional, for consensus sequence
     - setuptools==69.5.1
     - cmake
     - owlready2

@@ -499,7 +499,7 @@ def list_haplotypes(cache: Path = Path(DIR_DICT["haplotypes"]),
     else:
         if verbose:
             print(f"Found haplotypes of {len(files)} transcripts in: '{cache}'")
-        return [x.split('/')[-1].split('.')[0] for x in files]
+        return [x.split(os.sep)[-1].split('.')[0] for x in files]
     
  
 def get_haplotypes(tx_ids: Optional[List[str]] = None,
@@ -1759,6 +1759,7 @@ def get_offset_length(seq_name,
         return base_offset
 
 def haplotypes_to_fasta(haplotypes=None, 
+                        tx_ids=None,
                         key='protein_haplotypes',
                         aligned=1,
                         add_haplotype_names=2,
@@ -1786,36 +1787,36 @@ def haplotypes_to_fasta(haplotypes=None,
     Returns:
         Dict[str, str]: A dictionary of tx_ids to FASTA file paths.
     """ 
+    
+    if tx_ids is not None:
+        tx_ids = utils.as_list(tx_ids)
 
-    # Check if merged FASTA file exists
-    if merge:
-        fasta_path = os.path.join(save_dir, f"haplotypes.fasta")
+    # Convert haplotype sequences to merged FASTA format
+    if merge: 
+        os.makedirs(save_dir, exist_ok=True)
+
+        # Define the path to the merged FASTA file
+        fasta_path = os.path.join(save_dir, f"{key}.fasta")
+        if compress:
+            fasta_path = f"{fasta_path}.gz"
         if os.path.exists(fasta_path) and not force:
             if verbose:
                 print(f"Returning merged FASTA file: {fasta_path}")
             return fasta_path
 
-    # Get haplotypes if not provided
-    if haplotypes is None:
-        haplotypes = get_haplotypes(cache_only=True, 
-                                    verbose=verbose)
-        
-    # Get haplotype sequences
-    hap_seqs = get_haplotype_seqs(haplotypes, 
-                                  key=key,
-                                  aligned=aligned,
-                                  add_haplotype_names=add_haplotype_names,
-                                  add_missing_ref=add_missing_ref,
-                                  verbose=verbose>1)
-    
-    # Convert haplotype sequences to FASTA format 
-    os.makedirs(save_dir, exist_ok=True)
-    if merge:
-        
-        # Define the path to the merged FASTA file
-        fasta_path = os.path.join(save_dir, f"{key}.fasta")
-        if compress:
-            fasta_path = f"{fasta_path}.gz"
+        # Get haplotypes if not provided
+        if haplotypes is None:
+            haplotypes = get_haplotypes(tx_ids=tx_ids,
+                                        cache_only=True, 
+                                        verbose=verbose)
+            
+        # Get haplotype sequences
+        hap_seqs = get_haplotype_seqs(haplotypes, 
+                                      key=key,
+                                      aligned=aligned,
+                                      add_haplotype_names=add_haplotype_names,
+                                      add_missing_ref=add_missing_ref,
+                                      verbose=verbose>1)
             
         # Check if the merged FASTA file exists
         if not os.path.exists(fasta_path) or force:
@@ -1840,15 +1841,25 @@ def haplotypes_to_fasta(haplotypes=None,
             finally:
                 f.close()
         return fasta_path
+
+    # Convert haplotype sequences to split FASTA format
     else:
+        os.makedirs(os.path.join(save_dir, "split"), exist_ok=True)
         fasta_paths = {}
-        for tx_id in tqdm(hap_seqs.keys(),
+        if haplotypes is None:
+            tx_ids = utils.intersect(tx_ids, 
+                                     list_haplotypes(verbose=verbose)) 
+        else:
+            tx_ids = utils.intersect(tx_ids, 
+                                     list(haplotypes.keys()))
+
+        for tx_id in tqdm(tx_ids,
                             desc="Converting haplotypes to split FASTAs",
                             leave=False,
                             disable=not verbose):
 
             # Define the path to the split FASTA file
-            fasta_path = os.path.join(save_dir, f"{tx_id}.fasta")
+            fasta_path = os.path.join(save_dir, "split", f"{tx_id}.fasta")
             if compress:
                 fasta_path = f"{fasta_path}.gz"
                 
@@ -1856,6 +1867,24 @@ def haplotypes_to_fasta(haplotypes=None,
 
             # Check if the split FASTA file exists
             if not os.path.exists(fasta_path) or force:
+
+                # Get haplotypes if not provided
+                if haplotypes is None:
+                    haplotypes_tx = get_haplotypes(tx_ids=[tx_id],
+                                                   cache_only=True,
+                                                   leave=False,
+                                                   verbose=verbose>1)
+                else:
+                    haplotypes_tx = haplotypes
+                    
+                # Get haplotype sequences
+                hap_seqs = get_haplotype_seqs(haplotypes_tx, 
+                                              key=key,
+                                              aligned=aligned,
+                                              add_haplotype_names=add_haplotype_names,
+                                              add_missing_ref=add_missing_ref,
+                                              verbose=verbose>1)
+                
 
                 # Open file with gzip if needed
                 if compress:
