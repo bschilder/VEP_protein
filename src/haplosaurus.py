@@ -847,11 +847,38 @@ def get_haplotype_counts(haplotypes: Dict[str, Dict],
 
     return {k:len(haplotypes[k][key]) for k in haplotypes.keys()}
 
-def get_haplotype_freqs(haplotypes: Dict[str, Dict],
+
+def pop_freqs_to_df(pop_freqs: Dict[str, Dict]) -> pd.DataFrame:
+    """Convert population frequencies to a dataframe.
+    """
+    # Flatten the pop_freqs dictionary by adding tx_id to each haplotype's frequency data
+    flattened_pop_freqs = {}
+    for tx_id, haplotypes in pop_freqs.items():
+        for haplotype_name, frequencies in haplotypes.items():
+            # Create a copy of the frequencies dictionary and add tx_id
+            haplotype_data = frequencies.copy()
+            haplotype_data['tx_id'] = tx_id
+            
+            # Store in the flattened dictionary with haplotype name as key
+            flattened_pop_freqs[haplotype_name] = haplotype_data
+
+    df = pd.DataFrame(flattened_pop_freqs).T
+    # Move tx_id to the first column
+    df = df.reset_index(drop=False)
+    df = df.rename(columns={'index': 'haplotype'})
+    df = df.loc[:, ['tx_id', 'haplotype'] + [col for col in df.columns if col != 'tx_id' and col != 'haplotype']]
+    return df
+
+
+def get_haplotype_freqs(haplotypes: Optional[Dict[str, Dict]] = None,
                         tx_ids: Optional[List[str]] = None) -> Tuple[Dict[str, Dict], Set[str], Set[str]]:
     pop_freqs = {}
     populations = set()
     tx_ids = utils.as_list(tx_ids)
+
+    if haplotypes is None:
+        haplotypes = get_haplotypes(tx_ids=tx_ids)
+
     for tx_id in tqdm(haplotypes.keys(),
                       desc="Getting haplotype frequencies",
                       leave=False):
@@ -1787,7 +1814,7 @@ def haplotypes_to_fasta(haplotypes=None,
     Returns:
         Dict[str, str]: A dictionary of tx_ids to FASTA file paths.
     """ 
-    
+
     if tx_ids is not None:
         tx_ids = utils.as_list(tx_ids)
 
