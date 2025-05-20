@@ -509,9 +509,9 @@ def _check_model_seq_len(seqs: list,
         seqs = bp.get_sequence(seqs)
         seq_len = len(bp.preprocess_sequence(seqs))
 
-    # Check if sequence length is compatible with model constraints
+    # Check if sequence length is compatible with model constraints, substract 2 from max_len due to EOS/BOS tokens
     for model, max_len in model_checks.items():
-        if model_location.startswith(model) and seq_len > max_len:
+        if model_location.startswith(model) and seq_len > (max_len - 2):
             if verbose:
                 print(f"Skipping {pid} {seq_name} because sequence is too long for model '{model_location}' ({seq_len} > {max_len})")
             return False
