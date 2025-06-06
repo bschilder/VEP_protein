@@ -565,14 +565,14 @@ def get_token_probs(model,
     else:
         raise ValueError(f"Invalid method: {method}")
     
-def compute_pppl_mlm_redundant(sequence,
-                     model_name=None, 
-                     tokenizer=None, 
-                     model=None):
+def compute_pppl_transformers(sequence,
+                            model_name=None, 
+                            tokenizer=None, 
+                            model=None):
     """
     Compute the pseudo-perplexity (PPPL) of a sequence using a masked language model (MLM).
-    Sources:
-        
+    This is an alternative implementation to compute_ppl that uses the transformers library instead.
+    Source:
         https://huggingface.co/blog/AmelieSchreiber/mutation-scoring#example-usage
 
     Args:
@@ -618,60 +618,7 @@ def compute_pppl_mlm_redundant(sequence,
     # Compute and return the pseudo-perplexity
     pppl = torch.exp(-avg_log_likelihood)
     return pppl.item()
-
-def compute_pppl_mlm(sequence, 
-                     batch_tokens,
-                     model, 
-                     alphabet, 
-                     progress_bar=True): 
-    """
-    Compute the pseudo-perplexity (PPPL) of a sequence using a masked language model (MLM).
-    Sources:
-        
-        https://huggingface.co/blog/AmelieSchreiber/mutation-scoring#example-usage
-
-    Args:
-        sequence: str
-            The sequence to compute the PPPL of
-        batch_tokens: torch.Tensor
-            The batch of tokens to compute the PPPL of
-        model: torch.nn.Module
-            The model to compute the PPPL of
-        alphabet: Alphabet
-            The alphabet to compute the PPPL of
-        progress_bar: bool
-            Whether to show a progress bar
-
-    Returns:
-        float
-            The PPPL of the sequence
-
-    Example:
-        sequence = "MALWMRLLPLLALLALWGPDPAAA"
-        batch_tokens = torch.randint(0, 20, (1, 100))
-        model = model
-        alphabet = alphabet
-        progress_bar = True
-    """
-    # Compute the log probabilities of the sequence
-    log_probs = get_token_probs(model=model,
-                               batch_tokens=batch_tokens,
-                               alphabet=alphabet,
-                               method="pseudo-ppl",
-                               sequence=sequence,
-                               progress_bar=progress_bar)
-    
-    # Calculate the average log likelihood per token
-    log_likelihood = sum(log_probs)
-    avg_log_likelihood = log_likelihood / len(log_probs)
-
-    # Compute and return the pseudo-perplexity
-    pppl = torch.exp(-torch.tensor(avg_log_likelihood))
-    return pppl.item()
-
-
-
-
+ 
 def compute_pppl(sequence, 
                  batch_tokens,
                  model, 
