@@ -103,7 +103,8 @@ def compute_mt_wt_score(row,
                             pos=pos, 
                             ref=0, 
                             query=1, 
-                            return_as='pos_idx')[0]  
+                            return_as='pos_idx',
+                            verbose=verbose)[0]  
     else:
         # Assumes there are no indels in non-reference sequence (i.e. an MSA with gaps)
         idx = pos - offset_idx
@@ -114,7 +115,8 @@ def compute_mt_wt_score(row,
                        pos=pos, 
                        expected=wt, 
                        type="wildtype", 
-                       is_ref=is_ref)
+                       is_ref=is_ref,
+                       verbose=verbose)
     except AssertionError as e:
         warnings.warn(e)
         return None
@@ -221,7 +223,8 @@ def get_mutation_indices(df,
 def mutate_sequence(mutation_row,
                     sequence, 
                     offset_idx=1, 
-                    is_ref=True):
+                    is_ref=True,
+                    verbose=True):
     
     # Check the wildtype sequence
     wt, pos, mt = _parse_mutation_row(mutation_row)
@@ -229,7 +232,8 @@ def mutate_sequence(mutation_row,
                    pos=pos, 
                    expected=wt, 
                    type="wildtype", 
-                   is_ref=is_ref)
+                   is_ref=is_ref,
+                   verbose=verbose)
     
     # Get the index of the mutation in the non-reference sequence (even if there are indels in the non-reference sequence)
     if bp.is_msa(sequence):
@@ -237,7 +241,8 @@ def mutate_sequence(mutation_row,
                             pos=pos, 
                             ref=0, 
                             query=1, 
-                            return_as='pos_idx')[0]  
+                            return_as='pos_idx',
+                            verbose=verbose)[0]  
     else:
         # Assumes there are no indels in non-reference sequence (i.e. an MSA with gaps)
         idx = pos - offset_idx
@@ -259,7 +264,8 @@ def mutate_sequence(mutation_row,
                    expected=mt, 
                    type="mutant", 
                    invert=True,
-                   is_ref=is_ref)
+                   is_ref=is_ref,
+                   verbose=verbose)
 
     # Return 
     # - wt: wildtype allele

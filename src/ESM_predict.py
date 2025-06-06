@@ -186,18 +186,21 @@ def compute_pppl(row,
                  alphabet, 
                  offset_idx, 
                  is_ref,
-                 progress_bar=True):
+                 progress_bar=True,
+                 verbose=True):
     
     # Check that the protein sequence in the mutation row is the same as the ref sequence in MSA
     vm.check_ref_sequence(row=row,
                           sequence=sequence,
-                          error=False)
+                          error=False,
+                          verbose=verbose)
     
     # Mutate the sequence 
     wt, pos, idx, mt, sequence_mut = vm.mutate_sequence(mutation_row=row[mutation_col], 
                                                         sequence=sequence, 
                                                         offset_idx=offset_idx, 
-                                                        is_ref=is_ref)
+                                                        is_ref=is_ref,
+                                                        verbose=verbose)
     sequence_mut = bp.preprocess_sequence(sequence_mut)
     
     
@@ -208,10 +211,10 @@ def compute_pppl(row,
 
         # Return the perplexity score using ESM model
     tuple_mean_sum_pppl = vm.compute_pppl(model=model,
-                            batch_tokens=batch_tokens,
-                            sequence=sequence_mut,
-                            alphabet=alphabet,
-                            progress_bar=progress_bar)
+                                          batch_tokens=batch_tokens,
+                                          sequence=sequence_mut,
+                                          alphabet=alphabet,
+                                          progress_bar=progress_bar)
     return tuple_mean_sum_pppl
 
 def fix_esm_model_name(model_name):
