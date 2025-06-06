@@ -27,24 +27,25 @@ def check_sequence(sequence,
         if invert:
             if subseq == expected:
                 if verbose:
-                    warnings.warn(f"The listed {type} is already present in the provided sequence at position {pos}: {subseq} == {expected} in {sequence}")
+                    msg = f"The listed {type} is already present in the provided sequence at position {pos}: {subseq} == {expected}"
+                    warnings.warn(msg)
         else:
-            txt = f"The listed {type} does not match the provided sequence at position {pos}: {subseq} != {expected} in {sequence}"
+            msg = f"The listed {type} does not match the provided sequence at position {pos}: {subseq} != {expected}"
             if error:
-                assert subseq == expected, txt
+                assert subseq == expected, msg
             else:
                 if subseq != expected:
                     if verbose:
-                        warnings.warn(txt)
+                        warnings.warn(msg)
     else:
-        txt = f"The listed {type} does not match the provided sequence at position {pos}: {sequence[pos]} != {expected} in {sequence}"
+        msg = f"The listed {type} does not match the provided sequence at position {pos}: {sequence[pos]} != {expected}"
         if is_ref:
             if error:
-                assert bp.preprocess_sequence(sequence)[pos-1] == expected, txt
+                assert bp.preprocess_sequence(sequence)[pos-1] == expected, msg
             else:
                 if bp.preprocess_sequence(sequence)[pos-1] != expected:
                     if verbose:
-                        warnings.warn(txt) 
+                        warnings.warn(msg) 
 
 def _parse_mutation_row(mutation_row):
     # parses "G195S" into wt="G", pos=195, mt="S"
