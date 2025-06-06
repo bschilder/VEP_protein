@@ -859,20 +859,20 @@ def get_candidate_proteins():
     candidate_proteins['Gene'] = candidate_proteins['Gene'].str.strip()
     return candidate_proteins
 
-def _make_palette(values,
-                  palette):
+def make_palette(values,
+                 palette):
     # sample 4 colors from a palette that goes from hot to cold
     import seaborn as sns
     return dict(zip(values, sns.color_palette(palette, len(values)).as_hex()))
 
 def get_clinsig_palette(values=['path', 'likely_path', 'likely_benign', 'benign'],
                          palette='bwr_r'):
-    return _make_palette(values, palette) 
+    return make_palette(values, palette) 
 
 
 def get_superpop_palette(values=['AFR', 'AMR', 'EAS', 'EUR', 'SAS'],
                         palette='Set2'):
-    return _make_palette(values, palette)
+    return make_palette(values, palette)
 
 
 def list_to_df(lst,
@@ -1312,3 +1312,11 @@ def prepare_umap_data(vep_df,
         pivot_df[col] = combined_df.groupby(groupby_cols)[col].first()
     
     return pivot_df
+
+def sort_by_clinsig(df,
+                    clinsig_col='clinsig',
+                    clinsig_order=get_clinsig_palette().keys(),
+                    ascending=True
+                    ):
+    
+    return  df.sort_values(by=clinsig_col, key=lambda x: x.map({k:i for i,k in enumerate(list(clinsig_order))}), ascending=ascending)

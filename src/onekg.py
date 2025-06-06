@@ -58,7 +58,7 @@ def get_ftp_dict():
         '1000_Genomes_on_GRCh38':{
             'description': 'VCFs from low-coverage WGS with SNVs and INDELs. Details: https://www.internationalgenome.org/data-portal/data-collection/grch38',
             'url': "http://ftp.1000genomes.ebi.ac.uk/vol1/ftp/data_collections/1000_genomes_project/release/20190312_biallelic_SNV_and_INDEL/",
-            'manifest': 'https://ftp.1000genomes.ebi.ac.uk/vol1/ftp/phase3/20130502.phase3.analysis.sequence.index',
+            'manifest': 'https://ftp.1000genomes.ebi.ac.uk/vol1/ftp/data_collections/1000_genomes_project/release/20190312_biallelic_SNV_and_INDEL/20190312_biallelic_SNV_and_INDEL_MANIFEST.txt',
             'manifest_cols': ['fname', 'size', 'md5'],
             'manifest_sep': '\t',
             'pop': 'https://ftp.1000genomes.ebi.ac.uk/vol1/ftp/phase3/20131219.populations.tsv',
@@ -77,8 +77,11 @@ def get_ftp_dict():
         }
     }
 
+def _get_cache_dir(key):
+    return os.path.join(config.DATA_DIR, key, "vcf")
+
 def list_remote_vcf(key=DEFAULT_KEY, 
-                    cache=os.path.join(config.DATA_DIR, "1KG", "vcf"), 
+                    cache=None, 
                     add_key_subdir=True):
     """
     Create a manifest of 1000 Genomes Project VCF files available for download.
@@ -105,6 +108,9 @@ def list_remote_vcf(key=DEFAULT_KEY,
         - local: Local path where file will be saved
     """
 
+    if cache is None:
+        cache = _get_cache_dir(key)
+
     # Get ftp dict
     ftp_dict = get_ftp_dict()
     ftp = ftp_dict[key]['url']
@@ -114,25 +120,28 @@ def list_remote_vcf(key=DEFAULT_KEY,
     else:
         # Get manifest file
         manifest = pd.read_csv(ftp_dict[key]['manifest'], 
-                            sep = ftp_dict[key]['manifest_sep'], 
-                            names = ftp_dict[key]['manifest_cols'],
-                                header = None)
+                               sep = ftp_dict[key]['manifest_sep'], 
+                               names = ftp_dict[key]['manifest_cols'],
+                               header = None)
     if key == "1000_Genomes_on_GRCh38":
         manifest = manifest.loc[manifest['fname'].str.contains("ALL.chr")]
+        manifest.insert(0, "chrom", manifest["fname"].str.split(".").str[2])
     
     manifest['url'] = ftp+manifest['fname'].str.replace(r'^\./', '', regex=True)
     
     # Add key subdirectory if requested
     if add_key_subdir:
-        manifest['local'] = os.path.abspath(cache) + os.sep + key + os.sep + manifest['fname'].str.replace(r'^\.', '', regex=True)
-    else:
-        manifest['local'] = os.path.abspath(cache)+manifest['fname'].str.replace(r'^\.', '', regex=True)
+        # print(cache)
+        manifest['local'] = cache+manifest['fname'].str.replace(r'^\.', '', regex=True)
+    
+    manifest["key"] = key
+
     return manifest
 
-def download_vcfs(key=DEFAULT_KEY,
+def download_vcfs(key=None,
                   manifest=None,
                   skip_checks=False,
-                  cache=os.path.join(config.DATA_DIR, "1KG", "vcf"),
+                  cache=None,
                   timeout=60*30,
                   as_dict=True,
                   verbose=False):
@@ -154,9 +163,16 @@ def download_vcfs(key=DEFAULT_KEY,
     pooch.HTTPDownloader.timeout = timeout
     pooch.HTTPDownloader.max_retries = 3  # Retry failed downloads up to 3 times
     
+    # Get manifest
     if manifest is None:
         manifest = list_remote_vcf(key=key, 
                                    cache=cache)
+    else:
+        key = manifest["key"].iloc[0]
+
+    # Get cache directory
+    cache = _get_cache_dir(key)
+    os.makedirs(cache, exist_ok=True)
     
     local_files = {}
     for _, row in tqdm(manifest.iterrows(), 
@@ -174,7 +190,13 @@ def download_vcfs(key=DEFAULT_KEY,
                 known_hash="md5:"+row['md5'] if 'md5' in row else None,
                 progressbar=True
             )
-        local_files[os.path.basename(row['local'])] = local_file
+        # Construct file key
+        fkey = row["chrom"]
+        if local_file.endswith(".tbi"):
+            fkey = fkey+"_idx"
+        else:
+            fkey = fkey+"_vcf"
+        local_files[fkey] = local_file
     
     if as_dict:
         return local_files
@@ -421,3 +443,7 @@ def _get_hgdp_manifest():
     return pd.DataFrame(data, columns=["fname", "datetime", "size"])
 
 
+def _rm_subplot_prefixes(g):
+    g.set_titles(row_template='{row_name}', 
+                 col_template='{col_name}')  # Only show model name without prefix
+    

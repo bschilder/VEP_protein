@@ -136,7 +136,11 @@ def train_vep_gmm(vep_df,
     gmm_df = pd.DataFrame(gmm_results)
 
     if plot:
-        plot_vep_gmm(gmm_df, vep_df)
+        try:
+            plot_vep_gmm(gmm_df, vep_df)
+        except Exception as e:
+            print(f"Error plotting {protein} with {model}: {str(e)}")
+            
 
     return gmm_df
 
@@ -188,7 +192,7 @@ def plot_vep_gmm(gmm_df, vep_df):
             sns.histplot(data=example_data, 
                          x='VEP', 
                          hue='binary_label', 
-                         palette={'0': 'blue', '1': 'red'}, 
+                         palette={np.int64(0): 'blue', np.int64(1): 'red'}, 
                          bins=30, 
                          element='step', 
                          common_norm=False, 

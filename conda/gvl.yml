@@ -1,38 +1,14 @@
 name: gvl
 channels:
-  - bioconda
   - conda-forge
-  - pytorch
-  - nvidia
-  - nodefaults
-dependencies:
-  - attrs
-  - ipykernel
-  - cyvcf2 # optional
-  - dask
-  - htslib
-  - joblib
-  - natsort
-  - numba
-  - numpy
-  - pandas
-  - pandera
-  - polars>=1.22.0
-  - pgenlib # optional
-  - poetry
-  - pyensembl
-  - pyarrow
-  - pybigwig
-  - pysam
-  - python>=3.8.*
-  - pytorch
-  - pytorch-cuda
-  - torchvision 
-  - torchaudio
-  - ray-default
-  - tabix
-  - tiledb::tiledbvcf-py # optional
+dependencies: 
+  - python<3.13,>=3.10 
   - xarray
+  - bioconda::pgenlib
+  - bioconda::htslib
   - pip
   - pip:
-    - genvarloader
+    - ipykernel
+    - cmake
+    - git+https://github.com/mcvickerlab/GenVarLoader.git
+  
