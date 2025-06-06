@@ -186,12 +186,9 @@ def compute_pppl(row,
                  alphabet, 
                  offset_idx, 
                  is_ref,
-                 method=["esm", "mlm"],
                  progress_bar=True):
     
-    method = utils.one_only(method)
-    
-    # Check that the protein sequence in the mutation row is the same as the sref equence in MSA
+    # Check that the protein sequence in the mutation row is the same as the ref sequence in MSA
     vm.check_ref_sequence(row=row,
                           sequence=sequence,
                           error=False)
@@ -203,25 +200,20 @@ def compute_pppl(row,
                                                         is_ref=is_ref)
     sequence_mut = bp.preprocess_sequence(sequence_mut)
     
-    if method == "esm":
-        # Encode the mutated sequence
-        (batch_labels, 
+    
+    # Encode the mutated sequence using ESM alphabet
+    (batch_labels, 
         batch_strs, 
         batch_tokens) = seq_to_batch(sequence_mut, alphabet)
 
-        # Return the sum of the log probabilities 
-        pppl = vm.compute_pppl(model=model,
-                                batch_tokens=batch_tokens,
-                                sequence=sequence_mut,
-                                alphabet=alphabet,
-                                progress_bar=progress_bar) 
-    elif method == "mlm":
-        # Return the mean of the log probabilities
-        pppl = vm.compute_pppl_mlm(sequence=sequence_mut,
-                                    model_name=model
-                                    )
-    return pppl
- 
+        # Return the perplexity score using ESM model
+    tuple_mean_sum_pppl = vm.compute_pppl(model=model,
+                            batch_tokens=batch_tokens,
+                            sequence=sequence_mut,
+                            alphabet=alphabet,
+                            progress_bar=progress_bar)
+    return tuple_mean_sum_pppl
+
 def fix_esm_model_name(model_name):
     if model_name == "esm1v_t33_650M_UR90S":
         model_name = "esm1v_t33_650M_UR90S_1"
@@ -459,9 +451,7 @@ def main(
                 tqdm.pandas(desc=f"Computing 'pseudo-ppl' for {model_name}", 
                             disable=not progress_bar,
                             leave=False)
-                # Create a new row for WT sequence
-                # df = df.append(pd.DataFrame(columns=[model_loc]))
-
+                
                 df.loc[:,model_name] = df.progress_apply(
                     lambda row: compute_pppl(
                         row=row,
@@ -473,23 +463,6 @@ def main(
                         is_ref=is_ref,
                         progress_bar=progress_bar>1
                     ),
-                    axis=1,
-                )
-            elif scoring_strategy == "pseudo-ppl-mlm":
-                tqdm.pandas(desc=f"Computing 'pseudo-ppl-mlm' for {model_name}", 
-                            disable=not progress_bar,
-                            leave=False)
-                df.loc[:,model_name] = df.progress_apply(
-                    lambda row: compute_pppl(
-                        row=row,
-                        mutation_col=mutation_col,
-                        sequence=sequence,
-                        model_name=model_name,
-                        model=model,
-                        method="mlm",
-                        is_ref=is_ref,
-                        progress_bar=progress_bar>1
-                        ),
                     axis=1,
                 )
     # Check if there are any predictions
