@@ -464,7 +464,8 @@ def main(
                         alphabet=alphabet,
                         offset_idx=offset_idx,
                         is_ref=is_ref,
-                        progress_bar=progress_bar>1
+                        progress_bar=progress_bar>1,
+                        verbose=verbose
                     ),
                     axis=1,
                 )
