@@ -1202,10 +1202,22 @@ def filter_haplotype_freqs(df: pd.DataFrame,
 
 
 def get_haplotype_names(haplotypes: Dict[str, Dict],
-                        key: str = 'protein_haplotypes') -> Dict[str, List[str]]:
+                        key: str = 'protein_haplotypes',
+                        as_df: bool = False,
+                        split_variants: bool = False) -> Dict[str, List[str]]:
     """
     Get the haplotype name from the haplotype entry,
         or a dict of haplotype entries indexed by transcript ID.
+
+    Args:
+        haplotypes (Dict[str, Dict]): The haplotypes to get the names from.
+        key (str, optional): The key to use to get the names from. Defaults to 'protein_haplotypes'.
+        as_df (bool, optional): Whether to return a dataframe. Defaults to False.
+        split_variants (bool, optional): Whether to split the variants into separate rows. Defaults to False.
+
+    Returns:
+        Dict[str, List[str]]: The haplotype names.
+        pd.DataFrame: The haplotype names as a dataframe if as_df is True.
     """
     if key in haplotypes.keys():
         return [x['name'].split('_')[0] for x in haplotypes[key]]
@@ -1214,6 +1226,16 @@ def get_haplotype_names(haplotypes: Dict[str, Dict],
                       desc="Getting haplotype names",
                       leave=False):
         hap_names[tx_id] = [x['name'].split('_')[0] for x in haplotypes[tx_id][key]]
+
+    if as_df:
+        df = pd.DataFrame([(tx_id, hap) for tx_id, haps in hap_names.items() for hap in haps], 
+                            columns=['ENST', 'haplotype'])
+        if split_variants:
+            df.loc[:,["variant"]] = df['haplotype'].str.split(':').str[1].str.split(",")
+            df = df.explode("variant")
+            
+        return df
+    
     return hap_names
 
 def get_haplotype_protein_ids(haplotypes: Dict[str, Dict], 
@@ -2125,6 +2147,7 @@ def haplotypes_to_samples(haplotypes=None,
                           key='protein_haplotypes',
                           as_df=False,
                           add_sample_metadata=False,
+                          add_ref=True,
                           verbose=False):
     """
     Process transcript haplotypes and organize sequences by sample.
@@ -2222,9 +2245,19 @@ def haplotypes_to_samples(haplotypes=None,
             df = pd.DataFrame(tx_sample_seqs).reset_index(names="sample").melt(id_vars="sample", 
                                                                               var_name="ENST_haplosaurus", 
                                                                               value_name="haplotype").explode("haplotype")
+            # Add sample metadata
             if add_sample_metadata:
                 sample_metadata = og.get_sample_metadata()[["Individual ID","Gender","Population","Super Population"]].rename(columns={"Individual ID":"sample"})
                 df = df.merge(sample_metadata, on=["sample"], how="left") 
+
+            # Add REF haplotypes to the dataframe
+            if add_ref:
+                haps_to_ref = df.loc[df['haplotype'].str.endswith(":REF")]
+                haps_to_ref.loc[:,["sample","Population","Super Population"]] = "REF"
+                haps_to_ref.loc[:,["Gender"]] = pd.NA
+                haps_to_ref= haps_to_ref.drop_duplicates()
+                df = pd.concat([haps_to_ref, df])
+
             return df
     else:
         return tx_sample_seqs

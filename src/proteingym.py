@@ -242,6 +242,7 @@ def merge_resources(keys=['clinical_ProteinGym_substitutions.zip',
                     redecompress = False,
                     map_ids = True,
                     rows_per_id = None,
+                    include_raw = True,
                     force = False,
                     verbose = False): 
 
@@ -249,6 +250,7 @@ def merge_resources(keys=['clinical_ProteinGym_substitutions.zip',
     pg_resources = download_resources(
         resources_df.loc[resources_df['Filename'].isin(keys)],
         remove_zip = False, 
+        include_raw = include_raw,
         redecompress = redecompress,
         error=False)
     proteins_df = pd.DataFrame(
@@ -441,3 +443,11 @@ def map_proteingym_ids(df=None,
     assert set(select_cols).issubset(pg_annot.columns), f"Output columns {select_cols} not found in mapping file"
     df = df.merge(pg_annot, on=input_col, how='left')
     return df
+
+
+CLINSIG_MAP = {'Pathogenic':'path', 
+                'Pathogenic/Likely_pathogenic':'likely_path', 
+                'Likely_pathogenic':'likely_path',
+                'Likely_benign':'likely_benign', 
+                'Benign':'benign', 
+                'Benign/Likely_benign':'likely_benign'}

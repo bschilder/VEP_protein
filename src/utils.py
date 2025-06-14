@@ -872,7 +872,9 @@ def get_clinsig_palette(values=['path', 'likely_path', 'likely_benign', 'benign'
 
 def get_superpop_palette(values=['AFR', 'AMR', 'EAS', 'EUR', 'SAS'],
                         palette='Set2'):
-    return make_palette(values, palette)
+    cmap = make_palette(values, palette)
+    cmap["REF"] = "grey"
+    return cmap
 
 
 def list_to_df(lst,

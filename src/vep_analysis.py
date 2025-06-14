@@ -1,3 +1,4 @@
+from cProfile import label
 import os
 import glob
 import pandas as pd
@@ -7,7 +8,7 @@ import pathlib
 from tqdm.auto import tqdm
 import seaborn as sns
 import matplotlib.pyplot as plt
-from typing import Dict, List
+from typing import Dict, List, Literal
 # Local imports
 import src.config as config
 import src.utils as utils
@@ -15,6 +16,7 @@ import src.haplosaurus as hs
 import src.proteingym as pg
 import src.biopython as bp
 import src.vep_pipeline as vp
+import src.onekg as og
 
 def get_models_palette(palette="husl"):
     models = vp.list_models()
@@ -30,11 +32,26 @@ def _get_default_save_dir(save_dir):
     return save_dir
 
 def list_vep_files(save_dir = None,
-                   scoring_strategy = ["wt-marginals", "masked-marginals", "pseudo-ppl"],
-                    save_format = "parquet",
-                    as_df=False,
-                    verbose=True
+                   scoring_strategy: Literal["wt-marginals", "masked-marginals", "pseudo-ppl"] = ["*"],
+                   save_format = "parquet",
+                   as_df=False,
+                   verbose=True
                    ):
+    """List VEP files in the specified directory.
+    
+    Args:
+        save_dir (str, optional): Directory to search for VEP files. If None, uses default directory.
+        scoring_strategy (list): List of scoring strategies to search for. Options are "wt-marginals", 
+            "masked-marginals", or "pseudo-ppl". 
+            By default, all files ending in ".parquet" are returned (i.g. scoring_strategy=["*"]).
+        save_format (str, optional): File format to search for. Defaults to "parquet".
+        as_df (bool, optional): If True, returns results as a DataFrame with additional metadata columns.
+            If False, returns list of file paths. Defaults to False.
+        verbose (bool, optional): If True, prints summary statistics. Defaults to True.
+    
+    Returns:
+        Union[pd.DataFrame, List[str]]: Either a DataFrame containing file paths and metadata, or a list of file paths.
+    """
     
     save_dir = _get_default_save_dir(save_dir)
     
@@ -44,6 +61,8 @@ def list_vep_files(save_dir = None,
          all_files.extend(glob.glob(
             os.path.join(save_dir, "**", f"{ss}.{save_format}"), 
                          recursive=True))
+    if len(all_files) == 0:
+        raise FileNotFoundError(f"No {save_format} files found in {save_dir}")
     if as_df:
         df = pd.DataFrame({'file': all_files})
         df['protein'] = df['file'].str.split(os.sep).str[-4]
@@ -81,19 +100,27 @@ def merge_vep(save_dir = None,
               max_files=None,
               verbose=True
               ):
-    """
-    Merge VEP results from multiple files into a single dataframe.
+    """Merge VEP results from multiple files into a single dataframe.
     
     Args:
-        save_dir (str): Directory containing the VEP results
-        scoring_strategy (str or list): Scoring strategy to use
-        add_model_location (bool): Whether to add the model location to the dataframe
-        add_filename (bool): Whether to add the filename to the dataframe
+        save_dir (str, optional): Directory containing the VEP results. If None, uses default directory.
+        haplotypes (list, optional): List of haplotypes to include. If None, includes all haplotypes.
+        vep_files (list or pd.DataFrame, optional): List of VEP files or DataFrame with file paths to process.
+        save_format (str, optional): Format of saved files. Defaults to "parquet".
+        scoring_strategy (list, optional): List of scoring strategies to include. Defaults to ["wt-marginals", "masked-marginals", "pseudo-ppl"].
+        add_model_location (bool, optional): Whether to add model location column. Defaults to True.
+        rename_model_location_col (bool, optional): Whether to rename model location column. Defaults to True.
+        add_variant_set (bool, optional): Whether to add variant set column. Defaults to True.
+        add_filename (bool, optional): Whether to add filename column. Defaults to False.
+        add_metadata (bool, optional): Whether to add metadata columns. Defaults to True.
+        target_namespace (str, optional): Target namespace for column mapping. Defaults to None.
+        col_map (dict, optional): Dictionary mapping input columns to output columns. Defaults to {'mutant': 'mutant', 'protein': 'protein'}.
+        max_files (int, optional): Maximum number of files to process. Defaults to None.
+        verbose (bool, optional): Whether to print progress information. Defaults to True.
 
     Returns:
-        merged_df (pd.DataFrame): Merged dataframe containing all VEP results
+        pd.DataFrame: Merged dataframe containing all VEP results with specified columns and metadata.
     """
-    
     save_dir = _get_default_save_dir(save_dir)
 
     if rename_model_location_col and not add_model_location:
@@ -754,12 +781,13 @@ def _add_legend(g,
 def plot_vep_density(vep_df, 
                      clinsig_col = 'clinsig',
                      palette = utils.get_clinsig_palette(),
+                     plot_func = sns.kdeplot,
                      model_location = None,
                      alpha=.8,
                      height=3,
                      aspect=1.5,
                      title_y=1,
-                     legend_y=0.9,
+                     legend_y=0.9, 
                      col='scoring_strategy',
                      row='model_location',
                      sharex=True,
@@ -795,7 +823,7 @@ def plot_vep_density(vep_df,
                     margin_titles=True)
 
     # Plot KDE
-    g.map_dataframe(sns.kdeplot, 
+    g.map_dataframe(plot_func, 
                     x='VEP',
                     hue=clinsig_col,
                     fill=True,
@@ -843,6 +871,7 @@ def plot_vep_variance(vep_df,
                       hue='clinsig',
                       row='model_location',
                       col='scoring_strategy',
+                      normalize=True,
                       func=sns.boxplot,
                       palette = utils.get_clinsig_palette(),
                       height=3,
@@ -854,8 +883,9 @@ def plot_vep_variance(vep_df,
                       **kwargs):
     # Get filtered data
     vep_df = vep_df.copy()
-    vep_df["VEP_norm"] = vep_df["VEP"]/vep_df["VEP"].max()
-    vep_variance = vep_df.groupby(groupby_cols)['VEP_norm'].var().reset_index().rename(columns={'VEP_norm':'VEP_variance'})
+    if normalize:
+        vep_df["VEP"] = vep_df["VEP"]/vep_df["VEP"].max() 
+    vep_variance = vep_df.groupby(groupby_cols)["VEP"].var().reset_index().rename(columns={"VEP":'VEP_variance'})
 
     # Sort by scoring strategy
     vep_variance = utils.sort_by_reverse_string(vep_variance, 
@@ -2066,6 +2096,7 @@ def plot_vep_by_superpop(vep_df,
                          within_site_var,
                          i=0,
                          vep_col = "VEP",
+                         variant_col="mutant",
                          haps_to_samples=None,
                          unique_haplotypes: bool = True,
                          remove_zeros: bool = False,
@@ -2082,21 +2113,23 @@ def plot_vep_by_superpop(vep_df,
         row_selected = within_site_var.drop_duplicates(
             subset=[vep_col]
         ).iloc[i]
-        plot_df = vep_df.loc[(vep_df["mutant"]==row_selected["mutant"]) & (vep_df["protein"]==row_selected["protein"])]
+        plot_df = vep_df.loc[(vep_df[variant_col]==row_selected[variant_col]) & (vep_df["protein"]==row_selected["protein"])]
     else:
         plot_df = vep_df.copy()
         
     plot_df = hs.add_haplotype_freqs(plot_df) 
+    
     if remove_zeros:
         plot_df = plot_df.loc[plot_df["VEP"]!=0]
-    multi_mutant = plot_df["mutant"].nunique() > 1
-    mutant_palette = utils.make_palette(plot_df["mutant"].unique(), 
+    
+    multi_mutant = plot_df[variant_col].nunique() > 1
+    mutant_palette = utils.make_palette(plot_df[variant_col].unique(), 
                                         palette=palette)
     if hue=="clinsig":
         cmap = utils.get_clinsig_palette()
     elif hue=="Super Population":
         cmap = utils.get_superpop_palette()
-    elif hue=="mutant":
+    elif hue==variant_col:
         cmap = mutant_palette
     else:
         raise ValueError(f"Invalid hue: {hue}")
@@ -2106,7 +2139,7 @@ def plot_vep_by_superpop(vep_df,
         cmap_top = utils.get_clinsig_palette()
     elif hue_top=="Super Population":
         cmap_top = utils.get_superpop_palette()
-    elif hue_top=="mutant":
+    elif hue_top==variant_col:
         cmap_top = mutant_palette
     else:
         raise ValueError(f"Invalid hue_top: {hue_top}")
@@ -2115,7 +2148,7 @@ def plot_vep_by_superpop(vep_df,
         cmap_bottom = utils.get_clinsig_palette()
     elif hue_bottom=="Super Population":
         cmap_bottom = utils.get_superpop_palette()
-    elif hue_bottom=="mutant":
+    elif hue_bottom==variant_col:
         cmap_bottom = mutant_palette
     else:
         raise ValueError(f"Invalid hue_bottom: {hue_bottom}")
@@ -2163,7 +2196,7 @@ def plot_vep_by_superpop(vep_df,
     ax0 = fig.add_subplot(gs[0])
     
     # Add REF lines and labels first
-    ref_rows = plot_df.loc[plot_df["is_ref"]==True].groupby(["model_location","scoring_strategy","protein","mutant"]).head(1)
+    ref_rows = ref_rows = plot_df.loc[plot_df["is_ref"]==True].drop_duplicates(subset=[variant_col])
     label_map = {"path":"P", "benign":"B", "likely_path":"LP", "likely_benign":"LB"}
     
     # Create a new subplot for labels above the histogram
@@ -2172,12 +2205,12 @@ def plot_vep_by_superpop(vep_df,
     
     for _, row in ref_rows.iterrows():
         ref_value = row[vep_col]
-        ax0.axvline(x=ref_value, color=mutant_palette[row["mutant"]], linestyle='--', label=row["mutant"])
-        label = row["mutant"] + " (" + label_map[row["clinsig"]] + ")" if add_clinsig_labels else row["mutant"]
+        ax0.axvline(x=ref_value, color=mutant_palette[row[variant_col]], linestyle='--', label=row[variant_col])
+        label = row[variant_col] + " (" + label_map[row["clinsig"]] + ")" if add_clinsig_labels else row[variant_col]
         # Position text in the label subplot above the histogram
         ax_labels.text(ref_value - 0.01, ax0.get_ylim()[1], 
                       label, 
-                      color=mutant_palette[row["mutant"]], 
+                      color=mutant_palette[row[variant_col]], 
                       rotation=90, 
                       va='bottom', 
                       ha='right',
@@ -2245,7 +2278,7 @@ def plot_vep_by_superpop(vep_df,
                     palette=cmap,
                     legend=True if hue=="Super Population" else False,
                     ax=ax)
-        if hue=="mutant":
+        if hue==variant_col:
             ax.text(0.02, 0.95, pop, transform=ax.transAxes, ha='left', va='top')
         else :
             ax.legend(title="Superpop", loc=legend_loc, labels=[pop])
@@ -2267,7 +2300,7 @@ def plot_vep_by_superpop(vep_df,
                     ax=ax1)
     # ax1.text(0.98, 0.95, "All Populations", transform=ax1.transAxes, ha='right', va='top')
     ax1.set_xlabel(f"Variant Effect Prediction ({vep_col})")
-    if hue_bottom=="mutant":
+    if hue_bottom==variant_col:
         ax1.set_ylabel("Proportion\nby Variant")
     elif hue_bottom=="clinsig":
         ax1.set_ylabel("Proportion\nby ClinSig")
@@ -2283,7 +2316,7 @@ def plot_vep_by_superpop(vep_df,
                     \n• Variant (Protein): {plot_df['CLNHGVS'].iloc[0]} ({plot_df['protein'].iloc[0]})\
                     \n• Disease: {row_selected['MONDO_label'].replace('_',' ')}\
                     \n• Review Status: {plot_df['CLNREVSTAT'].iloc[0].replace('_',' ')}", 
-                    y=1.02, x=0.125, ha='left')
+                    y=1.03, x=0.125, ha='left')
     else:
         plt.suptitle(f"Distribution of VEP scores by Super Population\
                      \n• Haplotypes: {plot_df['haplotype'].nunique()}\
@@ -2334,11 +2367,11 @@ def extract_id_cols(df,
         # Get results for unique values
         unique_results = extracted[i].groupby(level=0).agg(list)
         # Map back to original dataframe
-        df[term] = df[input_col].map(lambda x: unique_results.get(unique_indices[x], []))
+        df.loc[:,term] = df[input_col].map(lambda x: unique_results.get(unique_indices[x], []))
         if verbose:
             print(f"Adding {term} count column.")
         if add_counts:
-            df[f'{term}_n'] = df[term].str.len()
+            df.loc[:,f'{term}_n'] = df[term].str.len()
     
     return df
 
@@ -2349,12 +2382,469 @@ def filter_top_mutants(vep_df,
                        search_col=["CLNDN","MONDO_label"],
                        top_n=5,
                        mutants_per_group=None):
-    sub_df = vep_df.loc[vep_df[search_col[0]].str.lower().str.contains("|".join(search_terms))]
+    if search_terms is None:
+        sub_df = vep_df.copy()
+        within_site_var_sub = within_site_var.copy()
+    else:
+        sub_df = vep_df.loc[vep_df[search_col[0]].str.lower().str.contains("|".join(search_terms))]
+        within_site_var_sub = within_site_var.loc[within_site_var[search_col[1]].str.lower().str.contains("|".join(search_terms))]
 
     if mutants_per_group is not None:
-        top_mutants = within_site_var.loc[within_site_var[search_col[1]].str.lower().str.contains("|".join(search_terms))].groupby(["clinsig"]).apply(lambda x: x.head(mutants_per_group))["mutant"]
+        top_mutants = within_site_var_sub.groupby(["clinsig"]).apply(lambda x: x.head(mutants_per_group))["mutant"]
     else:
-        top_mutants = within_site_var.loc[within_site_var[search_col[1]].str.lower().str.contains("|".join(search_terms))]["mutant"].unique()[:top_n]
+        top_mutants = within_site_var_sub["mutant"].unique()[:top_n]
     print(top_mutants.shape[0],"top mutants selected")
     sub_df=  sub_df.loc[sub_df["mutant"].isin(top_mutants)]
     return sub_df
+
+
+def get_mondo_within_site_var(vep_df,
+                              groupby_cols= ["model_location",
+                                             "clinsig","protein",
+                                             "ENSP","GENEINFO",
+                                             "RS",   
+                                             "mutant",
+                                             "scoring_strategy"],
+                            input_col="CLNDISDB",
+                            search_terms=["MONDO"]
+                            ):
+    import src.owlready2 as OWL
+
+    group_col = "MONDO"
+    split_col = group_col+"_split"
+    label_col = group_col+"_label"
+
+    if split_col not in vep_df.columns or group_col not in vep_df.columns:
+        vep_df = extract_id_cols(vep_df,
+                                input_col=input_col,
+                                search_terms=search_terms)
+        vep_df.loc[:,split_col] = vep_df.loc[:,group_col].apply(lambda x: [m.replace("MONDO:MONDO:", "MONDO:") for m in x] if isinstance(x, list) else [])
+        vep_df.loc[:,group_col] = vep_df.loc[:,split_col].str.join("|")
+
+
+    if split_col not in vep_df.columns:
+        vep_df.loc[:,split_col] = vep_df.loc[:,group_col].str.split("|")
+
+
+    groupby_cols = [group_col,split_col] + groupby_cols
+    within_site_var = vep_df.explode(split_col).reset_index(drop=True).groupby(groupby_cols).agg({"VEP":"var",  "haplotype":"nunique"} ).reset_index().sort_values(by="VEP", ascending=False)
+    
+    onto = OWL.get_onto_mondo()
+    id_map = OWL.get_id_map(onto)
+    within_site_var.loc[:,label_col] = within_site_var.loc[:,split_col].map(id_map)
+
+
+    within_site_var_mean = within_site_var.groupby(["model_location",split_col,label_col]).agg({"VEP":"mean", 
+                                                                                                "mutant":"nunique", 
+                                                                                                "haplotype":"unique"}
+                                                                                                ).sort_values(by="VEP", ascending=False).reset_index()
+    within_site_var_mean.loc[:, "haplotype"] = within_site_var_mean.loc[:, "haplotype"].apply(lambda x: x[0] if len(x) > 0 else None)
+    
+    return within_site_var, within_site_var_mean
+
+
+def plot_top_mondo(within_site_var_mean,
+                   vep_col="VEP",
+                   label_col="MONDO_label",
+                   id_col="MONDO_split",
+                   hue="mutant",
+                   palette="plasma",
+                   max_label_length=70,
+                   top_n=20,
+                   figsize=(7, 8)):
+    import seaborn as sns
+    import matplotlib.pyplot as plt
+    import textwrap
+
+    plot_dat = within_site_var_mean.drop_duplicates(subset=[vep_col]).head(top_n)
+    
+    plot_dat['disease_label'] = plot_dat.apply(lambda row: textwrap.shorten(row[label_col], width=max_label_length, placeholder="...") + f" ({row[id_col]})", axis=1)
+    plt.figure(figsize=figsize) 
+    ax = sns.barplot(data=plot_dat,
+                y="disease_label", 
+                x=vep_col,
+                palette=palette,
+                hue=hue)
+    plt.legend(title="Unique variants", loc="lower right")
+    plt.xlabel("Within-variant variance (N unique variants)")
+    plt.ylabel("Disease (MONDO ID)")
+    
+    # Add site count annotations 
+    for i, row in enumerate(plot_dat.itertuples()):
+        ax.text(getattr(row, vep_col) + plot_dat[vep_col].max()*0.01, i, f"({row.site})", 
+                va='center', ha='left')
+
+def weighted_variance(data, weights):
+    """
+    Calculates the weighted variance of a dataset.
+
+    Args:
+      data: A list or NumPy array of data values.
+      weights: A list or NumPy array of weights corresponding to the data values.
+
+    Returns:
+      The weighted variance of the data.
+    """
+    data = np.array(data)
+    weights = np.array(weights)
+
+    if len(data) != len(weights):
+        raise ValueError("Data and weights must have the same length.")
+    
+    if np.any(weights < 0):
+        raise ValueError("Weights must be non-negative.")
+
+    weighted_mean = np.average(data, weights=weights)
+    variance = np.average((data - weighted_mean)**2, weights=weights)
+    
+    return variance
+ 
+def plot_vep_dms_correlation(df, 
+                             x="VEP",
+                             y="DMS_score",
+                             row="model_location",
+                             col="scoring_strategy",
+                             hue="is_ref",
+                             size="mutant",
+                             logx=False,
+                             logy=False,
+                             gene_col="gene",
+                             cmap=None,
+                             ax=None, 
+                             figsize=(6, 6)):
+    """
+    Plot correlation between VEP and DMS scores with regression line and statistics.
+    
+    Args:
+        data (pd.DataFrame): DataFrame containing VEP and DMS scores
+        ax (matplotlib.axes.Axes, optional): Axes to plot on. If None, creates new figure
+        figsize (tuple): Figure size (width, height) - only used if ax is None
+    """
+    from scipy import stats
+
+    df = df.copy()
+    if size is not None:
+        if size not in df.columns:
+            size = None
+    if cmap is None:
+        cmap = utils.make_palette(df[hue].unique().tolist(),
+                                     palette="Set2")
+    
+    if ax is None:
+        plt.figure(figsize=figsize)
+        ax = plt.gca()
+
+    if logx:
+        df[x] = np.log10(df[x])
+    if logy:
+        df[y] = np.log10(df[y])
+    
+    # Create FacetGrid for model_location
+    g = sns.FacetGrid(df, row=row, col=col, height=4, aspect=1.5)
+    
+    # Map scatterplot to each facet
+    g.map_dataframe(sns.scatterplot,
+                   x=x,
+                   y=y,
+                   hue=hue,
+                   alpha=0.5,
+                   size=size,
+                   palette=cmap)
+    
+    # Map regression line to each facet
+    g.map_dataframe(sns.regplot,
+                   x=x,
+                   y=y,
+                   scatter=False,
+                   line_kws={'color': 'red'})
+
+    # Add titles and labels
+    gene_list = df[gene_col].str.split(':').str[0].unique()
+    variant_counts = df.mutant.nunique() if pd.api.types.is_string_dtype(df.mutant) else df.mutant.sum()
+    g.fig.suptitle(f"Correlation between VEP and DMS Scores\
+              \nGene: {gene_list[0] if len(gene_list) == 1 else len(gene_list)}\
+              \nVariants: {variant_counts}", y=1.02)
+    
+    g.set_axis_labels('VEP Score', 'DMS Score')
+
+    # Calculate and add statistics for each facet
+    for (row_val, col_val), facet_data in df.groupby([row, col]):
+        # Get the corresponding axes
+        row_idx = list(df[row].unique()).index(row_val)
+        col_idx = list(df[col].unique()).index(col_val)
+        ax = g.axes[row_idx, col_idx]
+        
+        # Calculate statistics for this facet  
+        clean_data = facet_data.dropna(subset=[x, y])
+        slope, intercept, r_value, p_value, std_err = stats.linregress(clean_data[x], clean_data[y])
+        
+        # Calculate R²
+        y_pred = slope * clean_data[x] + intercept
+        residuals = clean_data[y] - y_pred
+        ss_res = np.sum(residuals ** 2)
+        ss_tot = np.sum((clean_data[y] - np.mean(clean_data[y])) ** 2)
+        r2 = 1 - (ss_res / ss_tot)
+        
+        stats_text = f'Rho: {r_value:.3f}\nR²: {r2:.3f}\np-value: {p_value:.2e}'
+        ax.text(0.05, 0.95, stats_text,
+               transform=ax.transAxes,
+               bbox=dict(facecolor='white', alpha=0.8),
+               verticalalignment='top')
+
+    if ax is None:
+        plt.tight_layout()
+        plt.show()
+
+
+
+def _get_wt_variant_mean_vep_scores(vep_prot,
+                                    haps_to_samples):
+    
+    ## Mean per-variant VEP scores  
+    var_vep_agg = vep_prot.copy().merge(haps_to_samples, on=["haplotype"], how="left").groupby(["Super Population","variant"]).agg({"VEP":"mean"}).sort_values("VEP", ascending=False).reset_index()
+    var_vep_agg = var_vep_agg.loc[var_vep_agg["Super Population"] != "REF"].pivot(index="variant", columns="Super Population", values="VEP")
+
+    # var_vep_agg = var_vep_agg.fillna(0)
+    # Normalize and invert the scale
+    var_vep_agg = (var_vep_agg - var_vep_agg.min()) / (var_vep_agg.max() - var_vep_agg.min())
+    var_vep_agg = 1 - var_vep_agg  # Invert the scale so higher values are better
+    
+    # Add ALL column after all normalization steps
+    var_vep_agg['ALL'] = var_vep_agg.mean(axis=1, skipna=True)
+    var_vep_agg = var_vep_agg[['ALL'] + [col for col in var_vep_agg.columns if col != 'ALL']]
+
+    return var_vep_agg
+
+def _get_wt_variant_mean_freqs(vep_prot,
+                               haplotypes,
+                               fillna=0):
+    
+    vep_prot = hs.add_haplotype_freqs(vep_prot, haplotypes=haplotypes)
+
+    superpops=og.get_pop()['Super Population'].dropna().unique().tolist()
+    freq_cols = ["freq_1000GENOMES:phase_3:ALL"] + [f"freq_1000GENOMES:phase_3:{pop}" for pop in superpops]
+
+    # Take the mean across individuals for each haplotype
+    var_freqs_agg = vep_prot.groupby(["haplotype","variant"]).agg(dict(zip(freq_cols, ["mean"]*len(freq_cols))))
+    # Then take the sum across haplotypes
+    var_freqs_agg = var_freqs_agg.groupby(["variant"]).agg(dict(zip(freq_cols, ["mean"]*len(freq_cols))))
+    # Remove prefix before : from all column names
+    var_freqs_agg.columns = [col.split(':')[-1] if ':' in col else col for col in var_freqs_agg.columns]
+
+    # Divide by 2 to account for the fact that we have two haplotypes?
+    # var_freqs_agg = var_freqs_agg/2 
+
+    if fillna is not None:
+        var_freqs_agg = var_freqs_agg.fillna(fillna)
+    
+    return var_freqs_agg
+
+def plot_wt_variant_vep_scores(
+    var_freqs_agg, 
+    var_vep_agg, 
+    highlight_cells=False, 
+    figsize=(13, 16), 
+    width_ratios=[6, 6]):
+    """
+    Plot two heatmaps side by side: variant frequencies and VEP scores.
+    Optionally highlight cells with values >0 in both heatmaps at the same locations.
+
+    Parameters
+    ----------
+    var_freqs_agg : pd.DataFrame
+        DataFrame of variant frequencies (variants x superpopulations).
+    vep_prot_pops : pd.DataFrame
+        DataFrame of VEP scores (variants x superpopulations).
+    highlight_cells : bool, optional
+        If True, highlight cells with values >0 in both heatmaps at the same locations.
+    figsize : tuple, optional
+        Figure size.
+    width_ratios : list, optional
+        Width ratios for the subplots.
+    """
+    import matplotlib.colors as mcolors
+    from scipy.cluster.hierarchy import linkage, dendrogram
+    from scipy.spatial.distance import pdist
+
+    # Create figure with two subplots side by side
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=figsize, gridspec_kw={'width_ratios': width_ratios})
+
+    # Cluster the y-axis labels
+    Z = linkage(pdist(var_freqs_agg), method='ward')
+    ordered_labels = var_freqs_agg.index[dendrogram(Z, no_plot=True)['leaves']]
+
+    # Prepare mask for highlighting: only highlight cells that are >0 at the same coordinates in both plots 
+    highlight_mask = None
+    if highlight_cells:
+        # Align both dataframes to the same index/columns order
+        var_freqs_agg_aligned = var_freqs_agg.reindex(index=ordered_labels, columns=var_vep_agg.columns)
+        var_vep_agg_aligned = var_vep_agg.reindex(index=ordered_labels, columns=var_vep_agg.columns)
+        # Only highlight cells where both are >0
+        highlight_mask = (
+            (var_freqs_agg_aligned != 0) & (var_vep_agg_aligned != 0) &
+            (~var_freqs_agg_aligned.isna()) & (~var_vep_agg_aligned.isna())
+        )  
+
+    # Plot frequency heatmap on left with clustered order, log color scale
+    sns.heatmap(
+        var_freqs_agg.reindex(ordered_labels),
+        annot=True,
+        fmt=".3f",
+        cmap="viridis",
+        linewidths=0.01,
+        linecolor='grey',
+        ax=ax1,
+        yticklabels=False,
+        cbar_kws={'location': 'left', 'pad': 0.04},
+        norm=mcolors.LogNorm(
+            vmin=var_freqs_agg[var_freqs_agg > 0].min().min(), 
+            vmax=var_freqs_agg.max().max()
+        )
+    )
+    ax1.set_title('Variant Frequencies')
+    ax1.set_xlabel("Superpopulation")
+
+    # Plot VEP scores on right using same order, log color scale
+    sns.heatmap(
+        var_vep_agg.reindex(ordered_labels),
+        annot=True,
+        fmt=".2f",
+        cmap="viridis",
+        linewidths=0.01,
+        linecolor='grey',
+        ax=ax2,
+        norm=mcolors.LogNorm(
+            vmin=var_vep_agg[var_vep_agg > 0].min().min(),
+            vmax=var_vep_agg.max().max()
+        )
+    )
+    ax2.set_title('Variant VEP Scores')
+    ax2.set_xlabel("Superpopulation")
+    plt.ylabel(None)
+
+    # Optionally overlay highlight rectangles for cells >0 in both plots at the same coordinates
+    if highlight_cells and highlight_mask is not None:
+        def highlight_rects(ax, mask_df):
+            for i, idx in enumerate(mask_df.index):
+                for j, col in enumerate(mask_df.columns):
+                    if mask_df.iloc[i, j]:
+                        ax.add_patch(plt.Rectangle((j, i), 1, 1, fill=False, edgecolor='red', lw=2, clip_on=False))
+        highlight_rects(ax1, highlight_mask)
+        highlight_rects(ax2, highlight_mask)
+
+    plt.tight_layout()
+    return fig, (ax1, ax2)
+
+    
+def get_wt_variant_vep_scores(vep_df,
+                               haplotypes=None,
+                               protein=None,
+                               haps_df=None,
+                               haps_to_samples=None):
+    """Calculate VEP scores and frequencies for wild-type variants and generate a heatmap plot.
+    
+    Args:
+        vep_df (pd.DataFrame): DataFrame containing VEP annotations
+        haplotypes (list): List of haplotype identifiers
+        protein (str, optional): Protein to analyze. If None, uses all proteins in vep_df
+        haps_df (pd.DataFrame, optional): DataFrame mapping haplotypes to variants
+        haps_to_samples (pd.DataFrame, optional): DataFrame mapping haplotypes to samples
+        
+    Returns:
+        tuple: (var_vep_agg, var_freqs_agg, fig) containing:
+            - vep_prot: DataFrame of VEP scores by protein and variant
+            - var_vep_agg: DataFrame of aggregated VEP scores by variant
+            - var_freqs_agg: DataFrame of variant frequencies
+            - fig: Figure object with visualization
+    """
+
+    vep_df = vep_df.copy()
+    
+    if protein is None:
+        protein = vep_df['protein'].unique().tolist()[0]
+
+    if haps_df is None:
+        haps_df = hs.get_haplotype_names(haplotypes=haplotypes, 
+                                        as_df=True)
+        haps_df.loc[:,["variant"]] = haps_df['haplotype'].str.split(':').str[1].str.split(",")
+        haps_df = haps_df.explode("variant")
+
+    if haps_to_samples is None:
+        haps_to_samples = hs.haplotypes_to_samples(haplotypes=haplotypes, 
+                                                    as_df=True,
+                                                    add_sample_metadata=True,
+                                                    return_seqs=False, 
+                                                    add_ref=True)  
+    
+    # Filter VEP data for protein and merge with haplotype info
+    vep_prot = vep_df[vep_df['protein'] == protein].merge(haps_df, on=["ENST","haplotype"], how="left")
+    
+    # Calculate variant-level statistics
+    agg_stats = vep_prot.groupby(["protein","variant"]).agg({"VEP":["mean","std"]}).reset_index()
+    agg_stats.columns = ['protein', 'variant', 'variant_VEP_mean', 'variant_VEP_std']
+    vep_prot = vep_prot.merge(agg_stats, on=["protein","variant"], how="left").sort_values('variant_VEP_mean')
+    
+    # Calculate aggregated scores and frequencies
+    var_vep_agg = _get_wt_variant_mean_vep_scores(vep_prot, haps_to_samples)
+    var_freqs_agg = _get_wt_variant_mean_freqs(vep_prot, haplotypes)
+
+    # Generate visualization
+    fig, (ax1, ax2) = plot_wt_variant_vep_scores(var_freqs_agg, var_vep_agg)
+        
+    return vep_prot, var_vep_agg, var_freqs_agg, fig
+
+
+
+
+def plot_vep_variance_zscore(vep_df):
+    
+    # Display results
+    print("Distribution of z-scores for REF haplotypes:")
+    print(vep_df.loc[vep_df['is_ref'], ['protein', 'mutant', 'VEP', 'mean', 'std', 'z_score','z_score_abs']].describe())
+
+
+    # Sort clinsig by palette keys
+    clinsig_order = list(utils.get_clinsig_palette().keys())
+    vep_df['clinsig'] = pd.Categorical(vep_df['clinsig'], categories=clinsig_order, ordered=True)
+
+    vep_df["z_score_log"] = np.log10(vep_df["z_score_abs"])
+    # Plot distribution of z-scores
+    plt.figure(figsize=(15, 4))
+    sns.histplot(data=vep_df.loc[vep_df['is_ref']], 
+                x='z_score',
+                hue="clinsig",
+                #  multiple="fill",
+                palette=utils.get_clinsig_palette(),
+                bins=1000)
+    # plt.xlim(-5, 5)
+
+    # Calculate percentages for each standard deviation
+    ref_data = vep_df.loc[vep_df['is_ref'], 'z_score']
+    ref_data_neg = ref_data[ref_data < 0]
+    ref_data_pos = ref_data[ref_data > 0]
+
+    for sd in [-2, -1]:
+        percentage = ((ref_data_neg >= sd) & (ref_data_neg < 0)).mean() * 100
+        print(percentage)
+        plt.axvline(x=sd, color='black', linestyle='--', alpha=0.5)
+        plt.text(sd-0.1, plt.ylim()[1]*0.95, f'{percentage:.1f}%', 
+                horizontalalignment='center', verticalalignment='top',
+                rotation=90)
+
+    for sd in [1, 2]:
+        percentage = ((ref_data_pos <= sd) & (ref_data_pos > 0)).mean() * 100
+        plt.axvline(x=sd, color='black', linestyle='--', alpha=0.5)
+        plt.text(sd+0.1, plt.ylim()[1]*0.95, f'{percentage:.1f}%', 
+                horizontalalignment='center', verticalalignment='top',
+                rotation=90)
+
+    # Add breaks to x-axis
+    plt.axvspan(-5, -4.5, alpha=0.2, color='gray')
+    plt.axvspan(4.5, 5, alpha=0.2, color='gray')
+    plt.text(-4.75, plt.ylim()[1]*0.5, '...', ha='center', va='center', fontsize=20)
+    plt.text(4.75, plt.ylim()[1]*0.5, '...', ha='center', va='center', fontsize=20)
+
+    plt.title('Distribution of REF haplotype z-scores')
+    plt.xlabel('Z-score (standard deviations from mean)')
+    plt.ylabel('Count')
+    plt.show()

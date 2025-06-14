@@ -2,8 +2,9 @@ import pooch
 import owlready2 as owl
 from tqdm import tqdm
 import src.utils as utils
+import pandas as pd
 
-def _process_id(id: str):
+def process_id(id: str):
     """
     Processes an ID to remove the MONDO: prefix and replace : with _
     """
@@ -33,6 +34,23 @@ def get_onto_mondo(verbose: bool = False):
                     known_hash="faf39917bca366b5b7ee014d499e5004abfd67e2e136c32d535052a39e882d0b", 
                     verbose=verbose)
 
+def get_onto_icdo(verbose: bool = False):
+    """
+    Loads the ICD-10 ontology.
+    """
+    return get_onto("https://raw.githubusercontent.com/icdo/ICDO/master/src/ontology/icdo.owl", 
+                    known_hash="1e20c40d97bbeae1531a063632f948c4c2617eb72e097904a5a861e8bf67bae4", 
+                    verbose=verbose)
+
+def get_icd10_codes(url="https://ftp.cdc.gov/pub/Health_Statistics/NCHS/Publications/ICD10CM/2020/icd10cm_codes_2020.txt"):
+    """
+    Loads the ICD-10 codes.
+    """
+    df = pd.read_csv(url, sep="\t", header=None)[0].str.split(' ', n=1, expand=True)
+    df.columns = ["code", "label"]
+    df["code"] = df["code"].str.strip()
+    df["label"] = df["label"].str.strip()
+    return df
 
 def get_id_map(onto,  
                first_only: bool = True,
@@ -77,7 +95,7 @@ def get_ancestors(onto,
             return None
         if verbose:
             print(f"Getting ancestors for {id}")
-        onto_res = onto.search_one(iri = _process_id(id))
+        onto_res = onto.search_one(iri = process_id(id))
         if onto_res is None:
             return None
                                    
@@ -117,8 +135,8 @@ def get_mrca(onto,
     Example:
         mrca = find_mrca_owlready2(onto, ids[0], ids[-1])
     """
-    class1 = onto.search_one(iri = _process_id(id1))
-    class2 = onto.search_one(iri = _process_id(id2))
+    class1 = onto.search_one(iri = process_id(id1))
+    class2 = onto.search_one(iri = process_id(id2))
 
     if not class1 or not class2:
         return None # Handle cases where classes are not found
