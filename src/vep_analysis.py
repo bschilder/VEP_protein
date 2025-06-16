@@ -2,6 +2,7 @@ from cProfile import label
 import os
 import glob
 import pandas as pd
+import colabfold
 import numpy as np
 import argparse
 import pathlib 
@@ -2735,6 +2736,59 @@ def plot_wt_variant_vep_scores(
     plt.tight_layout()
     return fig, (ax1, ax2)
 
+
+def plot_wt_variant_vep_scores_dotplot(var_vep_agg, var_freqs_agg, figsize=(6, 15)):
+    # Create figure and axis
+    plt.figure(figsize=figsize)
+
+    # Melt the dataframes
+    vep_melted = var_vep_agg.reset_index().melt(id_vars='variant', 
+                                            var_name='population',
+                                            value_name='vep_score')
+
+    freq_melted = var_freqs_agg.reset_index().melt(id_vars='variant',
+                                                var_name='population',
+                                                value_name='frequency')
+
+    # Merge the melted dataframes
+    plot_data = vep_melted.merge(freq_melted, on=['variant', 'population'])
+
+    # Create scatter plot using seaborn
+    scatter = sns.scatterplot(data=plot_data,
+                            x='population',
+                            y='variant',
+                            hue='vep_score',
+                            size='frequency',
+                            sizes=(0, 1000),  # Scale sizes for better visibility
+                            palette='viridis',
+                            alpha=0.7)
+
+    # Get handles and labels for size legend
+    handles, labels = scatter.get_legend_handles_labels()
+    # Remove the hue legend
+    scatter.legend_.remove()
+
+    # Create custom size legend with meaningful labels
+    size_legend = plt.legend(handles[1:], 
+                            [f'{freq:.2f}' for freq in sorted(plot_data['frequency'].unique())],  # Sort frequencies
+                            title='Frequency',
+                            bbox_to_anchor=(1.05, 1),
+                            loc='upper left',
+                            markerscale=1.5)  # Make legend markers larger
+
+    # Set labels and ticks
+    plt.xticks(rotation=45, ha='right')
+
+    # Set y-axis limits to remove extra whitespace
+    plt.ylim(-0.75, len(plot_data['variant'].unique()) - 0.25)
+
+    # Add title and adjust layout
+    plt.title('Variant VEP Scores and Frequencies by Population')
+    plt.tight_layout()
+
+    # Show plot
+    plt.show()
+
     
 def get_wt_variant_vep_scores(vep_df,
                                haplotypes=None,
@@ -2793,8 +2847,330 @@ def get_wt_variant_vep_scores(vep_df,
         
     return vep_prot, var_vep_agg, var_freqs_agg, fig
 
+def downsample_tick_labels(data, g, n_labels_x, n_labels_y):
+    """
+    Downsample tick labels for a clustermap visualization to improve readability.
+    
+    Args:
+        data (pd.DataFrame): Input data used to create the clustermap
+        g (sns.ClusterGrid): Seaborn clustermap object
+        n_labels_x (int or bool): Number of x-axis labels to show. If False, no labels shown
+        n_labels_y (int or bool): Number of y-axis labels to show. If False, no labels shown
+    """
+    # Get the reordered indices after clustering if dendrograms exist
+    x_order = g.dendrogram_col.reordered_ind if hasattr(g, 'dendrogram_col') and g.dendrogram_col is not None else np.arange(len(data.columns))
+    y_order = g.dendrogram_row.reordered_ind if hasattr(g, 'dendrogram_row') and g.dendrogram_row is not None else np.arange(len(data.index))
+
+    # Calculate evenly spaced indices for labels
+    x_indices = np.linspace(0, len(x_order)-1, n_labels_x, dtype=int)
+    y_indices = np.linspace(0, len(y_order)-1, n_labels_y, dtype=int)
+
+    # Set x-axis ticks and labels
+    if n_labels_x is not False:
+        g.ax_heatmap.set_xticks(range(len(data.columns)))
+        # Use modulo to ensure even spacing of labels
+        g.ax_heatmap.set_xticklabels([data.columns[x_order[i]] if i % (len(x_order)//n_labels_x) == 0 else '' for i in range(len(x_order))])
+
+    # Set y-axis ticks and labels
+    if n_labels_y is not False:
+        g.ax_heatmap.set_yticks(range(len(data.index)))
+        # Use modulo to ensure even spacing of labels
+        g.ax_heatmap.set_yticklabels([data.index[y_order[i]] if i % (len(y_order)//n_labels_y) == 0 else '' for i in range(len(y_order))])
+
+    return x_indices, y_indices, x_order, y_order
 
 
+def sort_clinical_vs_wt_variant_matrix(vep_prot, clinvar_vs_wt):
+    
+    print("Adding positions to WT variants")
+    # Sort WT variants (rows) by residue position
+    vep_prot=  utils.variants_to_positions(vep_prot, 
+                                            variant_col='mutant',
+                                            position_col='mutant_position')
+    
+    # Sort clinical variants (columns) by residue position
+    print("Adding positions to clinical variants")
+    vep_prot=  utils.variants_to_positions(vep_prot, 
+                                            variant_col='variant',
+                                            position_col='variant_position')
+    
+    # Sort rows by variant_position and columns by mutant_position
+    print("Sorting clinical variants by WT variant positions")
+    clinvar_vs_wt = clinvar_vs_wt.reindex(
+        index=vep_prot.sort_values('variant_position')['variant'].unique(),
+        columns=vep_prot.sort_values('mutant_position')['mutant'].unique()
+    ) 
+    return clinvar_vs_wt, vep_prot
+
+
+def pairwise_variant_sensitization_clustermap(vep_prot, 
+                                            figsize=(20,15), 
+                                            n_labels_x=50, 
+                                            n_labels_y=50, 
+                                            row_positions_col="mutant_position",
+                                            col_positions_col="variant_position",
+                                            normalize_rows=True,
+                                            palette_positions="Blues",
+                                            palette_heatmap="viridis",
+                                            ref_linewidth=3,
+                                            title_y=1.35,
+                                            show_mean_vep_per_col=True,
+                                            show_mean_vep_per_row=True,
+                                            show_position_per_col=False,
+                                            show_position_per_row=False,
+                                            **kwargs):
+    
+    vep_prot = vep_prot.copy()
+    # Fill NaN values with 0
+    # First create the pivot table
+    clinvar_vs_wt = vep_prot.pivot_table(index="variant", 
+                                         columns="mutant", 
+                                         values="VEP", 
+                                         aggfunc="mean")
+
+    clinvar_vs_wt, vep_prot = sort_clinical_vs_wt_variant_matrix(vep_prot, clinvar_vs_wt) 
+
+   
+
+    print("Creating color palettes")
+    col_pos_cmap = utils.make_palette(vep_prot[col_positions_col].unique(), 
+                                      palette=palette_positions )
+    row_pos_cmap = utils.make_palette(vep_prot[row_positions_col].unique(), 
+                                      palette=palette_positions ) 
+    # Invert the scale
+    print("Inverting scale")
+    clinvar_vs_wt = -clinvar_vs_wt
+
+    if normalize_rows:
+        print("Normalizing rows")
+        # Min-max normalize each column
+        clinvar_vs_wt = clinvar_vs_wt.sub(clinvar_vs_wt.min(axis=0), axis=1)
+        clinvar_vs_wt = clinvar_vs_wt.div(clinvar_vs_wt.max(axis=0), axis=1)
+     
+    # Create a mask for the original NaN values
+    print("Creating mask")
+    mask = clinvar_vs_wt.isna()
+
+    # Create column colors DataFrame with both position and mean VEP info
+    print("Creating column colors")
+    col_colors = vep_prot.groupby(["mutant", col_positions_col]).agg({"VEP": "mean"}).reset_index(level=col_positions_col)
+    col_colors[col_positions_col] = col_colors[col_positions_col].map(col_pos_cmap) 
+
+    mean_vep_per_col_cmap = utils.make_palette(col_colors["VEP"].unique(), palette="viridis")
+    col_colors["VEP"] = col_colors["VEP"].map(mean_vep_per_col_cmap)
+    print("Reindexing column colors")
+    # Ensure unique column labels before reindexing
+    col_colors = col_colors.loc[~col_colors.index.duplicated(keep='first')]
+    col_colors = col_colors.reindex(clinvar_vs_wt.columns)
+    col_colors.rename(columns={"VEP": "mean VEP"}, inplace=True)
+    
+    # Create row colors DataFrame with both position and mean VEP info
+    print("Creating row colors")
+    row_colors = vep_prot.groupby(["variant",row_positions_col]).agg({"VEP": "mean"}).reset_index(level=row_positions_col)
+    row_colors[row_positions_col] = row_colors[row_positions_col].map(row_pos_cmap) 
+    
+    mean_vep_per_row_cmap = utils.make_palette(row_colors["VEP"].unique(), palette="viridis")
+    row_colors["VEP"] = row_colors["VEP"].map(mean_vep_per_row_cmap) 
+    print("Reindexing row colors")
+    row_colors = row_colors.loc[~row_colors.index.duplicated(keep='first')]
+    row_colors = row_colors.reindex(clinvar_vs_wt.index)
+    row_colors.rename(columns={"VEP": "mean VEP"}, inplace=True)
+
+    if not show_mean_vep_per_col:
+        print("Dropping VEP column from column colors")
+        col_colors = col_colors.drop(columns=['mean VEP'])
+    if not show_mean_vep_per_row:
+        print("Dropping VEP column from row colors")
+        row_colors = row_colors.drop(columns=['mean VEP'])
+    if not show_position_per_col:
+        print("Dropping position column from column colors")
+        col_colors = col_colors.drop(columns=[col_positions_col])
+    if not show_position_per_row:
+        print("Dropping position column from row colors")
+        row_colors = row_colors.drop(columns=[row_positions_col])
+
+    try:
+        # Create clustermap with masked values
+        # Ensure no duplicate labels in index and columns
+        clinvar_vs_wt_clean = clinvar_vs_wt.fillna(0)
+        
+        # Reset index and columns to ensure unique labels
+        # clinvar_vs_wt_clean = clinvar_vs_wt_clean.reset_index()
+        # clinvar_vs_wt_clean = clinvar_vs_wt_clean.set_index('variant') 
+
+        # Update col_colors and row_colors to match new labels
+        # col_colors = col_colors.reset_index()
+        # row_colors = row_colors.reset_index()
+        print("Creating clustermap")
+        g = sns.clustermap(clinvar_vs_wt_clean,
+                            figsize=figsize,
+                            mask=mask,
+                            col_colors=col_colors,
+                            row_colors=row_colors,
+                            cmap=palette_heatmap,
+                            **kwargs)
+    except Exception as e:
+        print(f"Error creating clustermap: {str(e)}")
+        return [col_colors, row_colors], clinvar_vs_wt_clean
+
+    x_indices, y_indices, x_order, y_order = downsample_tick_labels(clinvar_vs_wt, g, n_labels_x, n_labels_y)
+
+    # Add horizontal line for REF sample
+    if ref_linewidth is not None:
+        ref_idx = np.where(np.array([x for x in clinvar_vs_wt.index[y_order]]) == 'REF')[0][0]
+        g.ax_heatmap.axhline(y=ref_idx, color='red', linestyle='--', alpha=1, linewidth=ref_linewidth)
+
+    g.ax_heatmap.collections[0].colorbar.set_label("Mean VEP score", rotation=270, va="bottom")
+    g.ax_heatmap.set_xlabel("Clinical variants")
+    g.ax_heatmap.set_ylabel("WT variants", rotation=270, va="bottom")
+    g.ax_heatmap.set_title(f"Pairwise Variant Sensitization Analysis\nProtein: {vep_prot["GENEINFO"].unique()[0].split(':')[0]} ({vep_prot['protein'].unique()[0]})\nNatural WT variants (n={clinvar_vs_wt.shape[0]} rows) x Injected clinical variants (n={clinvar_vs_wt.shape[1]} cols)",
+                        ha="left", x=0.1, y=title_y)
+    plt.show()
+    return g, clinvar_vs_wt, row_colors, col_colors
+
+def sample_by_mutant_clustermap(vep_df, 
+                                haps_to_samples,
+                                protein=None,
+                                figsize=(15,6),
+                                palette_heatmap="viridis",
+                                t=1.15,
+                                criterion='inconsistent'):
+    
+    from scipy.cluster.hierarchy import fcluster
+
+    # Set seed
+    np.random.seed(42)
+
+    ###### Data preparation ######
+    # Get data for NP_009225.1 and merge with haplotypes
+    protein_data = vep_df.copy()
+    if protein is not None:
+        protein_data = protein_data.loc[protein_data['protein'] == protein]
+    protein_data = protein_data.merge(haps_to_samples, on=["haplotype"], how="left")
+    print(protein_data.shape)
+
+    gene_list = list(set([x.split(':')[0] for x in protein_data["GENEINFO"].unique()]))
+
+    # Create pivot table for heatmap and transpose it
+    heatmap_data = protein_data.pivot_table(
+        index='sample',
+        columns='mutant',
+        values='VEP',
+        aggfunc="mean"
+    )
+    # Min-max normalize the heatmap data
+    heatmap_data = (heatmap_data - heatmap_data.min()) / (heatmap_data.max() - heatmap_data.min())
+    # Log transform the data first
+    heatmap_data = np.log1p(heatmap_data)
+
+    # Get super population info for each sample and create a numeric mapping
+    pop_data = haps_to_samples[['sample', 'Super Population']].drop_duplicates()
+    pop_data = pop_data.set_index('sample')
+
+    # Reindex pop_data to match the row order of heatmap_data
+    pop_data = pop_data.reindex(heatmap_data.index)
+
+    # Create numeric mapping for populations
+    pop_mapping = {pop: i for i, pop in enumerate(pop_data['Super Population'].unique())}
+    pop_data['Superpop'] = pop_data['Super Population'].map(pop_mapping)
+
+    gender_data = haps_to_samples[['sample', 'Gender']].drop_duplicates()
+    gender_data = gender_data.set_index('sample')
+
+    gender_data = gender_data.reindex(heatmap_data.index)
+
+    gender_mapping = {gender: i for i, gender in enumerate(gender_data['Gender'].unique())}
+    gender_data['Gender'] = gender_data['Gender'].map(gender_mapping)
+
+    ###### Clustermap plotting ######
+    # Create row colors dataframe with both Super Population and Gender
+    gender_palette = {0: 'lightblue', 1: 'mistyrose'}
+    row_colors = pd.DataFrame({
+        'Superpop': pop_data['Super Population'].map(utils.get_superpop_palette()),
+        'Sex': gender_data['Gender'].map(gender_palette)  # Map gender values to colors
+    })
+
+    # Create clustermap but don't display it
+    g1 = sns.clustermap(heatmap_data,
+                        figsize=figsize,
+                    cmap=palette_heatmap,
+                    cbar_kws={'label': 'VEP Score', 'location': 'left', 'pad': 0.025},
+                    row_colors=row_colors,
+                    yticklabels=False,
+                    xticklabels=False)
+    plt.close()  # Close the figure to prevent display
+
+    # Get the column linkage
+    col_linkage = g1.dendrogram_col.linkage
+
+    # Use scipy's fcluster to get cluster assignments 
+    col_clusters = fcluster(col_linkage, 
+                            t=t, 
+                            criterion=criterion)
+    n_clusters = len(np.unique(col_clusters))
+    print(f"Number of col clusters: {n_clusters}")
+
+    # Create variant to cluster mapping
+    variant_to_cluster = {}
+    for variant_id, cluster_id in zip(heatmap_data.columns, col_clusters):
+        variant_to_cluster[variant_id] = cluster_id
+
+    # Create a color palette for the clusters
+    cluster_colors = sns.color_palette('tab20', n_colors=n_clusters)
+    col_colors = pd.Series([cluster_colors[i-1] for i in col_clusters], index=heatmap_data.columns)
+
+    # Create final clustermap with both row and column colors
+    g1 = sns.clustermap(heatmap_data,
+                        figsize=figsize,
+                    cmap=palette_heatmap,
+                    cbar_kws={'label': 'VEP Score', 'location': 'left', 'pad': 0.025},
+                    row_colors=row_colors,
+                    col_colors=col_colors,
+                    yticklabels=False,
+                    xticklabels=False)
+
+    # Add title centered on the heatmap
+    g1.fig.suptitle(f'VEP Score Clusters\nProtein: {gene_list[0] if len(gene_list) == 1 else len(gene_list)} ({protein_data["protein"].unique()[0]})\n{heatmap_data.shape[1]} variants x {heatmap_data.shape[0]} samples',
+                    x=0.5, y=1.02, ha='center')
+
+    # Add x-axis label
+    g1.ax_heatmap.set_xlabel('Clinical variant')
+
+    # Add y-axis label and rotate it horizontally
+    g1.ax_heatmap.set_ylabel('Sample', rotation=270, va="bottom")
+    g1.ax_heatmap.yaxis.set_label_position('right')
+    g1.ax_heatmap.yaxis.tick_right()
+
+    # Find REF sample position
+    ref_idx = np.where(heatmap_data.index == 'REF')[0][0]
+
+    # Add vertical line for REF sample
+    g1.ax_heatmap.axhline(y=ref_idx, color='red', linestyle='--', alpha=1, linewidth=5)
+
+    # Add legends for row colors
+    # Super Population legend
+    palette = utils.get_superpop_palette()
+    handles = [plt.Rectangle((0,0),1,1, facecolor=color) for color in palette.values()]
+    labels = list(palette.keys())
+    superpop_legend = plt.legend(handles, labels,
+            title='Superpop', 
+            bbox_to_anchor=(0.5, -0.15),
+            loc='upper center',
+            ncol=1)
+
+    # Add the first legend to the plot
+    plt.gca().add_artist(superpop_legend)
+
+    # Gender legend
+    gender_handles = [plt.Rectangle((0,0),1,1, facecolor=color) for color in gender_palette.values()]
+    gender_labels = ['Male', 'Female']
+    plt.legend(gender_handles, gender_labels,
+            title='Sex',
+            bbox_to_anchor=(0.5, -2),
+            loc='upper center',
+            ncol=1) 
+
+    return g1, variant_to_cluster
 
 def plot_vep_variance_zscore(vep_df):
     

@@ -2,6 +2,7 @@ import os
 import glob
 import io
 import re
+from tkinter import N
 import pandas as pd
 import numpy as np
 import seaborn as sns
@@ -858,12 +859,31 @@ def get_candidate_proteins():
     candidate_proteins['RefSeq Protein Stable'] = candidate_proteins['RefSeq Protein'].str.split(".").str[0]
     candidate_proteins['Gene'] = candidate_proteins['Gene'].str.strip()
     return candidate_proteins
-
+    
 def make_palette(values,
-                 palette):
-    # sample 4 colors from a palette that goes from hot to cold
-    import seaborn as sns
-    return dict(zip(values, sns.color_palette(palette, len(values)).as_hex()))
+                 palette,
+                 n_colors=None):
+    """
+    Create a color palette mapping values to colors.
+    
+    Parameters
+    ----------
+    values : list
+        List of values to map colors to
+    palette : str
+        Name of seaborn color palette to use
+    n_colors : int, optional
+        Number of colors to sample from palette. If None, uses len(values)
+    
+    Returns
+    -------
+    dict
+        Dictionary mapping values to hex colors
+    """
+    values = as_list(values)
+    values = set(list(values))
+    n = n_colors if n_colors is not None else len(values)
+    return dict(zip(values, sns.color_palette(palette, n_colors=n).as_hex()))
 
 def get_clinsig_palette(values=['path', 'likely_path', 'likely_benign', 'benign'],
                          palette='bwr_r'):
@@ -1320,5 +1340,144 @@ def sort_by_clinsig(df,
                     clinsig_order=get_clinsig_palette().keys(),
                     ascending=True
                     ):
+    """
+    Sort a DataFrame by clinical significance values in a specified order.
     
-    return  df.sort_values(by=clinsig_col, key=lambda x: x.map({k:i for i,k in enumerate(list(clinsig_order))}), ascending=ascending)
+    Args:
+        df (pd.DataFrame): Input DataFrame to sort
+        clinsig_col (str): Name of column containing clinical significance values
+        clinsig_order (list): List of clinical significance values in desired order
+        ascending (bool): Whether to sort in ascending order
+        
+    Returns:
+        pd.DataFrame: Sorted DataFrame
+        
+    Example:
+        >>> df = pd.DataFrame({'clinsig': ['Pathogenic', 'Benign', 'VUS']})
+        >>> sort_by_clinsig(df, clinsig_order=['Benign', 'VUS', 'Pathogenic'])
+           clinsig
+        1   Benign
+        2      VUS
+        0  Pathogenic
+    """
+    return df.sort_values(
+        by=clinsig_col,
+        key=lambda x: x.map({k: i for i, k in enumerate(list(clinsig_order))}),
+        ascending=ascending
+    )
+
+
+def variants_to_positions(df,
+                         variant_col='variant',
+                         position_col='variant_position'):
+    """
+    Extract position numbers from variant strings and add them as a new column.
+    Handles two variant encoding schemas:
+    1. Position-based (e.g., '123A>G', '456C>T')
+    2. Amino acid change (e.g., 'P1150S', 'R1234G')
+    
+    Args:
+        df (pd.DataFrame): Input DataFrame containing variant information
+        variant_col (str): Name of column containing variant strings (default: 'variant')
+        position_col (str): Name of column to store extracted positions (default: 'variant_position')
+        
+    Returns:
+        pd.DataFrame: DataFrame with added position column
+        
+    Example:
+        >>> df = pd.DataFrame({'variant': ['123A>G', 'P1150S', 'REF']})
+        >>> variants_to_positions(df)
+           variant  variant_position
+        0  123A>G              123
+        1  P1150S             1150
+        2     REF              NaN
+    """
+    import re
+
+    if isinstance(df, list):
+        df = pd.DataFrame({variant_col: df})
+
+    def extract_position(variant):
+        if variant == 'REF':
+            return None
+        # Try position-based format first (e.g., '123A>G')
+        pos_match = re.search(r'^(\d+)', variant)
+        if pos_match:
+            return int(pos_match.group(1))
+        # Try amino acid change format (e.g., 'P1150S')
+        aa_match = re.search(r'[A-Z](\d+)[A-Z]', variant)
+        if aa_match:
+            return int(aa_match.group(1))
+        return None
+
+    # Extract positions for unique variants
+    positions = {variant: extract_position(variant) 
+                for variant in df[variant_col].unique()}
+    
+    # Sort positions dictionary by position value, handling None values
+    positions = {k: v for k, v in sorted(positions.items(), 
+                                       key=lambda item: (item[1] is None, item[1] or 0))}
+    
+    # Map positions to new column
+    df[position_col] = df[variant_col].map(positions)
+    return df
+
+
+def add_variant_name(df,
+                    chrom_col='chrom',
+                    start_col='chromStart',
+                    end_col='chromEnd',
+                    ref_col='REF',
+                    alt_col='ALT',
+                    alias='name',
+                    force=False):
+    """Add a variant name column to a DataFrame.
+    
+    Args:
+        df: Polars or Pandas DataFrame
+        chrom_col: Column name for chromosome
+        start_col: Column name for start position
+        end_col: Column name for end position. 
+            If None, the end position is calculated as the start position + the length of the reference allele.
+        ref_col: Column name for reference allele
+        alt_col: Column name for alternate allele
+        alias: Name for the output column
+        force: Whether to overwrite existing column
+    Returns:
+        DataFrame with added variant name column
+    """
+    import polars as pl
+    import pandas as pd
+
+    if alias in df.columns and not force:
+        print(f"Column {alias} already exists in dataframe, skipping")
+        return df
+    
+    was_pandas = isinstance(df, pd.DataFrame)
+    if was_pandas:
+        df = pl.DataFrame(df)
+
+    if end_col not in df.columns:
+        end_col = None
+    
+    result = df.with_columns(pl.concat_str([
+        pl.lit('chr'),
+        pl.col(chrom_col).cast(pl.Utf8).str.replace('chr', ''),
+        pl.lit(':'),
+        pl.col(start_col).cast(pl.Utf8),
+        pl.lit('-'),
+        # If end_col is null, calculate end position as start + length of reference allele
+        # Otherwise, use end_col if provided, or fall back to start position
+        pl.when(pl.lit(end_col).is_null())
+        .then(pl.col(start_col).cast(pl.Int32) + pl.col(ref_col).str.len_chars().cast(pl.Int32))
+        .otherwise(pl.col(end_col).cast(pl.Utf8) if end_col is not None else (pl.col(start_col).cast(pl.Int32)+1).cast(pl.Utf8)),
+        pl.lit('_'),
+        pl.col(ref_col),
+        pl.lit('_'),
+        pl.col(alt_col)
+    ]).alias(alias))
+    
+    if was_pandas:
+        result = result.to_pandas()
+    
+    return result
