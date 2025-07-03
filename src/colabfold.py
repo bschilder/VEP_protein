@@ -13,10 +13,12 @@
 #   Unrelaxed structures are those that have not undergone a refinement process ("_unrelaxed_rank_"), 
 #   while relaxed structures are those that have been refined to improve their accuracy ("_relaxed_rank_"). 
 #   - e.g. ENSP00000497069_492V_I_unrelaxed_rank_001_alphafold2_ptm_model_3_seed_000.pdb
-# - The "relaxed_rank" files will only be generated when the "--amber" flag is used.
+#   - The "relaxed_rank" files will only be generated when the "--amber" flag is used.
 # - Embeddings will not saved by default, but can be saved by using the following flags:
-#   - "--save-single-representations"
-#   - "--save-pair-representations"
+#   - "--save-single-representations": Saves per-residue embeddings that capture the local structural context 
+#     and evolutionary information for each amino acid position
+#   - "--save-pair-representations": Saves pairwise embeddings that encode the relationships and interactions 
+#     between pairs of residues, useful for understanding residue-residue contacts and structural constraints
 # - If on Elzar HPC, load CUDA and GCC first with: module load CUDA/12.3.0 GCC
 # Known bugs:
 # - `/lib64/libstdc++.so.6: version GLIBCXX_3.4.20' not found`: 
@@ -26,12 +28,12 @@
 ##### Example usage: #####
 # module load CUDA/12.3.0 GCC
 # export PATH="/home/schilder/projects/localcolabfold/colabfold-conda/bin:$PATH"
-# export CUDA_VISIBLE_DEVICES="1,3"
+# export CUDA_VISIBLE_DEVICES=1,3
 # python >> import src.haplosaurus as hs;hs.haplotypes_to_fasta(tx_ids="ENST00000357654")
 # mkdir ENST00000357654 & cd ENST00000357654 
 # scp $HOME/projects/data/1KG/fasta/split/ENST00000357654.fasta.gz .
 # gunzip ENST00000357654.fasta.gz
-# colabfold_batch --save-single-representations --save-pair-representations ENST00000357654.fasta results
+# colabfold_batch --save-single-representations --save-pair-representations ENST00000357654.fasta af2
 
 from Bio.PDB import PDBParser, Selection
 from Bio.PDB.MMCIFParser import MMCIFParser
@@ -44,36 +46,54 @@ import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 import seaborn as sns
+import io
+import matplotlib.pyplot as plt
+from PIL import Image
+from tqdm import tqdm
+import os
 
-def import_pdb(pdb_url: str, protein_name: str = "BRCA1") -> Structure:
+def import_pdb(pdb_path: str, protein_name: str = "BRCA1") -> Structure:
     """
-    Import a protein structure from a PDB file URL.
+    Import a protein structure from a PDB file (local or remote).
     
     Args:
-        pdb_url: URL to the PDB file
+        pdb_path: Path to the PDB file (local file path or URL)
         protein_name: Name to assign to the structure
         
     Returns:
         Bio.PDB.Structure: Parsed protein structure
         
     Raises:
-        Exception: If download fails
+        Exception: If download or file reading fails
         
     Example:
         >>> structure = import_pdb("https://alphafold.ebi.ac.uk/files/AF-Q8CGX5-F1-model_v4.pdb")
+        >>> structure = import_pdb("/path/to/local/file.pdb")
         >>> print(f"Number of models: {len(structure)}")
     """
     import requests
     from io import StringIO
+    import os
     
-    response = requests.get(pdb_url)
-    if response.status_code == 200:
-        pdb_data = StringIO(response.text)
-        parser = PDBParser()
-        structure = parser.get_structure(protein_name, pdb_data)
-        return structure
+    parser = PDBParser()
+    
+    # Check if pdb_path is a URL (starts with http/https)
+    if pdb_path.startswith(('http://', 'https://')):
+        # Handle remote file
+        response = requests.get(pdb_path)
+        if response.status_code == 200:
+            pdb_data = StringIO(response.text)
+            structure = parser.get_structure(protein_name, pdb_data)
+            return structure
+        else:
+            raise Exception(f"Failed to download PDB file from {pdb_path}")
     else:
-        raise Exception(f"Failed to download PDB file from {pdb_url}")
+        # Handle local file
+        if os.path.exists(pdb_path):
+            structure = parser.get_structure(protein_name, pdb_path)
+            return structure
+        else:
+            raise Exception(f"Local PDB file not found: {pdb_path}")
 
 def import_mmcif(protein_id,
                  protein_name: Optional[str] = None,
@@ -137,33 +157,37 @@ def get_contact_map(structure,
     model = structure[structure_id]
     chain = model[chain_id]
 
-    # Extract alpha carbon atoms from chain
-    alpha_carbons = [atom for residue in chain.get_residues() 
-                    for atom in residue if atom.get_id() == "CA"]
-
-    # Calculate pairwise distances between alpha carbons
-    num_residues = len(alpha_carbons)
-    distance_matrix = np.zeros((num_residues, num_residues))
+    # Extract alpha carbon coordinates efficiently
+    ca_coords = []
+    for residue in chain.get_residues():
+        for atom in residue:
+            if atom.get_id() == "CA":
+                ca_coords.append(atom.get_coord())
+                break
     
-    for i in range(num_residues):
-        for j in range(num_residues):
-            distance_matrix[i, j] = alpha_carbons[i] - alpha_carbons[j]
+    # Convert to numpy array for vectorized operations
+    ca_coords = np.array(ca_coords)
+    num_residues = len(ca_coords)
+    
+    # Use broadcasting for ultra-fast pairwise distance calculation
+    # Reshape for broadcasting: (n, 1, 3) - (1, n, 3) = (n, n, 3)
+    diff = ca_coords[:, np.newaxis, :] - ca_coords[np.newaxis, :, :]
+    distance_matrix = np.sqrt(np.sum(diff**2, axis=2))
 
     if return_distance_map:
         # Normalize distance matrix to [0,1] range
-        contact_map = distance_matrix.max() - distance_matrix
+        max_dist = distance_matrix.max()
+        contact_map = max_dist - distance_matrix
     else:
         # Convert distances to contact scores
         if continuous:
-            # Continuous scoring using inverse distance
-            contact_map = np.where(distance_matrix < max_distance,
-                                1.0 / (1.0 + distance_matrix),  # Inverse distance scoring
-                                0.0)  # Zero for distances beyond cutoff
+            # Continuous scoring using inverse distance with vectorized operations
+            mask = distance_matrix < max_distance
+            contact_map = np.zeros_like(distance_matrix)
+            contact_map[mask] = 1.0 / (1.0 + distance_matrix[mask])
         else:
-            # Binary scoring
-            contact_map = np.where(distance_matrix < max_distance,
-                                1.0,  # Contact exists
-                                0.0)  # No contact
+            # Binary scoring with vectorized operations
+            contact_map = (distance_matrix < max_distance).astype(float)
             
     return contact_map
 
@@ -220,6 +244,9 @@ def get_plddt(structure) -> pd.DataFrame:
     print(f"Number of residues: {len(plddt_df)}")
     return plddt_df
 
+
+ 
+
 def bin_matrix(X, bin_size=10, agg_func=np.nanmax):
     """
     Bin a matrix by aggregating values within bins of specified size.
@@ -239,6 +266,8 @@ def bin_matrix(X, bin_size=10, agg_func=np.nanmax):
     """
     if bin_size == 1 or bin_size is None:
         return X
+    if isinstance(X, pd.DataFrame):
+        X = X.values
         
     # Calculate number of bins that fit in the matrix
     n_bins = X.shape[0] // bin_size
@@ -263,6 +292,9 @@ def expand_matrix(X, target_size):
     if target_size is None:
         raise ValueError("target_size must be specified")
 
+    if X.shape[0] == target_size and X.shape[1] == target_size:
+        print(f"Matrix already has target size {target_size}x{target_size}")
+        return X
     
     # Calculate expansion factor based on input and target sizes
     input_size = X.shape[0]
@@ -321,7 +353,7 @@ def plot_contact_map(contact_map,
                      log_func=lambda x: np.log10(x+1e-6),
                      max_labels=10, 
                      pow=4,
-                     cmap="jet", 
+                     cmap="gnuplot2", 
                      agg_func=np.nanmax,
                      title=None,
                      cbar_label="Contact score",
@@ -474,3 +506,243 @@ def normalize_rows(X: np.ndarray,
                       where=(row_sums!=0) & (row_sums!=np.nan))
         
     return X
+
+def animate_contact_maps_variation(contact_maps, 
+                                 n_frames=None,
+                                 bin_size=10,
+                                 pow=4,
+                                 cmap="gnuplot2",
+                                 figsize=(8, 6),
+                                 dpi=100,
+                                 duration=500,
+                                 output_path='results/plots/contact_maps_animation.gif'):
+    """
+    Create an animated GIF showing contact maps from different structures.
+    
+    Parameters
+    ----------
+    contact_maps : dict
+        Dictionary mapping names to contact map arrays
+    n_frames : int, optional
+        Number of frames to include (None for all)
+    bin_size : int, default=10
+        Size of bins for matrix binning
+    pow : int, default=4
+        Power to raise contact maps to
+    cmap : str, default="gnuplot2"
+        Colormap for visualization
+    figsize : tuple, default=(8, 6)
+        Figure size
+    dpi : int, default=100
+        DPI for saved images
+    duration : int, default=500
+        Duration per frame in milliseconds
+    output_path : str, default='results/plots/contact_maps_animation.gif'
+        Path to save the GIF
+        
+    Returns
+    -------
+    list
+        List of PIL Image objects (frames)
+    """
+    import matplotlib.animation as animation
+    from PIL import Image
+    import io
+    
+    frames = []
+    contact_maps_subset = list(contact_maps.items())[:n_frames]
+    
+    for i, (name, contact_map) in enumerate(tqdm(contact_maps_subset)):
+        # Bin the matrix   
+        contact_map_binned = bin_matrix(X=contact_map**pow, 
+                                           bin_size=bin_size)
+         
+        # Create a single plot for each frame
+        fig, ax = plt.subplots(figsize=figsize)
+        im = ax.imshow(contact_map_binned, 
+                        cmap=cmap, 
+                        interpolation="nearest")
+        
+        protein_id = os.path.basename(name).split("_unrelaxed")[0].split("_")[0]
+        haplotype_id = os.path.basename(name).split("_unrelaxed")[0].replace(protein_id+"_","")
+        
+        # Set haplotype ID left justified
+        ax.set_title(f"{haplotype_id}", fontsize=12, loc='left', pad=10)
+        
+        # Add frame counter right justified
+        ax.text(0.98, 0.98, f"({i+1} / {len(contact_maps_subset)})", 
+                transform=ax.transAxes, fontsize=12, ha='right', va='top', color='white')
+        
+        ax.axis('off')
+        
+        # Convert plot to image
+        buf = io.BytesIO()
+        plt.savefig(buf, format='png', dpi=dpi, bbox_inches='tight')
+        buf.seek(0)
+        img = Image.open(buf)
+        frames.append(img)
+        plt.close()
+
+    # Save as GIF
+    if frames:
+        frames[0].save(output_path, 
+                       save_all=True, 
+                       append_images=frames[1:], 
+                       duration=duration,
+                       loop=0)
+        print(f"GIF saved as '{output_path}'")
+    
+    return frames
+
+
+
+
+def animate_contact_map_interpolation(map1, 
+                                    map2, 
+                                    num_frames=30, 
+                                    duration=200, # 200ms per frame
+                                    loop=0,
+                                    pow=1,
+                                    figsize=(8, 6),
+                                    dpi=100,
+                                    format="png",
+                                    cmap="gnuplot2",
+                                    output_path="results/contact_map_interpolation.gif",
+                                    ):
+    """
+    Create a smooth animation transitioning between two contact maps using the trained autoencoder.
+    
+    Args:
+        map1: First contact map (numpy array)
+        map2: Second contact map (numpy array) 
+        model: Trained autoencoder model
+        num_frames: Number of frames in the animation
+        pow: Power to raise the contact map to
+        output_path: Path to save the GIF
+    """
+    
+    # Ensure maps have the same shape
+    if map1.shape != map2.shape:
+        # Resize map2 to match map1's shape
+        from scipy.ndimage import zoom
+        zoom_factors = (map1.shape[0] / map2.shape[0], map1.shape[1] / map2.shape[1])
+        map2 = zoom(map2, zoom_factors, order=1) 
+
+        map1 = np.power(map1, pow)
+        map2 = np.power(map2, pow)
+        # Fallback: simple linear interpolation without autoencoder
+        frames = []
+        for i in range(num_frames):
+            alpha = i / (num_frames - 1)
+            interpolated_map = alpha * map2 + (1 - alpha) * map1
+            
+            # Create frame
+            fig, ax = plt.subplots(figsize=figsize)
+            im = ax.imshow(interpolated_map, cmap=cmap, interpolation='nearest')
+            ax.set_title(f'Linear Interpolation Frame {i+1}/{num_frames} (α={alpha:.2f})')
+            ax.axis('off')
+            
+            # Add colorbar
+            cbar = plt.colorbar(im, ax=ax, shrink=0.8)
+            cbar.set_label('Contact Probability')
+            
+            # Convert plot to image
+            buf = io.BytesIO()
+            plt.savefig(buf, format=format, dpi=dpi, bbox_inches='tight')
+            buf.seek(0)
+            frame = Image.open(buf)
+            frames.append(frame)
+            plt.close()
+        
+        # Save as GIF
+        if frames:
+            frames[0].save(
+                output_path,
+                save_all=True,
+                append_images=frames[1:],
+                duration=duration,
+                loop=loop
+            )
+            print(f"Linear interpolation animation saved to {output_path}")
+        
+        return frames
+
+def standardize_id(id, 
+                    pattern=[" ", ">", ",", ":", "*", "{", "}", "(", ")"], 
+                    replacement="_"):
+        new_id = id
+        for char in pattern:
+            new_id = new_id.replace(char, replacement)
+        return new_id
+
+def create_haplotype_msas(template_msa, 
+                          haplotypes_fasta,  
+                          output_dir=None,
+                          output_suffix="a3m",
+                          description_prefix="",
+                          return_files=True,
+                          verbose=False):
+    """
+    Create MSA files for each haplotype sequence by replacing the first sequence
+    in a template MSA with each haplotype sequence.
+
+    Args:
+        template_msa (str): Path to template MSA file (fasta format)
+        haplotypes_fasta (str): Path to fasta file containing haplotype sequences
+        output_dir (str): Directory to save output MSA files
+        output_suffix (str): File extension for output files (default: "a3m")
+        verbose (bool): Whether to print progress messages (default: True)
+
+    Returns:
+        list: List of paths to created MSA files
+
+    Example:
+        create_haplotype_msas(template_msa="~/projects/data/ProteinGym/subs/refseq-BRCA1-NM_007294.3.a2m", 
+                              haplotypes_fasta="~/projects/data/1KG/fasta/split/ENST00000357654.fasta",  
+                              output_dir="~/projects/data/colabfold/ENST00000357654/af2_sameMSA",
+                              description_prefix="1000_Genomes_on_GRCh38-Haplosaurus-")
+    """
+    from Bio import SeqIO  
+
+    if output_dir is None:
+        import tempfile
+        output_dir = tempfile.mkdtemp()
+        if verbose:
+            print(f"Setting output_dir to temporary directory: {output_dir}")
+
+    # Expand the paths
+    template_msa = os.path.expanduser(template_msa)
+    haplotypes_fasta = os.path.expanduser(haplotypes_fasta)
+    output_dir = os.path.expanduser(output_dir)
+
+    # Import the haplotype sequences
+    haplotype_seqs = list(SeqIO.parse(haplotypes_fasta, "fasta"))
+ 
+    # Import template MSA as a list of SeqRecord objects
+    msa_seqs = list(SeqIO.parse(template_msa, "fasta"))
+ 
+    # Ensure output directory exists
+    os.makedirs(os.path.expanduser(output_dir), exist_ok=True)
+    
+    haplotype_msas = []
+    for hap_seq in tqdm(haplotype_seqs, 
+                        desc="Processing haplotype sequences"): 
+        # Replace the first sequence with the haplotype sequence
+        standardized_id = standardize_id(hap_seq.id) 
+        msa_seqs[0].id = standardized_id
+        msa_seqs[0].name = hap_seq.name
+        msa_seqs[0].description = f"{description_prefix}{hap_seq.id}"
+        msa_seqs[0].seq = hap_seq.seq 
+        
+        # Write the alignment to file
+        output_file = os.path.expanduser(f"{output_dir}/{standardized_id}.{output_suffix}")
+        SeqIO.write(msa_seqs, output_file, "fasta")
+        
+        if verbose:
+            print(f"Alignment written to {output_file}")
+        if return_files:
+            haplotype_msas.append(output_file)
+        else:
+            haplotype_msas.append(msa_seqs)
+    
+    return haplotype_msas

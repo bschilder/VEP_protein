@@ -4,6 +4,7 @@ from typing import Dict, List, Optional, Union, Tuple, Set
 from pathlib import Path
 import pandas as pd
 from tqdm.auto import tqdm
+from traitlets import default
 import ensembl_rest
 
 import src.utils as utils
@@ -2254,7 +2255,7 @@ def haplotypes_to_samples(haplotypes=None,
             if add_ref:
                 haps_to_ref = df.loc[df['haplotype'].str.endswith(":REF")]
                 haps_to_ref.loc[:,["sample","Population","Super Population"]] = "REF"
-                haps_to_ref.loc[:,["Gender"]] = pd.NA
+                haps_to_ref.loc[:,["Gender"]] = pd.Int64Dtype().na_value
                 haps_to_ref= haps_to_ref.drop_duplicates()
                 df = pd.concat([haps_to_ref, df])
 
@@ -2396,6 +2397,8 @@ def haplosaurus_dataloader(tx_ids,
 
 def get_haplotype_diffs(haplotypes,
                         key='protein_haplotypes',
+                        tx_ids=None,
+                        skip_ref=True,
                         as_df=True,
                         verbose=True):
     """
@@ -2405,6 +2408,9 @@ def get_haplotype_diffs(haplotypes,
     Args:
         haplotypes: Dictionary containing haplotype information
         key: The key in the haplotype dictionary containing the haplotype information
+        tx_ids: List of transcript IDs to process
+        skip_ref: Whether to skip reference haplotypes
+        as_df: Whether to return a DataFrame
         verbose: Whether to print verbose output
 
     Returns:
@@ -2413,12 +2419,17 @@ def get_haplotype_diffs(haplotypes,
 
     # Create a list to store all rows
     rows = []
+    if tx_ids is None:
+        tx_ids = list(haplotypes.keys())
+    
 
-    for tx_id in tqdm(list(haplotypes.keys()), 
+    for tx_id in tqdm(tx_ids, 
                     desc="Extracting haplotype diffs",
                     leave=False):
-        for hap in haplotypes[tx_id][key]:
-            if 'diffs' not in hap:
+        for hap in haplotypes[tx_id][key]: 
+            default_row_dict=  {'ENST': tx_id,
+                                'haplotype': hap['name']} 
+            if 'diffs' not in hap: 
                 continue
             hap_diffs = hap['diffs']
             if len(hap_diffs) > 0:
@@ -2431,13 +2442,18 @@ def get_haplotype_diffs(haplotypes,
                     }
                     row_dict.update(diff)
                     rows.append(row_dict)
+            else: 
+                if not skip_ref:
+                    rows.append(default_row_dict)
+                else:
+                    continue
 
     if as_df:
         # Create dataframe directly from the list of dictionaries
         diff_df = pd.DataFrame.from_records(rows)
 
         if verbose:
-            print(f"{len(diff_df)} diffs from {len(haplotypes)} haplotypes extracted")
+            print(f"{len(diff_df)} diffs from {len(haplotypes)} {key} extracted")
 
     return diff_df
 

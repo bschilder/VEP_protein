@@ -2,7 +2,6 @@ from cProfile import label
 import os
 import glob
 import pandas as pd
-import colabfold
 import numpy as np
 import argparse
 import pathlib 
@@ -2909,15 +2908,16 @@ def pairwise_variant_sensitization_clustermap(vep_prot,
                                             n_labels_y=50, 
                                             row_positions_col="mutant_position",
                                             col_positions_col="variant_position",
-                                            normalize_rows=True,
+                                            normalize_procedure=["cols"],
                                             palette_positions="Blues",
                                             palette_heatmap="viridis",
-                                            ref_linewidth=3,
+                                            ref_linewidth=2,
                                             title_y=1.35,
                                             show_mean_vep_per_col=True,
                                             show_mean_vep_per_row=True,
                                             show_position_per_col=False,
                                             show_position_per_row=False,
+                                            pow=1,
                                             **kwargs):
     
     vep_prot = vep_prot.copy()
@@ -2930,8 +2930,6 @@ def pairwise_variant_sensitization_clustermap(vep_prot,
 
     clinvar_vs_wt, vep_prot = sort_clinical_vs_wt_variant_matrix(vep_prot, clinvar_vs_wt) 
 
-   
-
     print("Creating color palettes")
     col_pos_cmap = utils.make_palette(vep_prot[col_positions_col].unique(), 
                                       palette=palette_positions )
@@ -2941,15 +2939,12 @@ def pairwise_variant_sensitization_clustermap(vep_prot,
     print("Inverting scale")
     clinvar_vs_wt = -clinvar_vs_wt
 
-    if normalize_rows:
-        print("Normalizing rows")
-        # Min-max normalize each column
-        clinvar_vs_wt = clinvar_vs_wt.sub(clinvar_vs_wt.min(axis=0), axis=1)
-        clinvar_vs_wt = clinvar_vs_wt.div(clinvar_vs_wt.max(axis=0), axis=1)
-     
-    # Create a mask for the original NaN values
-    print("Creating mask")
-    mask = clinvar_vs_wt.isna()
+
+    # Normalize the data
+    clinvar_vs_wt = utils.minmax_normalize(clinvar_vs_wt, 
+                                           procedure=normalize_procedure) 
+
+
 
     # Create column colors DataFrame with both position and mean VEP info
     print("Creating column colors")
@@ -2992,7 +2987,14 @@ def pairwise_variant_sensitization_clustermap(vep_prot,
     try:
         # Create clustermap with masked values
         # Ensure no duplicate labels in index and columns
+
+        # Create a mask for the original NaN values
+        print("Creating mask")
+        mask = clinvar_vs_wt.isna()
+        # Fill NaN values with 0 to avoid errors
         clinvar_vs_wt_clean = clinvar_vs_wt.fillna(0)
+
+       
         
         # Reset index and columns to ensure unique labels
         # clinvar_vs_wt_clean = clinvar_vs_wt_clean.reset_index()
@@ -3002,7 +3004,8 @@ def pairwise_variant_sensitization_clustermap(vep_prot,
         # col_colors = col_colors.reset_index()
         # row_colors = row_colors.reset_index()
         print("Creating clustermap")
-        g = sns.clustermap(clinvar_vs_wt_clean,
+        # Apply power transformation here so we can return the original data
+        g = sns.clustermap(clinvar_vs_wt_clean**pow,
                             figsize=figsize,
                             mask=mask,
                             col_colors=col_colors,
@@ -3023,7 +3026,7 @@ def pairwise_variant_sensitization_clustermap(vep_prot,
     g.ax_heatmap.collections[0].colorbar.set_label("Mean VEP score", rotation=270, va="bottom")
     g.ax_heatmap.set_xlabel("Clinical variants")
     g.ax_heatmap.set_ylabel("WT variants", rotation=270, va="bottom")
-    g.ax_heatmap.set_title(f"Pairwise Variant Sensitization Analysis\nProtein: {vep_prot["GENEINFO"].unique()[0].split(':')[0]} ({vep_prot['protein'].unique()[0]})\nNatural WT variants (n={clinvar_vs_wt.shape[0]} rows) x Injected clinical variants (n={clinvar_vs_wt.shape[1]} cols)",
+    g.ax_heatmap.set_title(f"Pairwise Variant Sensitization Analysis\nProtein: {vep_prot["GENEINFO"].unique()[0].split(':')[0]} ({vep_prot['protein'].unique()[0]})\nInjected clinical variants (n={clinvar_vs_wt.shape[1]} cols) x Natural WT variants (n={clinvar_vs_wt.shape[0]} rows)",
                         ha="left", x=0.1, y=title_y)
     plt.show()
     return g, clinvar_vs_wt, row_colors, col_colors
@@ -3224,3 +3227,187 @@ def plot_vep_variance_zscore(vep_df):
     plt.xlabel('Z-score (standard deviations from mean)')
     plt.ylabel('Count')
     plt.show()
+
+def add_rectangles(xy_pairs, 
+                   X=None,
+                   x_col="wt_variant",
+                   y_col="clinical_variant",
+                   xy_pairs_are_idx=False,
+                   color_col="outlier_type",
+                   shape_col=None,
+                   shape_func=plt.Rectangle,
+                   cmap=None,
+                   palette=None,
+                   height=1,
+                   width=1,
+                   linewidth=0.5,
+                   angle=0,
+                   rotation_point='xy',
+                   fill=False,
+                   **kwargs):
+    """Add colored rectangles to highlight significant variant pairs in a plot.
+    
+    Parameters
+    ----------
+    X : pandas.DataFrame
+        The main data matrix containing variant pairs
+    xy_pairs : pandas.DataFrame
+        DataFrame containing pairs of variants to highlight
+    x_col : str, default="wt_variant"
+        Column name in xy_pairs containing x-axis variant labels
+    y_col : str, default="clinical_variant" 
+        Column name in xy_pairs containing y-axis variant labels
+    color_col : str, default="outlier_type"
+        Column name in xy_pairs containing color categories
+    cmap : dict, optional
+        Custom color mapping dictionary
+    palette : str, optional
+        Seaborn color palette name to use if cmap not provided
+        
+    Returns
+    -------
+    None
+        Adds rectangles to the current matplotlib axes
+    """
+    print("Adding rectangles")
+    if palette is None:
+        palette = "Set3"
+    if cmap is None:
+        cmap = utils.make_palette(xy_pairs[color_col].unique(), palette=palette)
+        
+    if not xy_pairs_are_idx:
+        if X is None:
+            raise ValueError("X must be provided if xy_pairs_are_idx is False")
+    
+    # Pre-compute shape function mapping if needed
+    shape_funcs = None
+    if shape_col is not None:
+        unique_values = xy_pairs[shape_col].unique()
+        if len(unique_values) == 2 and set(unique_values).issubset({0, 1, True, False}):
+            shape_funcs = {1: plt.Rectangle, 0: plt.Circle}
+    
+    # Pre-compute index mappings if needed
+    if not xy_pairs_are_idx:
+        x_idx_map = {val: X.index.get_loc(val) for val in xy_pairs[x_col].unique()}
+        y_idx_map = {val: X.columns.get_loc(val) for val in xy_pairs[y_col].unique()}
+    
+    # Pre-compute colors for all unique values
+    color_map = {val: cmap[val] for val in xy_pairs[color_col].unique()}
+    
+    # Get current axes once
+    ax = plt.gca()
+    
+    # Vectorized processing
+    patches = []
+    for _, row in xy_pairs.iterrows():
+        # Get indices
+        if xy_pairs_are_idx:
+            row_idx, col_idx = row[x_col], row[y_col]
+        else:
+            row_idx, col_idx = x_idx_map[row[x_col]], y_idx_map[row[y_col]]
+        
+        # Get color and shape function
+        color = color_map[row[color_col]]
+        current_shape_func = shape_funcs[row[shape_col]] if shape_funcs is not None else shape_func
+        
+        # Create shape parameters based on shape type
+        if current_shape_func == plt.Circle:
+            shape_params = {
+                'xy': (col_idx, row_idx),
+                'radius': min(width, height) / 2,
+                'fill': fill,
+                'linewidth': linewidth,
+                'edgecolor': color,
+                'facecolor': color,
+                **kwargs
+            }
+        else:
+            # Rectangle-specific parameters
+            shape_params = {
+                'xy': (col_idx, row_idx),
+                'width': width,
+                'height': height,
+                'angle': angle,
+                'rotation_point': rotation_point,
+                'fill': fill,
+                'linewidth': linewidth,
+                'edgecolor': color,
+                'facecolor': color,
+                **kwargs
+            }
+        
+        # Create and store patch
+        patches.append(current_shape_func(**shape_params))
+    
+    # Add all patches at once
+    ax.add_collection(plt.matplotlib.collections.PatchCollection(patches, match_original=True))
+
+
+
+def identify_outliers(X):
+    import scipy.stats as stats 
+    from statsmodels.stats.multitest import multipletests
+
+    # Initialize lists to store results
+    columns = []
+    variants = []
+    values = []
+    outlier_types = []
+    z_scores = []
+    p_values = []  # New list to store p-values
+    
+    for col in X.columns:
+        # Calculate mean and standard deviation
+        mean = X[col].mean()
+        std = X[col].std()
+        
+        # Identify values more than 2 standard deviations from mean
+        outliers = X[col][abs(X[col] - mean) > 2 * std]
+        
+        if not outliers.empty:
+            # Add high outliers
+            high_outliers = outliers[outliers > mean]
+            for idx, val in high_outliers.items():
+                columns.append(col)
+                variants.append(idx)
+                values.append(val)
+                outlier_types.append('high')
+                z = (val - mean) / std
+                z_scores.append(z)
+                # Calculate two-tailed p-value from z-score
+                p_values.append(2 * (1 - stats.norm.cdf(abs(z))))
+            
+            # Add low outliers
+            low_outliers = outliers[outliers < mean]
+            for idx, val in low_outliers.items():
+                columns.append(col)
+                variants.append(idx)
+                values.append(val)
+                outlier_types.append('low')
+                z = (val - mean) / std
+                z_scores.append(z)
+                # Calculate two-tailed p-value from z-score
+                p_values.append(2 * (1 - stats.norm.cdf(abs(z))))
+    
+    # Create DataFrame from results
+    df =  pd.DataFrame({
+        'clinical_variant': columns,
+        'wt_variant': variants,
+        'value': values,
+        'outlier_type': outlier_types,
+        'z_score': z_scores,
+        'p_value': p_values  # Add p-values to DataFrame
+    })
+
+    # Get the p-values and apply FDR correction
+    # rejected: Boolean array indicating which hypotheses were rejected after FDR correction
+    # (True means the null hypothesis was rejected, i.e. the result is statistically significant)
+    significant, p_adjusted, _, _ = multipletests(df['p_value'], method='fdr_bh')
+
+    # Add adjusted p-values to DataFrame
+    df['p_adjusted'] = p_adjusted
+    df['significant'] = significant
+
+    # Sort by adjusted p-value
+    df = df.sort_values('p_adjusted')
+    return df

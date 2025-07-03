@@ -1419,7 +1419,7 @@ def variants_to_positions(df,
                                        key=lambda item: (item[1] is None, item[1] or 0))}
     
     # Map positions to new column
-    df[position_col] = df[variant_col].map(positions)
+    df[position_col] = pd.to_numeric(df[variant_col].map(positions), errors='coerce').astype('Int64')
     return df
 
 
@@ -1481,3 +1481,105 @@ def add_variant_name(df,
         result = result.to_pandas()
     
     return result
+
+
+
+def minmax_normalize(X, procedure=["rows", "cols"], verbose=True):
+    """
+    Min-max normalize a matrix by columns and/or rows in a specified order.
+    Args:
+        X: Matrix to normalize (pd.DataFrame or np.ndarray)
+        procedure: List of procedures to apply. Can be "rows" or "cols".
+    Returns:
+        Normalized matrix
+    """
+
+    if not isinstance(X, pd.DataFrame) and isinstance(X, np.ndarray):
+        X = pd.DataFrame(X)    
+
+    def normalize_rows(X):
+        X = X.sub(X.min(axis=1), axis=0)
+        X = X.div(X.max(axis=1), axis=0)
+        return X
+    
+    def normalize_cols(X):
+        X = X.sub(X.min(axis=0), axis=1)
+        X = X.div(X.max(axis=0), axis=1)
+        return X
+    
+    for proc in procedure:
+        if proc == "rows":
+            if verbose:
+                print("Normalizing rows")
+            X = normalize_rows(X)
+        elif proc == "cols":
+            if verbose:
+                print("Normalizing columns")
+            X = normalize_cols(X)
+        else:
+            raise ValueError(f"Invalid procedure: {proc}")
+    return X
+
+
+def fill_coordinates(df, 
+                     full_length,
+                     x_id_col='variant',
+                     y_id_col='mutant',
+                     x_pos_col='variant_position',
+                     y_pos_col='mutant_position',
+                     value_col='VEP',
+                     aggfunc='mean', 
+                     dropna=False,
+                     **kwargs):
+    """
+    Fill a coordinate matrix with values from a DataFrame, creating a complete grid of positions.
+    
+    Args:
+        df (pd.DataFrame): Input DataFrame containing the data in long format (one row per x-y coordinate)
+        x_id_col (str): Column name for x-axis identifiers
+        y_id_col (str): Column name for y-axis identifiers
+        x_pos_col (str): Column name for x-axis positions
+        y_pos_col (str): Column name for y-axis positions
+        value_col (str): Column name for the values to fill in the matrix
+        full_length (int): Length of the complete position range
+        aggfunc (str): Aggregation function to use for duplicate values
+        dropna (bool): Whether to drop NaN values
+        **kwargs: Additional arguments passed to pd.pivot_table
+        
+    Returns:
+        pd.DataFrame: Pivoted matrix with filled coordinates
+    """
+    # Select and deduplicate relevant columns
+    dat = df[[x_id_col, y_id_col, x_pos_col, y_pos_col, value_col]].drop_duplicates().copy()
+    
+    # Convert position columns to integers, handling NaN values
+    dat[x_pos_col] = dat[x_pos_col].astype('Int64')
+    dat[y_pos_col] = dat[y_pos_col].astype('Int64')
+
+    # Drop rows with NaN values in x_pos_col or y_pos_col
+    dat.dropna(subset=[x_pos_col, y_pos_col], inplace=True)
+
+    # Create complete range of positions
+    all_positions = pd.DataFrame({
+        y_pos_col: range(1, full_length + 1),
+        x_pos_col: range(1, full_length + 1)
+    })
+
+    # Merge with original data to include all positions
+    dat = pd.merge(
+        dat,
+        all_positions,
+        on=[y_pos_col, x_pos_col],
+        how='outer'
+    )
+
+    # Create pivoted matrix
+    X = dat.pivot_table(
+        index=x_pos_col, 
+        columns=y_pos_col, 
+        values=value_col, 
+        aggfunc=aggfunc, 
+        dropna=dropna,
+        **kwargs
+    )
+    return X
