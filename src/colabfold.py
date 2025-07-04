@@ -590,7 +590,9 @@ def animate_contact_maps_variation(contact_maps,
                        append_images=frames[1:], 
                        duration=duration,
                        loop=0)
-        print(f"GIF saved as '{output_path}'")
+        from IPython.display import display, HTML
+        abs_path = os.path.abspath(output_path)
+        display(HTML(f'<a href="file://{abs_path}" target="_blank">GIF saved as \'{abs_path}\'</a>'))
     
     return frames
 
@@ -607,7 +609,7 @@ def animate_contact_map_interpolation(map1,
                                     dpi=100,
                                     format="png",
                                     cmap="gnuplot2",
-                                    output_path="results/contact_map_interpolation.gif",
+                                    save_path="results/plots/contact_map_interpolation.gif",
                                     ):
     """
     Create a smooth animation transitioning between two contact maps using the trained autoencoder.
@@ -657,13 +659,13 @@ def animate_contact_map_interpolation(map1,
         # Save as GIF
         if frames:
             frames[0].save(
-                output_path,
+                save_path,
                 save_all=True,
                 append_images=frames[1:],
                 duration=duration,
                 loop=loop
             )
-            print(f"Linear interpolation animation saved to {output_path}")
+            print(f"Linear interpolation animation saved to {save_path}")
         
         return frames
 
@@ -681,7 +683,8 @@ def create_haplotype_msas(template_msa,
                           output_suffix="a3m",
                           description_prefix="",
                           return_files=True,
-                          verbose=False):
+                          verbose=False,
+                          force=False):
     """
     Create MSA files for each haplotype sequence by replacing the first sequence
     in a template MSA with each haplotype sequence.
@@ -692,7 +695,7 @@ def create_haplotype_msas(template_msa,
         output_dir (str): Directory to save output MSA files
         output_suffix (str): File extension for output files (default: "a3m")
         verbose (bool): Whether to print progress messages (default: True)
-
+        force (bool): Whether to overwrite existing files (default: False)
     Returns:
         list: List of paths to created MSA files
 
@@ -727,15 +730,26 @@ def create_haplotype_msas(template_msa,
     haplotype_msas = []
     for hap_seq in tqdm(haplotype_seqs, 
                         desc="Processing haplotype sequences"): 
-        # Replace the first sequence with the haplotype sequence
         standardized_id = standardize_id(hap_seq.id) 
+        output_file = os.path.expanduser(f"{output_dir}/{standardized_id}.{output_suffix}")
+        if os.path.exists(output_file) and not force:
+            if verbose:
+                print(f"Skipping {output_file} because it already exists")
+            if return_files:
+                haplotype_msas.append(output_file)
+            else:
+                haplotype_msas.append(msa_seqs)
+            continue
+        # Replace the first sequence with the haplotype sequence
+        
         msa_seqs[0].id = standardized_id
         msa_seqs[0].name = hap_seq.name
         msa_seqs[0].description = f"{description_prefix}{hap_seq.id}"
-        msa_seqs[0].seq = hap_seq.seq 
+        # AlphaFold2 doesn't supoort gaps. Can instead replace with X (unknown sequence):
+        # https://github.com/google-deepmind/alphafold/issues/150#issuecomment-905341661
+        msa_seqs[0].seq = hap_seq.seq.replace("-", "X") 
         
-        # Write the alignment to file
-        output_file = os.path.expanduser(f"{output_dir}/{standardized_id}.{output_suffix}")
+        # Write the alignment to file 
         SeqIO.write(msa_seqs, output_file, "fasta")
         
         if verbose:
@@ -746,3 +760,791 @@ def create_haplotype_msas(template_msa,
             haplotype_msas.append(msa_seqs)
     
     return haplotype_msas
+
+def create_interactive_umap_contact_plot(af2_meta, contact_maps, 
+                                        x_col='umap_1', y_col='umap_2',
+                                        color_col=None, size_col=None,
+                                        hover_cols=None, 
+                                        contact_map_params=None,
+                                        figsize=(1200, 600),
+                                        title="Interactive UMAP with Contact Maps"):
+    """
+    Create an interactive 2D scatterplot of AlphaFold2 embeddings with dynamic contact map visualization.
+    
+    Args:
+        af2_meta: DataFrame containing UMAP coordinates and metadata
+        contact_maps: Dictionary mapping sequence identifiers to contact map arrays
+        x_col: Column name for x-axis (default: 'umap_1')
+        y_col: Column name for y-axis (default: 'umap_2')
+        color_col: Column name for point colors (optional)
+        size_col: Column name for point sizes (optional)
+        hover_cols: List of columns to show in hover tooltip (optional)
+        contact_map_params: Dictionary of parameters for contact map visualization
+        figsize: Tuple of (width, height) in pixels
+        title: Plot title
+        
+    Returns:
+        plotly.graph_objects.Figure: Interactive plot with scatter plot and contact map subplot
+        
+    Example:
+        >>> fig = create_interactive_umap_contact_plot(
+        ...     af2_meta=af2_meta,
+        ...     contact_maps=contact_maps,
+        ...     color_col='sample_id',
+        ...     hover_cols=['sample_id', 'edit_distance', 'model_rank']
+        ... )
+        >>> fig.show()
+    """
+    import plotly.graph_objects as go
+    from plotly.subplots import make_subplots
+    import plotly.express as px
+    
+    # Default contact map parameters
+    if contact_map_params is None:
+        contact_map_params = {
+            'bin_size': 2,
+            'pow': 4,
+            'cmap': 'viridis',
+            'normalize_scale': True
+        }
+    # Map matplotlib colormap names to Plotly colorscales
+    colormap_mapping = {
+        'gnuplot2': 'viridis',
+        'gnuplot': 'viridis',
+        'plasma': 'plasma',
+        'inferno': 'inferno',
+        'magma': 'magma',
+        'viridis': 'viridis',
+        'cividis': 'cividis',
+        'hot': 'hot',
+        'cool': 'plasma',
+        'spring': 'plasma',
+        'summer': 'viridis',
+        'autumn': 'viridis',
+        'winter': 'viridis',
+        'gray': 'gray',
+        'bone': 'gray',
+        'pink': 'pinkyl',
+        'copper': 'oranges',
+        'jet': 'jet',
+        'hsv': 'hsv',
+        'rainbow': 'rainbow',
+        'ocean': 'haline',
+        'gist_earth': 'earth',
+        'terrain': 'earth',
+        'gist_stern': 'viridis',
+        'brg': 'rdbu',
+        'CMRmap': 'viridis',
+        'cubehelix': 'viridis',
+        'flag': 'viridis',
+        'prism': 'viridis',
+        'nipy_spectral': 'spectral',
+        'gist_ncar': 'spectral'
+    }
+    if contact_map_params['cmap'] in colormap_mapping:
+        contact_map_params['cmap'] = colormap_mapping[contact_map_params['cmap']]
+    
+    # Create subplot layout: scatter plot on left, contact map on right
+    fig = make_subplots(
+        rows=1, cols=2,
+        column_widths=[0.6, 0.4],
+        subplot_titles=('UMAP Embeddings', 'Contact Map'),
+        specs=[[{"type": "scatter"}, {"type": "heatmap"}]]
+    )
+    
+    # Prepare scatter plot data
+    scatter_data = af2_meta.copy()
+    
+    # Create hover text
+    if hover_cols is None:
+        hover_cols = ['sample_id'] if 'sample_id' in scatter_data.columns else []
+    
+    hover_text = []
+    for idx, row in scatter_data.iterrows():
+        text_parts = []
+        for col in hover_cols:
+            if col in row and pd.notna(row[col]):
+                text_parts.append(f"{col}: {row[col]}")
+        hover_text.append("<br>".join(text_parts))
+    
+    # Create scatter plot
+    scatter_kwargs = {
+        'x': scatter_data[x_col],
+        'y': scatter_data[y_col],
+        'mode': 'markers',
+        'text': hover_text,
+        'hovertemplate': '<b>%{text}</b><extra></extra>',
+        'name': 'UMAP Points'
+    }
+    
+    # Add color and size if specified
+    marker_dict = {}
+    
+    if color_col and color_col in scatter_data.columns:
+        # Create color mapping for categorical data
+        unique_colors = scatter_data[color_col].unique()
+        color_map = {val: px.colors.qualitative.Set3[i % len(px.colors.qualitative.Set3)] 
+                    for i, val in enumerate(unique_colors)}
+        colors = [color_map[val] for val in scatter_data[color_col]]
+        marker_dict['color'] = colors
+    
+    if size_col and size_col in scatter_data.columns:
+        # Normalize size to reasonable range
+        sizes = scatter_data[size_col]
+        if sizes.dtype in ['int64', 'float64']:
+            min_size, max_size = 5, 20
+            normalized_sizes = min_size + (sizes - sizes.min()) / (sizes.max() - sizes.min()) * (max_size - min_size)
+            marker_dict['size'] = normalized_sizes
+    
+    if marker_dict:
+        scatter_kwargs['marker'] = marker_dict
+    
+    # Add scatter plot to figure
+    fig.add_trace(
+        go.Scatter(**scatter_kwargs),
+        row=1, col=1
+    )
+    
+    # Create a placeholder contact map (will be updated on hover)
+    if contact_maps:
+        # Get the first contact map as placeholder
+        first_key = list(contact_maps.keys())[0]
+        first_contact_map = contact_maps[first_key]
+        
+        # Process contact map
+        contact_map_processed = process_contact_map_for_display(
+            first_contact_map, **contact_map_params
+        )
+        
+        # Add placeholder heatmap
+        fig.add_trace(
+            go.Heatmap(
+                z=contact_map_processed,
+                colorscale=contact_map_params['cmap'],
+                showscale=True,
+                name='Contact Map',
+                hovertemplate='Residue i: %{y}<br>Residue j: %{x}<br>Contact: %{z:.3f}<extra></extra>'
+            ),
+            row=1, col=2
+        )
+    
+    # Update layout
+    fig.update_layout(
+        title=title,
+        width=figsize[0],
+        height=figsize[1],
+        showlegend=False,
+        hovermode='closest'
+    )
+    
+    # Update axes labels
+    fig.update_xaxes(title_text=x_col, row=1, col=1)
+    fig.update_yaxes(title_text=y_col, row=1, col=1)
+    fig.update_xaxes(title_text="Residue j", row=1, col=2)
+    fig.update_yaxes(title_text="Residue i", row=1, col=2)
+    
+    # Add JavaScript for dynamic contact map updates
+    # This will be handled by the hover events
+    fig.update_traces(
+        hoverinfo='skip',
+        selector=dict(type='scatter')
+    )
+    
+    return fig
+
+def process_contact_map_for_display(contact_map, bin_size=2, pow=4, 
+                                   normalize_scale=True, cmap='gnuplot2'):
+    """
+    Process a contact map for display in the interactive plot.
+    
+    Args:
+        contact_map: Contact map array
+        bin_size: Size of bins for matrix binning
+        pow: Power to raise contact map to
+        normalize_scale: Whether to normalize to [0,1] scale
+        cmap: Colormap name
+        
+    Returns:
+        np.ndarray: Processed contact map ready for display
+    """
+    # Apply power transformation
+    if pow is not None:
+        contact_map = contact_map**pow
+    
+    # Normalize scale if requested
+    if normalize_scale:
+        contact_map = (contact_map - np.nanmin(contact_map)) / (np.nanmax(contact_map) - np.nanmin(contact_map))
+    
+    # Bin the matrix
+    if bin_size > 1:
+        contact_map = bin_matrix(contact_map, bin_size=bin_size, agg_func=np.nanmax)
+    
+    return contact_map
+
+def create_dash_interactive_umap_app(af2_meta, contact_maps, 
+                                   x_col='umap_1', y_col='umap_2',
+                                   color_col=None, size_col=None,
+                                   hover_cols=None, 
+                                   contact_map_params=None,
+                                   title="Interactive UMAP with Contact Maps"):
+    """
+    Create a Dash web application for interactive UMAP visualization with dynamic contact maps.
+    
+    Args:
+        af2_meta: DataFrame containing UMAP coordinates and metadata
+        contact_maps: Dictionary mapping sequence identifiers to contact map arrays
+        x_col: Column name for x-axis (default: 'umap_1')
+        y_col: Column name for y-axis (default: 'umap_2')
+        color_col: Column name for point colors (optional)
+        size_col: Column name for point sizes (optional)
+        hover_cols: List of columns to show in hover tooltip (optional)
+        contact_map_params: Dictionary of parameters for contact map visualization
+        title: Plot title
+        
+    Returns:
+        dash.Dash: Dash application object
+        
+    Example:
+        >>> app = create_dash_interactive_umap_app(
+        ...     af2_meta=af2_meta,
+        ...     contact_maps=contact_maps,
+        ...     color_col='sample_id',
+        ...     hover_cols=['sample_id', 'edit_distance']
+        ... )
+        >>> app.run_server(debug=True, port=8050)
+    """
+    try:
+        import dash
+        from dash import dcc, html, Input, Output, callback
+        import plotly.graph_objects as go
+        from plotly.subplots import make_subplots
+        import plotly.express as px
+    except ImportError:
+        print("Dash is required for this functionality. Install with: pip install dash")
+        return None
+    
+    # Default contact map parameters
+    if contact_map_params is None:
+        contact_map_params = {
+            'bin_size': 2,
+            'pow': 4,
+            'cmap': 'viridis',
+            'normalize_scale': True
+        }
+    colormap_mapping = {
+        'gnuplot2': 'viridis',
+        'gnuplot': 'viridis',
+        'plasma': 'plasma',
+        'inferno': 'inferno',
+        'magma': 'magma',
+        'viridis': 'viridis',
+        'cividis': 'cividis',
+        'hot': 'hot',
+        'cool': 'plasma',
+        'spring': 'plasma',
+        'summer': 'viridis',
+        'autumn': 'viridis',
+        'winter': 'viridis',
+        'gray': 'gray',
+        'bone': 'gray',
+        'pink': 'pinkyl',
+        'copper': 'oranges',
+        'jet': 'jet',
+        'hsv': 'hsv',
+        'rainbow': 'rainbow',
+        'ocean': 'haline',
+        'gist_earth': 'earth',
+        'terrain': 'earth',
+        'gist_stern': 'viridis',
+        'brg': 'rdbu',
+        'CMRmap': 'viridis',
+        'cubehelix': 'viridis',
+        'flag': 'viridis',
+        'prism': 'viridis',
+        'nipy_spectral': 'spectral',
+        'gist_ncar': 'spectral'
+    }
+    if contact_map_params['cmap'] in colormap_mapping:
+        contact_map_params['cmap'] = colormap_mapping[contact_map_params['cmap']]
+    
+    # Create Dash app
+    app = dash.Dash(__name__)
+    
+    # Prepare data
+    scatter_data = af2_meta.copy()
+    
+    # Create hover text
+    if hover_cols is None:
+        hover_cols = ['sample_id'] if 'sample_id' in scatter_data.columns else []
+    
+    hover_text = []
+    for idx, row in scatter_data.iterrows():
+        text_parts = []
+        for col in hover_cols:
+            if col in row and pd.notna(row[col]):
+                text_parts.append(f"{col}: {row[col]}")
+        hover_text.append("<br>".join(text_parts))
+    
+    # Create initial figure
+    fig = make_subplots(
+        rows=1, cols=2,
+        column_widths=[0.6, 0.4],
+        subplot_titles=('UMAP Embeddings', 'Contact Map'),
+        specs=[[{"type": "scatter"}, {"type": "heatmap"}]]
+    )
+    
+    # Add scatter plot
+    scatter_kwargs = {
+        'x': scatter_data[x_col],
+        'y': scatter_data[y_col],
+        'mode': 'markers',
+        'text': hover_text,
+        'hovertemplate': '<b>%{text}</b><extra></extra>',
+        'name': 'UMAP Points'
+    }
+    
+    # Add color and size if specified
+    marker_dict = {}
+    
+    if color_col and color_col in scatter_data.columns:
+        # Create color mapping for categorical data
+        unique_colors = scatter_data[color_col].unique()
+        color_map = {val: px.colors.qualitative.Set3[i % len(px.colors.qualitative.Set3)] 
+                    for i, val in enumerate(unique_colors)}
+        colors = [color_map[val] for val in scatter_data[color_col]]
+        marker_dict['color'] = colors
+    
+    if size_col and size_col in scatter_data.columns:
+        sizes = scatter_data[size_col]
+        if sizes.dtype in ['int64', 'float64']:
+            min_size, max_size = 5, 20
+            normalized_sizes = min_size + (sizes - sizes.min()) / (sizes.max() - sizes.min()) * (max_size - min_size)
+            marker_dict['size'] = normalized_sizes
+    
+    if marker_dict:
+        scatter_kwargs['marker'] = marker_dict
+    
+    fig.add_trace(
+        go.Scatter(**scatter_kwargs),
+        row=1, col=1
+    )
+    
+    # Add placeholder contact map
+    if contact_maps:
+        first_key = list(contact_maps.keys())[0]
+        first_contact_map = contact_maps[first_key]
+        contact_map_processed = process_contact_map_for_display(
+            first_contact_map, **contact_map_params
+        )
+        
+        fig.add_trace(
+            go.Heatmap(
+                z=contact_map_processed,
+                colorscale=contact_map_params['cmap'],
+                showscale=True,
+                name='Contact Map',
+                hovertemplate='Residue i: %{y}<br>Residue j: %{x}<br>Contact: %{z:.3f}<extra></extra>'
+            ),
+            row=1, col=2
+        )
+    
+    # Update layout
+    fig.update_layout(
+        title=title,
+        width=1200,
+        height=600,
+        showlegend=False,
+        hovermode='closest'
+    )
+    
+    # Update axes labels
+    fig.update_xaxes(title_text=x_col, row=1, col=1)
+    fig.update_yaxes(title_text=y_col, row=1, col=1)
+    fig.update_xaxes(title_text="Residue j", row=1, col=2)
+    fig.update_yaxes(title_text="Residue i", row=1, col=2)
+    
+    # App layout
+    app.layout = html.Div([
+        html.H1(title),
+        dcc.Graph(
+            id='umap-contact-plot',
+            figure=fig,
+            config={'displayModeBar': True}
+        ),
+        html.Div(id='hover-info', style={'marginTop': 20})
+    ])
+    
+    # Callback to update contact map on hover
+    @app.callback(
+        Output('umap-contact-plot', 'figure'),
+        Input('umap-contact-plot', 'hoverData')
+    )
+    def update_contact_map(hover_data):
+        if hover_data is None or 'points' not in hover_data:
+            return fig
+        
+        # Get the hovered point index
+        point_index = hover_data['points'][0]['pointIndex']
+        
+        # Get the corresponding sample ID or use index
+        if 'sample_id' in scatter_data.columns:
+            sample_id = scatter_data.iloc[point_index]['sample_id']
+        else:
+            sample_id = scatter_data.index[point_index]
+        
+        # Find the corresponding contact map
+        contact_map = None
+        for key in contact_maps.keys():
+            if sample_id in key or str(sample_id) in key:
+                contact_map = contact_maps[key]
+                break
+        
+        if contact_map is None:
+            # Use first contact map as fallback
+            contact_map = list(contact_maps.values())[0]
+        
+        # Process contact map
+        contact_map_processed = process_contact_map_for_display(
+            contact_map, **contact_map_params
+        )
+        
+        # Update the figure
+        fig.data[1].z = contact_map_processed
+        fig.data[1].name = f'Contact Map: {sample_id}'
+        
+        return fig
+    
+    return app
+
+def create_interactive_umap_with_contact_maps(af2_meta, contact_maps, 
+                                            output_path=None,
+                                            use_dash=False,
+                                            use_bokeh=False,
+                                            **kwargs):
+    """
+    Create and optionally save an interactive HTML plot with UMAP embeddings and contact maps.
+    
+    Args:
+        af2_meta: DataFrame containing UMAP coordinates and metadata
+        contact_maps: Dictionary mapping sequence identifiers to contact map arrays
+        output_path: Path to save the interactive HTML file (optional)
+        use_dash: Whether to use Dash for full interactivity (requires Dash installation)
+        use_bokeh: Whether to use Bokeh for Jupyter notebook interactivity (requires Bokeh installation)
+        **kwargs: Additional arguments passed to the respective plotting function
+        
+    Returns:
+        plotly.graph_objects.Figure, dash.Dash, or bokeh.layouts.Column: Interactive plot
+        
+    Note:
+        - For static HTML plots (use_dash=False, use_bokeh=False): Contact map shows first contact map only
+        - For dynamic updates in Jupyter: Use use_bokeh=True (requires Bokeh installation)
+        - For dynamic updates in web browser: Use use_dash=True (requires Dash installation)
+        
+    Example:
+        >>> fig = create_interactive_umap_with_contact_maps(
+        ...     af2_meta=af2_meta,
+        ...     contact_maps=contact_maps,
+        ...     output_path='interactive_umap_contact_maps.html',
+        ...     color_col='sample_id',
+        ...     hover_cols=['sample_id', 'edit_distance']
+        ... )
+    """
+    if use_bokeh:
+        # Create Bokeh app for Jupyter notebook interactivity
+        layout = create_bokeh_interactive_umap(af2_meta, contact_maps, **kwargs)
+        if layout:
+            print("Bokeh interactive plot created for Jupyter notebook.")
+            print("Use show(layout) to display it in the notebook.")
+            return layout
+        else:
+            print("Falling back to static Plotly figure")
+    
+    elif use_dash:
+        # Create Dash app for full interactivity
+        app = create_dash_interactive_umap_app(af2_meta, contact_maps, **kwargs)
+        if app:
+            print("Dash app created. Run with: app.run_server(debug=True, port=8050)")
+            return app
+        else:
+            print("Falling back to static Plotly figure")
+    
+    # Create the interactive plot
+    fig = create_interactive_umap_contact_plot(af2_meta, contact_maps, **kwargs)
+    
+    # Add warning about static nature
+    print("Note: This is a static Plotly figure. The contact map will not update on hover.")
+    print("For dynamic contact map updates:")
+    print("  - In Jupyter notebooks: use use_bokeh=True (requires Bokeh installation)")
+    print("  - In web browsers: use use_dash=True (requires Dash installation)")
+    
+    # Save to HTML if output path is provided
+    if output_path:
+        fig.write_html(output_path)
+        print(f"Interactive plot saved to: {output_path}")
+    
+    return fig
+
+def create_bokeh_interactive_umap(af2_meta, contact_maps, 
+                                 x_col='umap_1', y_col='umap_2',
+                                 color_col=None, size_col=None,
+                                 hover_cols=None, 
+                                 contact_map_params=None,
+                                 title="Interactive UMAP with Contact Maps",
+                                 width=1200, height=600,
+                                 use_server_callbacks=False):
+    """
+    Create an interactive UMAP visualization with dynamic contact maps using Bokeh.
+    This works well in Jupyter notebooks and provides hover-based contact map updates.
+    
+    Args:
+        af2_meta: DataFrame containing UMAP coordinates and metadata
+        contact_maps: Dictionary mapping sequence identifiers to contact map arrays
+        x_col: Column name for x-axis (default: 'umap_1')
+        y_col: Column name for y-axis (default: 'umap_2')
+        color_col: Column name for point colors (optional)
+        size_col: Column name for point sizes (optional)
+        hover_cols: List of columns to show in hover tooltip (optional)
+        contact_map_params: Dictionary of parameters for contact map visualization
+        title: Plot title
+        width: Plot width in pixels
+        height: Plot height in pixels
+        
+    Returns:
+        bokeh.layouts.Column: Bokeh layout with interactive plots
+        
+    Example:
+        >>> layout = create_bokeh_interactive_umap(
+        ...     af2_meta=af2_meta,
+        ...     contact_maps=contact_maps,
+        ...     color_col='sample_id',
+        ...     hover_cols=['sample_id', 'edit_distance']
+        ... )
+        >>> show(layout)  # In Jupyter notebook
+        
+    Note:
+        This version provides hover-based dynamic contact map updates in Jupyter notebooks.
+        The contact map uses a continuous Viridis color palette and updates when you hover over points.
+    """
+    try:
+        from bokeh.plotting import figure, show
+        from bokeh.layouts import column, row
+        from bokeh.models import ColumnDataSource, HoverTool, ColorBar, LinearColorMapper
+        from bokeh.transform import factor_cmap, linear_cmap
+        from bokeh.palettes import Category10, Set3, Viridis256
+        from bokeh.io import output_notebook
+        import bokeh
+    except ImportError:
+        print("Bokeh is required for this functionality. Install with: pip install bokeh")
+        return None
+    
+    # Default contact map parameters
+    if contact_map_params is None:
+        contact_map_params = {
+            'bin_size': 2,
+            'pow': 4,
+            'cmap': 'viridis',
+            'normalize_scale': True
+        }
+    
+    # Map matplotlib colormap names to Bokeh palettes
+    colormap_mapping = {
+        'gnuplot2': 'Viridis256',
+        'gnuplot': 'Viridis256',
+        'plasma': 'Plasma256',
+        'inferno': 'Inferno256',
+        'magma': 'Magma256',
+        'viridis': 'Viridis256',
+        'cividis': 'Cividis256',
+        'hot': 'Hot256',
+        'cool': 'Plasma256',
+        'spring': 'Plasma256',
+        'summer': 'Viridis256',
+        'autumn': 'Viridis256',
+        'winter': 'Viridis256',
+        'gray': 'Greys256',
+        'bone': 'Greys256',
+        'pink': 'Pink256',
+        'copper': 'Oranges256',
+        'jet': 'Turbo256',
+        'hsv': 'Hue256',
+        'rainbow': 'Rainbow256'
+    }
+    
+    # Convert matplotlib colormap to Bokeh palette if needed
+    if contact_map_params['cmap'] in colormap_mapping:
+        palette_name = colormap_mapping[contact_map_params['cmap']]
+        try:
+            palette = getattr(bokeh.palettes, palette_name)
+        except AttributeError:
+            palette = Viridis256
+    else:
+        palette = Viridis256
+    
+    # Prepare data
+    scatter_data = af2_meta.copy()
+    
+    # Create hover tooltips
+    if hover_cols is None:
+        hover_cols = ['sample_id'] if 'sample_id' in scatter_data.columns else []
+    
+    tooltips = []
+    for col in hover_cols:
+        if col in scatter_data.columns:
+            tooltips.append((col, f'@{col}'))
+    
+    # Create ColumnDataSource for scatter plot
+    source_data = {
+        'x': scatter_data[x_col],
+        'y': scatter_data[y_col],
+        'index': list(range(len(scatter_data)))
+    }
+    
+    # Add hover columns to source
+    for col in hover_cols:
+        if col in scatter_data.columns:
+            source_data[col] = scatter_data[col]
+    
+    # Add color and size if specified
+    if color_col and color_col in scatter_data.columns:
+        source_data['color_col'] = scatter_data[color_col]
+    
+    if size_col and size_col in scatter_data.columns:
+        sizes = scatter_data[size_col]
+        if sizes.dtype in ['int64', 'float64']:
+            min_size, max_size = 5, 20
+            normalized_sizes = min_size + (sizes - sizes.min()) / (sizes.max() - sizes.min()) * (max_size - min_size)
+            source_data['size'] = normalized_sizes
+    
+    source = ColumnDataSource(source_data)
+    
+    # Create scatter plot
+    p1 = figure(
+        width=width//2, 
+        height=height,
+        title="UMAP Embeddings",
+        tools="pan,wheel_zoom,box_zoom,reset,save",
+        tooltips=tooltips
+    )
+    
+    # Add scatter points with color and size
+    if color_col and color_col in scatter_data.columns:
+        unique_colors = scatter_data[color_col].unique()
+        # Get the appropriate palette based on number of unique colors
+        if len(unique_colors) <= 10:
+            palette = Category10[len(unique_colors)]
+        else:
+            # For more than 10 colors, use a different palette
+            try:
+                from bokeh.palettes import Set3
+                palette = Set3[min(len(unique_colors), 12)]
+            except (ImportError, KeyError):
+                # Fallback to Category10 with cycling
+                palette = Category10[10] * (len(unique_colors) // 10 + 1)
+                palette = palette[:len(unique_colors)]
+        color_mapper = factor_cmap('color_col', palette=palette, factors=unique_colors)
+        size_col_name = 'size' if size_col and size_col in scatter_data.columns else 8
+        p1.scatter('x', 'y', source=source, size=size_col_name, color=color_mapper, alpha=0.7)
+    else:
+        size_col_name = 'size' if size_col and size_col in scatter_data.columns else 8
+        p1.scatter('x', 'y', source=source, size=size_col_name, alpha=0.7)
+    
+    p1.xaxis.axis_label = x_col
+    p1.yaxis.axis_label = y_col
+    
+    # Create contact map plot
+    p2 = figure(
+        width=width//2, 
+        height=height,
+        title="Contact Map",
+        tools="pan,wheel_zoom,box_zoom,reset,save",
+        x_range=(0, 100),  # Will be updated dynamically
+        y_range=(0, 100)   # Will be updated dynamically
+    )
+    
+    # Process first contact map for initial display
+    if contact_maps:
+        first_key = list(contact_maps.keys())[0]
+        first_contact_map = contact_maps[first_key]
+        contact_map_processed = process_contact_map_for_display(
+            first_contact_map, **contact_map_params
+        )
+        
+        # Create color mapper for contact map - use continuous palette
+        contact_color_mapper = LinearColorMapper(
+            palette=Viridis256,  # Use continuous Viridis palette
+            low=contact_map_processed.min(),
+            high=contact_map_processed.max()
+        )
+        
+        # Create image data for contact map
+        img_data = contact_map_processed
+        img_glyph = p2.image(
+            image=[img_data],
+            x=0, y=0, dw=img_data.shape[1], dh=img_data.shape[0],
+            color_mapper=contact_color_mapper
+        )
+        
+        # Add colorbar
+        color_bar = ColorBar(color_mapper=contact_color_mapper, location=(0, 0))
+        p2.add_layout(color_bar, 'right')
+    
+    # Add hover tool for dynamic updates
+    from bokeh.models import HoverTool, CustomJS
+    
+    # Prepare contact map data for JavaScript
+    contact_map_data = {}
+    for i, (key, contact_map) in enumerate(contact_maps.items()):
+        processed_map = process_contact_map_for_display(contact_map, **contact_map_params)
+        contact_map_data[i] = processed_map.tolist()
+    
+    # Create JavaScript code for dynamic updates on hover
+    js_code = """
+    var contact_maps = %s;
+    var index = cb_obj.index;
+    if (index !== undefined && index in contact_maps) {
+        var new_data = contact_maps[index];
+        var img_source = p2.select_one('image');
+        if (img_source) {
+            img_source.data_source.data['image'] = [new_data];
+            img_source.data_source.change.emit();
+            
+            // Update color mapper
+            var min_val = Math.min(...new_data.flat());
+            var max_val = Math.max(...new_data.flat());
+            var color_mapper = p2.select_one('LinearColorMapper');
+            if (color_mapper) {
+                color_mapper.low = min_val;
+                color_mapper.high = max_val;
+                color_mapper.change.emit();
+            }
+            
+            // Update title
+            p2.title.text = "Contact Map (Point " + index + ")";
+        }
+    }
+    """ % contact_map_data
+    
+    # Add hover callback
+    hover_callback = CustomJS(args=dict(p2=p2), code=js_code)
+    
+    # Create hover tool with callback
+    hover_tool = HoverTool(
+        tooltips=tooltips,
+        callback=hover_callback
+    )
+    p1.add_tools(hover_tool)
+    
+    # Add instructions text
+    from bokeh.models import Div
+    instructions = Div(
+        text="<b>Instructions:</b> Hover over points in the scatter plot to see contact maps update dynamically! "
+             "The contact map will show the corresponding contact map for each point.",
+        width=width,
+        height=50,
+        styles={'font-size': '12px', 'color': '#666666'}
+    )
+    
+    # Create layout with instructions
+    layout = column(instructions, row(p1, p2))
+    
+    return layout

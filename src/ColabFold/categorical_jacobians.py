@@ -116,7 +116,7 @@ def get_logits(seq,
       print(f"Logits computed in {elapsed_time:.2f} seconds")
       
     if return_jac:
-      return jac
+      return logits, jac
     else:
       return logits
 
@@ -306,4 +306,4 @@ def plot_jac(jac,
     p.yaxis.visible = False  # Hide the x-axis
     show(p)
 
-    return df
+    return con

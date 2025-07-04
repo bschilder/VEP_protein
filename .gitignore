@@ -1,6 +1,8 @@
 cv_annot_ProteinGym_missense.csv.gz
 notebooks/.ieugwaspy.json
 results/vep_ecdf.tsv.gz
+results/plots/contact_map_interpolation.gif
+
 .vscode/
 data/
 output.png
