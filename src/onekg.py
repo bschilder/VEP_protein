@@ -294,7 +294,15 @@ def get_sample_metadata(key=DEFAULT_KEY,
     """
 
     if harmonized:
-        sample_metadata = pd.read_csv("results/data/SGDP_metadata.279public.21signedLetter.44Fan.samples.txt", sep="\t")
+        sample_metadata = pd.read_csv("metadata/igsr_samples.tsv", sep="\t")
+        sample_metadata = sample_metadata.rename(columns={"Sample name":"sample",
+                                                        "Population elastic ID":"population",
+                                                        "Population name":"population_name",
+                                                        "Superpopulation code":"superpopulation",
+                                                        "Sex":"sex"})
+        # Parse cohort information
+        sample_metadata['cohort'] = sample_metadata['cohort_sample'].str.split(":").str[0]
+        sample_metadata.loc[sample_metadata['cohort'].str.startswith("HGDP"), "cohort"] = "HGDP"
     else:
         ped = get_ped(key=key)
         
@@ -307,18 +315,25 @@ def get_sample_metadata(key=DEFAULT_KEY,
                                     inplace=True)
             return ped
         
-        pop = get_pop(key=key)
+        pop = get_pop(key=key, )
         if ped is None or pop is None:
             return None
         sample_metadata = ped.merge(pop, left_on='Population', right_index=True)
    
     # Convert to ProHap format
     if prohap_format:
+        if harmonized:
+            # The default 'Population code' has NAs
+            sample_metadata = sample_metadata.drop(['Population code'], axis=1)
+        
+        # Rename cols
         sample_metadata.rename(columns={'Individual ID': 'Sample name',
+                                        'sample': 'Sample name',
                                 'Gender': 'Sex',
-                                'sex': 'Sex',
+                                'sex': 'Sex', 
                                 'Population Code': 'Population code',
                                 'population': 'Population code',
+                                'Population elastic ID': 'Population code',
                                 'Super Population': 'Superpopulation code',
                                 'superpopulation': 'Superpopulation code'
                                 },

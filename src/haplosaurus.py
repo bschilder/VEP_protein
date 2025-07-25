@@ -2152,6 +2152,7 @@ def haplotypes_to_samples(haplotypes=None,
                           as_df=False,
                           add_sample_metadata=False,
                           add_ref=True,
+                          duplicate_ref=False,
                           verbose=False):
     """
     Process transcript haplotypes and organize sequences by sample.
@@ -2165,7 +2166,8 @@ def haplotypes_to_samples(haplotypes=None,
         as_df: Whether to return a DataFrame instead of a dictionary
         add_sample_metadata: Whether to add sample metadata (from 1000 Genomes Project) to the DataFrame.
             Only works if as_df is True.
-        
+        duplicate_ref: Whether to duplicate the REF haplotype to simulate a diploid genome.
+            Only works if as_df is True.
     Returns:
         Dictionary mapping transcript IDs to sample sequences
     """
@@ -2186,7 +2188,8 @@ def haplotypes_to_samples(haplotypes=None,
                                         max_tx_ids=max_tx_ids,
                                         cohort=cohort,
                                         unnest=True, 
-                                        remove_prefix=True,
+                                        # 'GGVP:HG02757' and '1000GENOMES:phase_3:HG02757' are both possible sample IDs
+                                        remove_prefix=False,
                                         key=key)
 
     if verbose:
@@ -2211,8 +2214,8 @@ def haplotypes_to_samples(haplotypes=None,
             sample_map = haplotypes[tx_id][key][hap_idx]['samples']
             # Split the keys in sample_map by ":" and only keep the last item
             # e.g. "1000Genomes:phase3:HG03235" --> "HG03235"
-            if cohort is None:
-                sample_map = {k.split(":")[-1]: v for k, v in sample_map.items()}
+            # if cohort is None:
+            #     sample_map = {k.split(":")[-1]: v for k, v in sample_map.items()}
             seq = haplotypes[tx_id][key][hap_idx]['seq']
             hap_name = haplotypes[tx_id][key][hap_idx]['name']
             
@@ -2248,24 +2251,42 @@ def haplotypes_to_samples(haplotypes=None,
     
     # Return a DataFrame if requested
     if as_df:  
-            df = pd.DataFrame(tx_sample_seqs).reset_index(names="sample").melt(id_vars="sample", 
-                                                                            var_name="ENST_haplosaurus", 
-                                                                            value_name="haplotype").explode("haplotype") 
+        print("Converting haplotypes to DataFrame")
+        df = pd.concat(
+            {k: pd.Series(v) for k, v in tx_sample_seqs.items()},
+            names=["ENST_haplosaurus", "cohort_sample"]
+        ).reset_index(name="haplotype")
+        df['sample'] = df['cohort_sample'].str.split(":").str[-1]
+        df['ploid_count'] = df['haplotype'].str.len()
+        df['ploid'] = df['ploid_count'].apply(lambda x: list(range(x)))
+        df = df.explode(["haplotype", "ploid"], ignore_index=True)
 
-            # Add sample metadata
-            if add_sample_metadata:
-                sample_metadata = og.get_sample_metadata()[["Individual ID","Gender","Population","Super Population"]].rename(columns={"Individual ID":"sample"})
-                df = df.merge(sample_metadata, on=["sample"], how="left") 
+        # Add sample metadata
+        if add_sample_metadata:
+            sample_metadata = og.get_sample_metadata(harmonized=True)
+            df = df.merge(sample_metadata, on=["sample"], how="left") 
 
-                # Add REF haplotypes to the dataframe
-                if add_ref:
-                    haps_to_ref = df.loc[df['haplotype'].str.endswith(":REF")]
-                    haps_to_ref.loc[:,["sample","Population","Super Population"]] = "REF"
-                    haps_to_ref.loc[:,["Gender"]] = pd.Int64Dtype().na_value
-                    haps_to_ref= haps_to_ref.drop_duplicates()
-                    df = pd.concat([haps_to_ref, df])
+            # Add REF haplotypes to the dataframe
+            if add_ref:
+                print("Adding REF haplotypes to the DataFrame")
+                haps_to_ref = df.loc[df['haplotype'].str.endswith(":REF")].copy()
+                haps_to_ref.loc[:,["sample","population","superpopulation"]] = "REF"
+                haps_to_ref.loc[:,["sex"]] = pd.Int64Dtype().na_value
+                haps_to_ref.loc[:,["ploid_count"]] = 2
+                haps_to_ref = haps_to_ref.drop_duplicates()
 
-            return df
+                # Simulate a diploid genome by duplicating the REF haplotype
+                if duplicate_ref: 
+                    df = pd.concat([haps_to_ref.assign(ploid=0), 
+                                    haps_to_ref.copy().assign(ploid=1), 
+                                    df.loc[~df['haplotype'].str.endswith(":REF")].copy()
+                                    ])
+                else: 
+                    df = pd.concat([haps_to_ref.assign(ploid=0), 
+                                    df.loc[~df['haplotype'].str.endswith(":REF")].copy()
+                                    ])
+
+        return df
     else:
         return tx_sample_seqs
 
@@ -2746,10 +2767,7 @@ def merge_haplotype_datasets(haplotype_datasets,
                                                                             agg_func = np.sum, 
                                                                             type_func = int)
 
-                    # Merge population_frequencies
-                   
-
-                    
+                    # Merge population_frequencies 
                     phap_merged[phap_id]['population_frequencies'].update(phap_other[phap_id]['population_frequencies']) 
                     phap_merged[phap_id]['population_frequencies'] = _update_all(phap_merged[phap_id]['population_frequencies'], 
                                                                                 agg_func = np.mean, 
@@ -2797,4 +2815,6 @@ def merge_haplotype_datasets(haplotype_datasets,
             # Set total_haplotype_count to None (as in original code)
             hap_tx['total_haplotype_count'] = None
 
+    if verbose:
+        print(f"Merged {len(merged)} haplotypes")
     return merged

@@ -335,6 +335,16 @@ def transcript_haplotypes_get(ids: Optional[List[str]] = None,
                     continue
     return haplotypes
 
+
+def _rename_haplotypes_keys(haplotypes: dict):
+    for tx_id, haplotype_dict in haplotypes.items():
+        for key, value in haplotype_dict.items():
+            if key.startswith("ENST"):
+                haplotypes[tx_id][key] = value
+            else:
+                haplotypes[tx_id][key] = value
+    return haplotypes
+
 def get_vep(ids: Union[str, List[str]],
             species: str = 'homo_sapiens',
             params: Dict = config.PARAMS_VEP,

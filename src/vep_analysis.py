@@ -3554,3 +3554,388 @@ def identify_outliers(X):
     return df
 
 
+
+
+def plot_dr_with_kde_topo(
+        dr_df, 
+        x_col="dim1",
+        y_col="dim2",
+        hue_col="superpopulation",
+        symbol_col=None, #"Sex",
+        point_opacity=0.95,
+        point_size=3,
+
+        # KDE background
+        add_kde=False, 
+        kde_bw_method='scott', 
+        kde_n=20, 
+        kde_levels=50,  # More levels for a topographic effect
+        border_pad_frac=0.15,  # Increase border padding to show full islands
+
+        # New param: how many dotted lines to draw (1=every, 2=every other, etc)
+        contour_line_step=4,
+
+        # Shadow effect
+        add_shadow=True,
+        shadow_color="black",
+        shadow_offset = 0.0, # adjust for best effect
+        shadow_opacity = 0.8,
+        shadow_size_increase = 3,  # how much larger than the main marker
+
+        # Plot params
+        plot_bgcolor="white",   
+        paper_bgcolor="white",  
+        height=600,
+        width=800,
+
+        # New argument to control gridlines
+        show_grid=True,
+        hover_data=None,
+
+        # New argument for cluster labeling
+        cluster_col=None,
+        scatter_kwargs={},
+    ): 
+    """
+    Plots a dimensionality reduction (DR) scatter plot with optional KDE topographic background.
+
+    Parameters
+    ----------
+    dr_df : pd.DataFrame
+        DataFrame containing the DR coordinates and metadata.
+    x_col : str, default="dim1"
+        Column name for the x-axis (first DR dimension).
+    y_col : str, default="dim2"
+        Column name for the y-axis (second DR dimension).
+    hue_col : str, default="Super Population"
+        Column name for coloring points by group.
+    symbol_col : str or None, default=None
+        Column name for symbolizing points by group.
+    add_kde : bool, default=False
+        Whether to add a KDE-based topographic background.
+    kde_bw_method : str or float, default='scott'
+        Bandwidth method for KDE ('scott', 'silverman', or float).
+    kde_n : int, default=20
+        Number of grid points per axis for KDE evaluation.
+    kde_levels : int, default=30
+        Number of contour/heatmap levels for the KDE background.
+    border_pad_frac : float, default=0.15
+        Fractional padding to add to plot borders for KDE background.
+    contour_line_step : int, default=1
+        Draw every Nth contour line for the topographic effect.
+    add_shadow : bool, default=True
+        Whether to add a shadow effect behind points.
+    shadow_color : str, default="black"
+        Color of the shadow markers.
+    shadow_offset : float, default=0.0
+        Offset for the shadow effect.
+    shadow_opacity : float, default=0.3
+        Opacity of the shadow markers.
+    shadow_size_increase : float, default=3
+        Size increase for shadow markers relative to main markers.
+    plot_bgcolor : str, default="white"
+        Background color of the plot area.
+    paper_bgcolor : str, default="white"
+        Background color of the entire figure.
+    height : int, default=600
+        Height of the figure in pixels.
+    width : int, default=800
+        Width of the figure in pixels.
+    show_grid : bool, default=True
+        Whether to show gridlines on the plot.
+    hover_data : list of str, default=None
+        Columns to include in the hover data.
+    cluster_col : str or None, default=None
+        Column name for cluster labels to annotate each cluster (one label per cluster).
+    scatter_kwargs : dict
+        Additional keyword arguments passed to px.scatter.
+
+    Returns
+    -------
+    fig : plotly.graph_objs.Figure
+        The generated Plotly figure.
+    """
+ 
+    # Import libraries
+    import plotly.express as px
+    import plotly.graph_objects as go
+    import numpy as np
+    from scipy.stats import gaussian_kde
+    
+
+    palette = utils.get_superpop_palette()
+    fig = go.Figure()
+
+    # Optionally add KDE background
+    if add_kde: 
+        x = dr_df[x_col].values
+        y = dr_df[y_col].values
+        if len(x) > 1:
+            # Compute KDE
+            xy = np.vstack([x, y])
+            kde = gaussian_kde(xy, bw_method=kde_bw_method)
+            # Compute the full plot range for background fill
+            all_x = dr_df[x_col].values
+            all_y = dr_df[y_col].values
+            # Increase padding to extend the borders and show full islands
+            xpad = (all_x.max() - all_x.min()) * border_pad_frac
+            ypad = (all_y.max() - all_y.min()) * border_pad_frac
+            xgrid = np.linspace(all_x.min() - xpad, all_x.max() + xpad, kde_n)
+            ygrid = np.linspace(all_y.min() - ypad, all_y.max() + ypad, kde_n)
+            xx, yy = np.meshgrid(xgrid, ygrid)
+            zz = kde(np.vstack([xx.ravel(), yy.ravel()])).reshape(xx.shape)
+            # Discretize the KDE into "levels" for a topographic effect
+            if kde_levels is not None and kde_levels > 1:
+                zmin, zmax = zz.min(), zz.max()
+                levels = np.linspace(zmin, zmax, kde_levels + 1)
+                zz_digitized = np.digitize(zz, levels, right=True)
+                # For contour lines, we want the actual level values
+                zz_levels = levels[zz_digitized]
+            else:
+                zz_levels = zz
+
+            # Add as heatmap (background "elevation")
+            fig.add_trace(go.Heatmap(
+                x=xgrid,
+                y=ygrid,
+                z=zz_levels,
+                colorscale=utils.topo_colorscale,
+                opacity=0.9,
+                showscale=False,
+                hoverinfo='skip',
+                zsmooth='best'
+            ))
+
+            # Add contour lines for topographic effect, with control over how many lines to draw
+            if kde_levels is not None and kde_levels > 1:
+                zmin, zmax = zz.min(), zz.max()
+                all_levels = np.linspace(zmin, zmax, kde_levels + 1)
+                # Only draw every Nth contour line
+                contour_levels = all_levels[::contour_line_step]
+                # If the last level is not included, add it to ensure the outermost contour is drawn
+                if contour_levels[-1] != all_levels[-1]:
+                    contour_levels = np.append(contour_levels, all_levels[-1])
+                # Plot each contour line individually for full control
+                for i, level in enumerate(contour_levels):
+                    # Skip the first level (lowest) if you don't want a line at the very bottom
+                    if i == 0:
+                        continue
+                    fig.add_trace(go.Contour(
+                        x=xgrid,
+                        y=ygrid,
+                        z=zz,
+                        contours=dict(
+                            start=level,
+                            end=level,
+                            size=0,
+                            coloring='none',
+                            showlines=True
+                        ),
+                        line=dict(
+                            color='black',
+                            dash='dot',
+                            width=1
+                        ),
+                        showscale=False,
+                        hoverinfo='skip',
+                        opacity=0.5,
+                        showlegend=False
+                    ))
+            else:
+                # Fallback: draw all contours as before
+                fig.add_trace(go.Contour(
+                    x=xgrid,
+                    y=ygrid,
+                    z=zz,
+                    contours=dict(
+                        start=zmin,
+                        end=zmax,
+                        size=(zmax-zmin)/kde_levels if kde_levels else 1,
+                        coloring='none',
+                        showlines=True
+                    ),
+                    line=dict(
+                        color='black',
+                        dash='dot',
+                        width=1
+                    ),
+                    showscale=False,
+                    hoverinfo='skip',
+                    opacity=0.5,
+                    showlegend=False  # Remove contour (dotted lines) from legend
+                ))
+
+    # Add scatter points with shadow effect
+    # We'll add a "shadow" marker for each point, slightly offset and with a blurred, semi-transparent black color.
+    # Then add the main points on top.
+
+    # Create scatter plot with Plotly Express (for color mapping and legend)
+    scatter = px.scatter(
+        dr_df,
+        x=x_col,
+        y=y_col,
+        color=hue_col,
+        symbol=symbol_col,
+        color_discrete_map=palette,
+        opacity=point_opacity, 
+        hover_data=hover_data,
+        width=width,
+        height=height,
+        **scatter_kwargs
+    )
+    # Decrease point size by setting marker size in the scatter plot
+    scatter.update_traces(marker=dict(size=point_size))
+
+    # Add shadow traces first (one per color group)
+    if add_shadow:
+        for trace in scatter.data:
+            # Get the points for this trace
+            x_shadow = [v + shadow_offset for v in trace.x]
+            y_shadow = [v - shadow_offset for v in trace.y]
+            # Use the same marker size, but a bit larger for the shadow
+            marker_size = trace.marker.size if trace.marker.size is not None else 12
+            shadow_marker_size = marker_size + shadow_size_increase
+
+            # Add shadow trace (underneath)
+            fig.add_trace(
+                go.Scatter(
+                    x=x_shadow,
+                    y=y_shadow,
+                    mode="markers",
+                    marker=dict(
+                        size=shadow_marker_size,
+                        opacity=shadow_opacity,
+                        color=shadow_color,
+                        line=dict(width=0),
+                    ),
+                    showlegend=False,
+                    hoverinfo="skip",
+                )
+            )
+
+    # Add main scatter traces, but make points bigger in legend only
+    for trace in scatter.data:
+        # Add the trace to the figure
+        fig.add_trace(trace)
+ 
+    # Add a black diamond outline around the REF point
+    ref_points = dr_df[dr_df["sample"] == "REF"]
+    if not ref_points.empty:
+        fig.add_scatter(
+            x=ref_points[x_col],
+            y=ref_points[y_col],
+            mode="markers",
+            marker=dict(
+                symbol="diamond",
+                size=18,
+                color="rgba(0,0,0,0)",  # transparent fill
+                line=dict(
+                    color="white",
+                    width=3
+                )
+            ),
+            showlegend=False,
+            hoverinfo="skip"
+        )
+
+     # Add cluster labels if requested
+    # Add a parameter to control the cluster label offset
+    cluster_label_offset = 0.5  # You can move this to the function signature if you want it user-configurable
+ 
+    if cluster_col is not None and cluster_col in dr_df.columns:
+        # For each cluster, pick a representative point (e.g., the centroid)
+        cluster_groups = dr_df.groupby(cluster_col)
+        cluster_label_traces = []
+        for cluster_id, group in cluster_groups:
+            if cluster_id in ['-1', -1]:
+                continue
+            # Use the mean as the label position
+            x_label = group[x_col].mean()
+            y_label = group[y_col].mean()
+            # Offset the label by a fixed amount so it's not right on top of the cluster
+            x_offset = cluster_label_offset
+            y_offset = cluster_label_offset
+
+            # Add a black shadow text (slightly offset)
+            cluster_label_traces.append(
+                go.Scatter(
+                    x=[x_label + x_offset + 0.01],  # offset for shadow
+                    y=[y_label + y_offset - 0.01],
+                    mode="text",
+                    text=[str(cluster_id)],
+                    textposition="middle center",
+                    textfont=dict(
+                        size=18,
+                        color="black",
+                        family="Roboto Mono, monospace",
+                    ),
+                    showlegend=False,
+                    hoverinfo="skip"
+                )
+            )
+            # Add the main white label on top, also offset
+            cluster_label_traces.append(
+                go.Scatter(
+                    x=[x_label + x_offset],
+                    y=[y_label + y_offset],
+                    mode="text",
+                    text=[str(cluster_id)],
+                    textposition="middle center",
+                    textfont=dict(
+                        size=18,
+                        color="white",
+                        family="Roboto Mono, monospace",
+                    ),
+                    showlegend=False,
+                    hoverinfo="skip"
+                )
+            )
+        # Add all label traces at the end so they're above all other layers
+        for trace in cluster_label_traces:
+            fig.add_trace(trace)
+
+    # Set axis ranges to match the KDE background, with extra padding to show full islands
+    if add_kde and 'xgrid' in locals() and 'ygrid' in locals() and len(x) > 1:
+        fig.update_xaxes(range=[xgrid[0], xgrid[-1]])
+        fig.update_yaxes(range=[ygrid[0], ygrid[-1]])
+    else:
+        # Even if not using KDE, extend the axis limits to show full islands
+        all_x = dr_df[x_col].values
+        all_y = dr_df[y_col].values
+        xpad = (all_x.max() - all_x.min()) * border_pad_frac
+        ypad = (all_y.max() - all_y.min()) * border_pad_frac
+        fig.update_xaxes(range=[all_x.min() - xpad, all_x.max() + xpad])
+        fig.update_yaxes(range=[all_y.min() - ypad, all_y.max() + ypad])
+
+    # Add a subtle background and grid to mimic a map
+    fig.update_layout(
+        width=width,
+        height=height,
+        xaxis_title=None,
+        yaxis_title=None,
+        plot_bgcolor=plot_bgcolor,
+        paper_bgcolor=paper_bgcolor,
+        
+        xaxis=dict(
+            showgrid=show_grid,
+            gridcolor="#bdbdbd" if show_grid else None,  # medium gray (grid lines)
+            zeroline=False,
+            showticklabels=False,
+            title=None
+        ),
+        yaxis=dict(
+            showgrid=show_grid,
+            gridcolor="#bdbdbd" if show_grid else None,  # medium gray (grid lines)
+            zeroline=False,
+            showticklabels=False,
+            title=None
+        ),
+        font=dict(
+            family="Roboto Mono, monospace",
+            size=14,
+            color="#222"  # very dark gray (almost black, font)
+        ),
+        margin=dict(l=40, r=40, t=40, b=40)
+    )
+    
+    fig.show()

@@ -1620,3 +1620,231 @@ def fill_coordinates(df,
         **kwargs
     )
     return X
+
+
+
+def vep_to_matrix(
+    vep_df,
+    sample_col="sample",
+    site_col="site",
+    ploid_col="ploid",
+    vep_col="VEP",
+    fill_value="mean",
+    duplicate_ref_hap=True,
+    verbose=True
+):
+    """
+    Convert a VEP (Variant Effect Predictor) DataFrame to a matrix format.
+
+    This function pivots a long-form VEP DataFrame into a matrix (wide-form) where rows correspond to samples,
+    columns correspond to variant sites, and values are the VEP scores. If there are multiple VEP scores for the
+    same sample-site pair, their mean is taken. Missing values are filled with `fill_value`.
+
+    Parameters
+    ----------
+    vep_df : pandas.DataFrame
+        Input DataFrame in long format, containing at least the sample, site, and VEP score columns.
+    sample_col : str, optional
+        Name of the column in `vep_df` identifying samples. Default is "sample".
+    site_col : str, optional
+        Name of the column in `vep_df` identifying variant sites. Default is "site".
+    vep_col : str, optional
+        Name of the column in `vep_df` containing VEP scores. Default is "VEP".
+    ploid_col : str, optional
+        Name of the column in `vep_df` identifying ploidy (i.e. which haplotype). Default is "ploid".
+    fill_value : scalar, optional
+        Value to use for missing entries in the resulting matrix. Default is np.nan.
+    duplicate_ref_hap : bool, optional
+        Whether to duplicate the REF haplotype to avoid NAs. Default is True.
+    verbose : bool, optional
+        Whether to print progress. Default is True.
+
+    Returns
+    -------
+    pandas.DataFrame
+        A matrix (DataFrame) with samples as rows, sites as columns, and VEP scores as values.
+
+    Examples
+    --------
+    >>> df = pd.DataFrame({
+    ...     "sample": ["A", "A", "B", "B"],
+    ...     "site": ["s1", "s2", "s1", "s2"],
+    ...     "VEP": [0.1, 0.2, 0.3, 0.4]
+    ... })
+    >>> vep_to_matrix(df)
+       s1   s2
+    A  0.1  0.2
+    B  0.3  0.4
+    """
+    vep_df = vep_df.copy()
+    
+    # Add ploid column if it exists
+    if ploid_col is not None and ploid_col in vep_df.columns:
+        
+        # Add merged site column
+        if verbose:
+            print("Adding merged site column")
+        new_site_col = site_col + "_" + ploid_col
+        if new_site_col not in vep_df.columns:
+            vep_df[new_site_col] = vep_df[site_col].astype(str) + "_" + vep_df[ploid_col].astype(str)
+        site_col = new_site_col 
+        
+        # Duplicate the REF haplotype to avoid NAs
+        if duplicate_ref_hap:
+            if verbose:
+                print("Duplicating REF haplotype to avoid NAs")
+            ref_hap = vep_df.loc[vep_df[sample_col]=="REF"].copy()
+            if not ref_hap.empty:
+                ref_hap[ploid_col] = int(ref_hap[ploid_col].iloc[0]) + 1
+                vep_df = pd.concat([vep_df, ref_hap], ignore_index=True, copy=False)
+    
+    # Convert to dtypes to save memory
+    if verbose:
+        print("Converting vep_df dtypes")
+    vep_df[sample_col] = vep_df[sample_col].astype(object)
+    vep_df[site_col] = vep_df[site_col].astype(object)
+    vep_df[vep_col] = vep_df[vep_col].astype(float)
+
+    # Compute fill value
+    if fill_value == "mean":
+        fill_value = vep_df[vep_col].mean(skipna=True)
+    elif fill_value == "median":
+        fill_value = vep_df[vep_col].median(skipna=True)
+    elif fill_value == "mode":
+        fill_value = vep_df[vep_col].mode(dropna=True)[0]
+    else:
+        fill_value = np.nan
+
+    # Use much faster groupby.unstack with built-in mean (skipna by default)
+    # takes 4.7s, as opposed to pivot_table which takes 90 seconds!
+    X = vep_df.groupby([sample_col, site_col], sort=False, observed=True
+                       )[vep_col].mean().unstack(fill_value=fill_value)
+    return X
+
+def vep_distance(
+    X, 
+    og_meta=None,
+    site_cols=None, 
+    groupby_cols=None,
+    sample_col="sample",
+    metric='euclidean',
+    verbose=True
+):
+    """
+    Compute a pairwise distance matrix between groups or samples based on VEP (variant effect predictor) data.
+
+    This function calculates the Euclidean distance between group centroids (or samples) for the specified site columns.
+    If `groupby_cols` is provided, the function computes the mean value of each site column for each group and then
+    computes the pairwise distances between these group centroids. If `groupby_cols` is not provided, distances are
+    computed directly between the rows of `X`.
+
+    Parameters
+    ----------
+    X : pandas.DataFrame
+        A sample (individual) x site (clinical variant) DataFrame containing VEP scores. 
+        Each row should correspond to a sample, and columns should correspond to sites or features.
+    og_meta : pandas.DataFrame, optional
+        Sample metadata DataFrame. If not provided, it will be loaded from `src.onekg.get_sample_metadata()`.
+        This is used to map samples to groups if `groupby_cols` is specified.
+    site_cols : list of str, optional
+        List of columns in `X` to use for distance calculation. If None, all columns in `X` are used.
+    groupby_cols : list of str or str, optional
+        Column(s) in the metadata to group by. If provided, distances are computed between group centroids.
+    sample_col : str, optional
+        Column in `X` to use as the sample identifier. Default is 'sample'.
+    metric : str, optional
+        The distance metric to use. Default is 'euclidean'. 
+    verbose : bool, optional
+        Whether to print progress. Default is True.
+
+    Returns
+    -------
+    pandas.DataFrame
+        A square DataFrame of pairwise Euclidean distances between groups (if `groupby_cols` is given)
+        or between samples (if not). The rows and columns are labeled by group or sample.
+
+    Notes
+    -----
+    - The function uses Euclidean distance for continuous data. For binary/categorical data, consider using
+      'hamming' distance.
+    - The function expects that the index of `X` contains sample identifiers matching the "Individual ID" in `og_meta`.
+    """
+    from scipy.spatial.distance import pdist, squareform
+
+    if og_meta is None:
+        import src.onekg as og
+        og_meta = og.get_sample_metadata()
+    
+    if site_cols is None:
+        site_cols = X.columns.tolist()
+
+    if groupby_cols is not None:
+        if verbose:
+            print("Computing group centroids")
+        group_centroids = (
+            X.reset_index()
+            .merge(og_meta, left_on=sample_col, right_on="Individual ID", how="left")
+            .groupby(groupby_cols)[site_cols]
+            .mean()
+        )
+    else:
+        group_centroids = X
+    
+    if verbose:
+        print("Computing distances")
+    dists = pdist(group_centroids.values, metric=metric)
+    dist_square = squareform(dists)
+    
+    group_labels = group_centroids.index.tolist()
+    distVEP = pd.DataFrame(dist_square, index=group_labels, columns=group_labels)
+    return distVEP
+
+
+def sort_chromosomes(df, chrom_col="chrom"):
+    """
+    Sort chromosomes by natural order: "chr1", "chr2", ..., "chr22", "chrX", "chrY", "chrM"
+    """
+    import re
+
+    def chrom_key(chrom):
+        chrom = str(chrom)
+        # Extract the part after 'chr'
+        m = re.match(r"chr(\d+|X|Y|M)$", chrom)
+        if m:
+            val = m.group(1)
+            if val.isdigit():
+                return (0, int(val))
+            elif val == "X":
+                return (1, 23)
+            elif val == "Y":
+                return (1, 24)
+            elif val == "M":
+                return (1, 25)
+        # If doesn't match, put at the end
+        return (2, chrom)
+
+    df_sorted = df.copy()
+    df_sorted["_chrom_sort_key"] = df_sorted[chrom_col].map(chrom_key)
+    df_sorted = df_sorted.sort_values(by="_chrom_sort_key")
+    df_sorted = df_sorted.drop(columns=["_chrom_sort_key"])
+    return df_sorted
+
+# Use a topographic-inspired colorscale  
+# Make the ocean (lowest values) much darker by using nearly black for the lowest stops
+topo_colorscale = [
+                    [0.00, "#0a0a23"],   # almost black (deepest water)
+                    [0.02, "#142850"],   # very dark blue
+                    [0.04, "#253494"],   # deep blue
+                    [0.07, "#2c7fb8"],   # deeper blue 
+                    [0.10, "#4575b4"],   # original deep blue (water)
+                    [0.13, "#41b6c4"],   # deep blue-green (shallow water)
+                    # [0.16, "#91bfdb"],   # light blue
+                    # [0.20, "#e0f3f8"],   # very light blue
+                    [0.30, "#ffffbf"],   # sand/yellow
+                    [0.40, "#bfa06a"],   # tan (sandstone)
+                    [0.55, "#a67c52"],   # light brown (limestone)
+                    [0.70, "#8d5524"],   # medium brown (granite)
+                    [0.80, "#7c4a02"],   # dark brown (basalt)
+                    [0.90, "#5c3a21"],   # deep brown (shale)
+                    [1.00, "#ffffff"],   # white (snow)
+                ]
