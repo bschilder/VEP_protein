@@ -77,7 +77,7 @@ def vep_pipeline(prot_df: pd.DataFrame = None,
                  force: bool = False,
                  encode_haplotype_name_threshold: int = 10,
                  mutation_col="mutant",
-                 enable_data_parallel: bool = True,
+                 enable_data_parallel: bool = False,
                  verbose: bool = True):
     """Run ESM variant effect prediction pipeline on protein sequences.
 

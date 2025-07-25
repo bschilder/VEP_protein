@@ -304,149 +304,181 @@ def load_haplotype_embeddings(haplotype_embeddings,
         return haplotype_embeddings[tx_id]
 
 
-def make_patient_tensor(haplotype_embeddings, 
-                        haplotypes=None,    
-                        tx_ids=None,
-                        samples=None,
-                        key='protein_haplotypes',
-                        max_embedding_dim=None,
-                        drop_nan = False,
-                        patient_embeddings_dir: Optional[Path] = None,
-                        save_path: Optional[Path] = None,
-                        force: bool = False,
-                        verbose: bool = True):
-    
+def make_patient_tensor(
+    haplotype_embeddings, 
+    haplotypes=None,    
+    tx_ids=None,
+    samples=None,
+    key='protein_haplotypes',
+    max_embedding_dim=None,
+    drop_nan=False,
+    patient_embeddings_dir: Optional[Path] = None,
+    save_path: Optional[Path] = None,
+    force: bool = False,
+    verbose: bool = True
+):
+    """
+    Construct a tensor containing patient-specific protein haplotype embeddings.
+
+    This function builds a 4D tensor of shape 
+    [num_samples, num_transcripts, num_phases, max_embedding_dim], 
+    where each entry contains the embedding for a given sample, transcript, and phase.
+    The embeddings are loaded from a directory or dictionary, and are matched to 
+    the corresponding haplotype sequences for each sample and transcript.
+
+    Optionally, the tensor can be saved to disk, or split and saved as per-sample tensors.
+
+    Args:
+        haplotype_embeddings (str or dict): 
+            Path to a directory or file containing haplotype embeddings, or a dictionary of embeddings.
+        haplotypes (optional): 
+            Haplotype data or path to haplotype data. If None, will use default from haplosaurus.
+        tx_ids (list, optional): 
+            List of transcript IDs to include. If None, will use intersection of available embeddings and haplotypes.
+        samples (list, optional): 
+            List of sample IDs to include. If None, will use all samples in haplotype data.
+        key (str, optional): 
+            Key to use for extracting haplotype data. Default: 'protein_haplotypes'.
+        max_embedding_dim (int, optional): 
+            Maximum embedding dimension. If None, will be determined automatically.
+        drop_nan (bool, optional): 
+            If True, skip embeddings containing NaN values. Default: False.
+        patient_embeddings_dir (Path, optional): 
+            Directory to save per-sample tensors. If provided, saves each sample's tensor separately.
+        save_path (Path, optional): 
+            Path to save the full tensor dictionary. If provided, saves the tensor to this path.
+        force (bool, optional): 
+            If True, overwrite existing saved tensors. Default: False.
+        verbose (bool or int, optional): 
+            Verbosity level. If >1, prints additional information.
+
+    Returns:
+        If patient_embeddings_dir is provided:
+            List of paths to per-sample tensor files.
+        Else:
+            Dictionary with keys:
+                'tensor': the 4D tensor,
+                'samples': list of sample IDs,
+                'transcripts': list of transcript IDs,
+                'phases': list of phases.
+
+    Example:
+        tensor_dict = make_patient_tensor(
+            haplotype_embeddings="/path/to/embeddings",
+            haplotypes="/path/to/haplotypes",
+            tx_ids=["ENST00000367770", "ENST00000448914"],
+            samples=["S1", "S2"],
+            save_path="patient_tensor.pth"
+        )
+    """
     if save_path is not None and os.path.exists(save_path) and not force:
         return utils.load_torch(save_path, verbose=verbose)
     
-    # Load embeddings
-    # if isinstance(haplotype_embeddings, str):
-    #     print(f"Loading haplotype embeddings from {haplotype_embeddings}")
-    #     haplotype_embeddings = torch.load(haplotype_embeddings, 
-    #                                    mmap=True, 
-    #                                    weights_only=True,
-    #                                    map_location=torch.device('cpu'))
-    
-    # Get max embedding dimension
+    # Get max embedding dimension if not provided
     if max_embedding_dim is None:
-        max_embedding_dim = get_max_embedding_dim(haplotype_embeddings,
-                                                  verbose=verbose)
+        max_embedding_dim = get_max_embedding_dim(haplotype_embeddings, verbose=verbose)
 
-    # Get tx ids available in embeddings_dir
+    # Get transcript IDs available in both embeddings and haplotypes
     tx_ids_embeddings = list_haplotype_embeddings_tx_ids(haplotype_embeddings)
     tx_ids_haplotypes = hs.list_haplotypes()
-    
-    # Subset tx_ids to only include those in both embeddings and haplotypes
-    tx_ids_tmp = utils.intersect(tx_ids_embeddings,
-                                  tx_ids_haplotypes)
-    
-    # Subset selected tx_ids
+    tx_ids_tmp = utils.intersect(tx_ids_embeddings, tx_ids_haplotypes)
     if tx_ids is None:
         tx_ids = tx_ids_tmp
     else:
-        tx_ids = utils.intersect(tx_ids,
-                                 tx_ids_tmp)
+        tx_ids = utils.intersect(tx_ids, tx_ids_tmp)
     if len(tx_ids) == 0:
-        raise ValueError(f"No tx_ids found in both embeddings and haplotypes")
-    if verbose>1:
+        raise ValueError("No tx_ids found in both embeddings and haplotypes")
+    if verbose > 1:
         print(f"Subsetting tx_ids to {len(tx_ids)}")
-        
-    # Get phases
+
+    # Define phases
     phases = ['phase1', 'phase2']
 
-    # Get haplotype data
-    # (hap_df, 
-    #  hap_samples, 
-    #  samples) = load_haplosaurus_data(haplotypes=haplotypes,
-    #                                                          tx_ids=tx_ids,
-    #                                                          key=key, 
-    #                                                          samples=samples,
-    #                                                          verbose=verbose)
-    
-    
-    # initialize 3d tensor
+    # Initialize tensor: [samples, transcripts, phases, embedding_dim]
     tensor = torch.zeros(
-        len(samples), # Samples
-        len(tx_ids), # Transcripts
-        len(phases), # Phases
-        max_embedding_dim # embeddings - using maximum dimension to accommodate all
-    ) 
-    
-    for transcript_idx, tx_id in tqdm(enumerate(tx_ids), 
-                                      total=len(tx_ids),
-                                      desc="Populating patient tensor",
-                                      leave=False):
-        
-        (hap_df, 
-         hap_samples, 
-         samples) = load_haplosaurus_data(haplotypes=haplotypes,
-                                          tx_ids=tx_id,
-                                          key=key,
-                                          samples=samples,
-                                          verbose=verbose)
-        
-        haplotype_embeddings_tx = load_haplotype_embeddings(haplotype_embeddings,
-                                                            tx_id)
-        
+        len(samples),      # Samples
+        len(tx_ids),       # Transcripts
+        len(phases),       # Phases
+        max_embedding_dim  # Embedding dimension
+    )
+
+    for transcript_idx, tx_id in tqdm(
+        enumerate(tx_ids), 
+        total=len(tx_ids),
+        desc="Populating patient tensor",
+        leave=False
+    ):
+        # Load haplotype data for this transcript
+        hap_df, hap_samples, samples = load_haplosaurus_data(
+            haplotypes=haplotypes,
+            tx_ids=tx_id,
+            key=key,
+            samples=samples,
+            verbose=verbose
+        )
+        # Load embeddings for this transcript
+        haplotype_embeddings_tx = load_haplotype_embeddings(haplotype_embeddings, tx_id)
+
         # Iterate over samples
-        for sample_idx, sample in tqdm(enumerate(samples),
-                                        total=len(samples),
-                                        desc="Iterating over samples",
-                                        leave=False):
-            
+        for sample_idx, sample in tqdm(
+            enumerate(samples),
+            total=len(samples),
+            desc="Iterating over samples",
+            leave=False
+        ):
             if sample not in samples:
-                if verbose>1:
+                if verbose > 1:
                     print(f"Skipping {sample} because it is not in the selected samples")
                 continue
-            
-            hap_df_tmp = hap_df.loc[hap_samples[tx_id][sample]] 
-            if verbose>1:
+
+            hap_df_tmp = hap_df.loc[hap_samples[tx_id][sample]]
+            if verbose > 1:
                 print(f"Found {len(hap_df_tmp)} haplotypes for {tx_id} in sample {sample}")
 
             if not hap_df_tmp.empty:
-                
                 for phase_idx, (hap_name, row) in enumerate(hap_df_tmp.iterrows()):
                     seq = row['sequence']
-                
                     if seq in haplotype_embeddings_tx:
                         seq_rep = haplotype_embeddings_tx[seq]
-                
                         if drop_nan and torch.isnan(seq_rep).any():
-                            if verbose>1:
+                            if verbose > 1:
                                 print(f"Skipping {hap_name} because it has NaN values")
                             continue
-
                         tensor[sample_idx, transcript_idx, phase_idx, :] = seq_rep.detach().clone()
-            
-    # Save a per-sample tensors
+
+    # Save per-sample tensors if requested
     if patient_embeddings_dir:
         sample_tensor_paths = []
-        for sample_idx, sample in tqdm(enumerate(samples),
-                                        total=len(samples),
-                                        desc="Saving per-sample tensors",
-                                        leave=False):
-            sample_tensor_path = _get_sample_tensor_path(
-                patient_embeddings_dir, 
-                sample
+        for sample_idx, sample in tqdm(
+            enumerate(samples),
+            total=len(samples),
+            desc="Saving per-sample tensors",
+            leave=False
+        ):
+            sample_tensor_path = _get_sample_tensor_path(patient_embeddings_dir, sample)
+            utils.save_torch(
+                obj=tensor[sample_idx].detach().clone(),
+                save_path=sample_tensor_path,
+                verbose=verbose > 1
             )
-            utils.save_torch(obj=tensor[sample_idx].detach().clone(), 
-                             save_path=sample_tensor_path,
-                             verbose=verbose>1)
             sample_tensor_paths.append(sample_tensor_path)
         return sample_tensor_paths
-    # Save a single tensor dictionary
     else:
         # Construct tensor dictionary
-        tensor_dict = {'tensor':tensor,
-                       'samples':samples,
-                       'transcripts':tx_ids,
-                       'phases':phases}
-        
-        utils.save_torch(obj=tensor_dict, 
-                          save_path=save_path,
-                          verbose=verbose)
-
+        tensor_dict = {
+            'tensor': tensor,
+            'samples': samples,
+            'transcripts': tx_ids,
+            'phases': phases
+        }
+        if save_path:
+            utils.save_torch(
+                obj=tensor_dict,
+                save_path=save_path,
+                verbose=verbose
+            )
         return tensor_dict
+
 
 def merge_haplotype_embeddings(haplotype_embeddings_dir, 
                                 unnest=False,

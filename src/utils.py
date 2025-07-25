@@ -1369,7 +1369,9 @@ def sort_by_clinsig(df,
 
 def variants_to_positions(df,
                          variant_col='variant',
-                         position_col='variant_position'):
+                         position_col='variant_position',
+                         ref_col='REF',
+                         alt_col='ALT'):
     """
     Extract position numbers from variant strings and add them as a new column.
     Handles two variant encoding schemas:
@@ -1420,7 +1422,42 @@ def variants_to_positions(df,
     
     # Map positions to new column
     df[position_col] = pd.to_numeric(df[variant_col].map(positions), errors='coerce').astype('Int64')
+
+    # Add REF and ALT columns
+    # Handle different variant formats including deletions
+    
+    
+    # Extract REF and ALT for unique variants
+    ref_alt_dict = {variant: extract_ref_alt(variant) 
+                   for variant in df[variant_col].unique()}
+    
+    # Map to DataFrame columns
+    df[ref_col] = df[variant_col].map(lambda x: ref_alt_dict[x][0]).astype(str)
+    df[alt_col] = df[variant_col].map(lambda x: ref_alt_dict[x][1]).astype(str)
+
     return df
+
+
+def extract_ref_alt(variant):
+        if variant == 'REF':
+            return None, None
+        
+        # Handle deletion format (e.g., "616delS")
+        del_match = re.search(r'(\d+)del([A-Z]+)', variant)
+        if del_match:
+            return del_match.group(2), ''  # REF is the deleted sequence, ALT is empty
+        
+        # Handle standard substitution format (e.g., "123A>G")
+        sub_match = re.search(r'(\d+)([A-Z]+)>([A-Z]+)', variant)
+        if sub_match:
+            return sub_match.group(2), sub_match.group(3)
+        
+        # Handle amino acid change format (e.g., "P1150S")
+        aa_match = re.search(r'[A-Z](\d+)([A-Z])', variant)
+        if aa_match:
+            return aa_match.group(2), aa_match.group(2)  # Same amino acid, no change
+        
+        return None, None
 
 
 def add_variant_name(df,

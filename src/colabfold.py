@@ -33,7 +33,10 @@
 # mkdir ENST00000357654 & cd ENST00000357654 
 # scp $HOME/projects/data/1KG/fasta/split/ENST00000357654.fasta.gz .
 # gunzip ENST00000357654.fasta.gz
+#### Then run using different MSAs for each sequence (constructed using MMseqs2)
 # colabfold_batch --save-single-representations --save-pair-representations ENST00000357654.fasta af2
+#### OR using custom MSA (constructed using the same MSA template for all sequences)
+# colabfold_batch --save-single-representations --save-pair-representations af2_sameMSA/ af2_sameMSA/
 
 from Bio.PDB import PDBParser, Selection
 from Bio.PDB.MMCIFParser import MMCIFParser
@@ -243,9 +246,6 @@ def get_plddt(structure) -> pd.DataFrame:
     # Print basic statistics
     print(f"Number of residues: {len(plddt_df)}")
     return plddt_df
-
-
- 
 
 def bin_matrix(X, bin_size=10, agg_func=np.nanmax):
     """
@@ -688,6 +688,7 @@ def create_haplotype_msas(template_msa,
     """
     Create MSA files for each haplotype sequence by replacing the first sequence
     in a template MSA with each haplotype sequence.
+    This ensures that AlphaFold2 can use the same MSA for all haplotypes.
 
     Args:
         template_msa (str): Path to template MSA file (fasta format)

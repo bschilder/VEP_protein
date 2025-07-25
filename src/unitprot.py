@@ -6,7 +6,9 @@ from io import StringIO
 import requests
 import pandas as pd
 
-def import_uniprot(protein_id, verbose=False):
+def import_uniprot(protein_id, 
+                   parser="uniprot-xml",
+                   verbose=False):
     """
     Import protein data from UniProt database for a given protein ID.
     
@@ -24,7 +26,7 @@ def import_uniprot(protein_id, verbose=False):
     """
     response = requests.get(f"https://rest.uniprot.org/uniprotkb/{protein_id}.xml")
     if response.status_code == 200:
-        records = SeqIO.parse(StringIO(response.text), "uniprot-xml")
+        records = SeqIO.parse(StringIO(response.text), parser)
         if verbose:
             for record in records:
                 print(record.id)
@@ -94,3 +96,30 @@ def get_features(protein_id):
     features_df["length"] = features_df["end"] - features_df["start"]
 
     return features_df
+
+
+def get_dbxrefs(protein_id):
+    """
+    Retrieve database cross-references from UniProt for a given protein ID.
+    
+    Args:
+        protein_id (str): UniProt protein identifier
+        
+    Returns:
+        pd.DataFrame: DataFrame containing database cross-references with columns:
+            - dbxref: Original cross-reference string
+            - db: Database name
+            - id: Database identifier
+            
+    Example:
+        >>> dbxrefs = get_dbxrefs("P12345")
+        >>> print(dbxrefs.columns)
+    """
+    records = import_uniprot(protein_id)
+    dbxrefs = []
+    for record in records:       
+        dbxrefs.append(list(record.dbxrefs))
+    dbxrefs = pd.DataFrame(dbxrefs, index=["dbxref"]).T
+    # Split the dbxref column into two columns at the first occurrence of ":"
+    dbxrefs[['db', 'id']] = dbxrefs['dbxref'].str.split(':', n=1, expand=True)
+    return dbxrefs 

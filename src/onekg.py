@@ -258,7 +258,8 @@ def get_ped(key=DEFAULT_KEY):
                          'EUROPE':'EUR',
                          'AFRICA':'AFR',
                          'AMERICA':'AMR',
-                         'OCEANIA':'OCE'
+                         'OCEANIA':'OCE',
+                         'SOUTH_ASIA':'SAS'
                          }
         ped['superpopulation'] = ped['region'].map(superpop_dict)
 
@@ -268,7 +269,9 @@ def get_ped(key=DEFAULT_KEY):
     return ped
 
 def get_sample_metadata(key=DEFAULT_KEY,
-                        prohap_format=False):
+                        harmonized=True,
+                        prohap_format=False,
+                        ):
     """
     Retrieve and merge sample metadata from the 1000 Genomes Project.
     
@@ -289,26 +292,36 @@ def get_sample_metadata(key=DEFAULT_KEY,
         DataFrame containing merged sample metadata with individual information
         and population details.
     """
-    ped = get_ped(key=key)
-    
-    if key == 'Human_Genome_Diversity_Project':
-        if prohap_format:
-            ped.rename(columns={'Individual ID': 'Sample name',
-                                'sex': 'Sex',
-                                'population': 'Population code',
-                                'superpopulation': 'Superpopulation code'},
-                                inplace=True)
-        return ped
-    
-    pop = get_pop(key=key)
-    if ped is None or pop is None:
-        return None
-    sample_metadata = ped.merge(pop, left_on='Population', right_index=True)
+
+    if harmonized:
+        sample_metadata = pd.read_csv("results/data/SGDP_metadata.279public.21signedLetter.44Fan.samples.txt", sep="\t")
+    else:
+        ped = get_ped(key=key)
+        
+        if key == 'Human_Genome_Diversity_Project':
+            if prohap_format:
+                ped.rename(columns={'Individual ID': 'Sample name',
+                                    'sex': 'Sex',
+                                    'population': 'Population code',
+                                    'superpopulation': 'Superpopulation code'},
+                                    inplace=True)
+            return ped
+        
+        pop = get_pop(key=key)
+        if ped is None or pop is None:
+            return None
+        sample_metadata = ped.merge(pop, left_on='Population', right_index=True)
+   
+    # Convert to ProHap format
     if prohap_format:
         sample_metadata.rename(columns={'Individual ID': 'Sample name',
                                 'Gender': 'Sex',
+                                'sex': 'Sex',
                                 'Population Code': 'Population code',
-                                'Super Population': 'Superpopulation code'},
+                                'population': 'Population code',
+                                'Super Population': 'Superpopulation code',
+                                'superpopulation': 'Superpopulation code'
+                                },
                                 inplace=True)
     return sample_metadata
 

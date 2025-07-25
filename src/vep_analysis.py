@@ -9,6 +9,8 @@ from tqdm.auto import tqdm
 import seaborn as sns
 import matplotlib.pyplot as plt
 from typing import Dict, List, Literal
+import pooch
+
 # Local imports
 import src.config as config
 import src.utils as utils
@@ -2092,80 +2094,167 @@ def compute_vep_mmr(df,
     return mmr_results_df
 
 
-def plot_vep_by_superpop(vep_df,
-                         within_site_var,
-                         i=0,
-                         vep_col = "VEP",
-                         variant_col="mutant",
-                         haps_to_samples=None,
-                         unique_haplotypes: bool = True,
-                         remove_zeros: bool = False,
-                         figsize=(10, 8),
-                         hue_top: str = "mutant",
-                         hue: str = "mutant",
-                         hue_bottom: str = "mutant",
-                         legend_loc: str = "upper left",
-                         binwidth_scaler: float = 200,
-                         add_clinsig_labels: bool = True,
-                         palette: str = "Set2"):
-   
-    if i is not None:
-        row_selected = within_site_var.drop_duplicates(
-            subset=[vep_col]
-        ).iloc[i]
-        plot_df = vep_df.loc[(vep_df[variant_col]==row_selected[variant_col]) & (vep_df["protein"]==row_selected["protein"])]
+def plot_vep_by_superpop(
+    vep_df,
+    within_site_var=None,
+    i=None,
+    vep_col="VEP",
+    variant_col="mutant",
+    haps_to_samples=None,
+    unique_haplotypes: bool = True,
+    remove_zeros: bool = False,
+    figsize=(10, 8),
+    hue_top: str = "mutant",
+    hue: str = "mutant",
+    hue_bottom: str = "mutant",
+    legend_loc: str = "upper left",
+    binwidth_scaler: float = 200,
+    add_clinsig_labels: bool = True,
+    palette: str = "Set2"
+):
+    """
+    Plot the distribution of Variant Effect Prediction (VEP) scores by super population.
+
+    This function visualizes the distribution of VEP scores for variants across different super populations,
+    with options to facet by variant, clinical significance, or super population. It supports plotting
+    distributions for unique haplotypes or for samples, and can highlight reference alleles and annotate
+    with clinical significance labels.
+
+    Parameters
+    ----------
+    vep_df : pd.DataFrame
+        DataFrame containing VEP scores and variant information.
+    within_site_var : pd.DataFrame
+        DataFrame with within-site variant information (used for selecting a specific variant/protein).
+    i : int or None, default=0
+        Index of the variant/protein to plot. If None, plot all.
+    vep_col : str, default="VEP"
+        Column name for VEP scores.
+    variant_col : str, default="mutant"
+        Column name for variant identifier.
+    haps_to_samples : pd.DataFrame or None, optional
+        DataFrame mapping haplotypes to samples. Required if unique_haplotypes is False.
+    unique_haplotypes : bool, default=True
+        If True, plot distributions of unique haplotypes; otherwise, plot by samples.
+    remove_zeros : bool, default=False
+        If True, remove rows where VEP score is zero.
+    figsize : tuple, default=(10, 8)
+        Figure size for the plot.
+    hue_top : str, default="mutant"
+        Variable to use for coloring the top histogram.
+    hue : str, default="mutant"
+        Variable to use for coloring the faceted histograms.
+    hue_bottom : str, default="mutant"
+        Variable to use for coloring the bottom summary histogram.
+    legend_loc : str, default="upper left"
+        Location of the legend in the plots.
+    binwidth_scaler : float, default=200
+        Factor to scale the bin width for histograms.
+    add_clinsig_labels : bool, default=True
+        If True, add clinical significance labels to reference lines.
+    palette : str, default="Set2"
+        Color palette to use for variants.
+
+    Returns
+    -------
+    plot_df : pd.DataFrame
+        The DataFrame used for plotting (after filtering and processing).
+
+    Notes
+    -----
+    - Requires seaborn as sns, matplotlib.pyplot as plt, and utility functions from `utils` and `hs`.
+    - The function creates a multi-panel figure showing the distribution of VEP scores for all populations,
+      for each super population, and summary histograms colored by the specified hue.
+    - Reference alleles are indicated with dashed lines and optional labels.
+    - The function returns the DataFrame used for plotting, which may be useful for further analysis.
+    """
+    if i is not None and within_site_var is not None:
+        # If i is a range, convert to list
+        if isinstance(i, range):
+            i = list(i)
+        # Allow i to be a single integer or a list of integers
+        if isinstance(i, int):
+            indices = [i]
+        elif isinstance(i, (list, tuple, set, np.ndarray)):
+            indices = list(i)
+        else:
+            raise ValueError("Parameter 'i' must be an int or a list/array of ints.")
+
+        # Ensure indices are within valid range
+        n_rows = within_site_var.drop_duplicates(subset=[vep_col]).shape[0]
+        indices = [idx for idx in indices if 0 <= idx < n_rows]
+        if not indices:
+            raise IndexError("All provided indices are out of range.")
+
+        rows_selected = within_site_var.drop_duplicates(subset=[vep_col]).iloc[indices]
+        # If only one row is selected, keep as DataFrame for consistency
+        if isinstance(rows_selected, pd.Series):
+            rows_selected = rows_selected.to_frame().T
+
+        # Merge on both variant_col and protein
+        plot_df = vep_df.merge(
+            rows_selected[[variant_col, "protein"]],
+            on=[variant_col, "protein"],
+            how="inner"
+        )
     else:
         plot_df = vep_df.copy()
-        
-    plot_df = hs.add_haplotype_freqs(plot_df) 
-    
+
+    if plot_df.empty:
+        raise ValueError("No rows remain after filtering.")
+    else:
+        print("plot_df.shape:",plot_df.shape)
+
+    print("Adding haplotype frequencies.")
+    plot_df = hs.add_haplotype_freqs(plot_df)
+
     if remove_zeros:
-        plot_df = plot_df.loc[plot_df["VEP"]!=0]
-    
+        print("Removing zeros.")
+        plot_df = plot_df.loc[plot_df[vep_col] != 0]
+
     multi_mutant = plot_df[variant_col].nunique() > 1
-    mutant_palette = utils.make_palette(plot_df[variant_col].unique(), 
-                                        palette=palette)
-    if hue=="clinsig":
+    mutant_palette = utils.make_palette(plot_df[variant_col].unique(), palette=palette)
+
+    # Determine color palettes for each hue
+    if hue == "clinsig":
         cmap = utils.get_clinsig_palette()
-    elif hue=="Super Population":
+    elif hue == "Super Population":
         cmap = utils.get_superpop_palette()
-    elif hue==variant_col:
+    elif hue == variant_col:
         cmap = mutant_palette
     else:
         raise ValueError(f"Invalid hue: {hue}")
-    
-    # Create a palette for the top subplot
-    if hue_top=="clinsig":
+
+    if hue_top == "clinsig":
         cmap_top = utils.get_clinsig_palette()
-    elif hue_top=="Super Population":
+    elif hue_top == "Super Population":
         cmap_top = utils.get_superpop_palette()
-    elif hue_top==variant_col:
+    elif hue_top == variant_col:
         cmap_top = mutant_palette
     else:
         raise ValueError(f"Invalid hue_top: {hue_top}")
-    
-    if hue_bottom=="clinsig":
+
+    if hue_bottom == "clinsig":
         cmap_bottom = utils.get_clinsig_palette()
-    elif hue_bottom=="Super Population":
+    elif hue_bottom == "Super Population":
         cmap_bottom = utils.get_superpop_palette()
-    elif hue_bottom==variant_col:
+    elif hue_bottom == variant_col:
         cmap_bottom = mutant_palette
     else:
         raise ValueError(f"Invalid hue_bottom: {hue_bottom}")
-    
 
     def ylabeler(hue):
-        if hue=="mutant":
+        """Return a human-readable label for the y-axis based on the hue variable."""
+        if hue == "mutant":
             return "Variant"
-        elif hue=="clinsig":
+        elif hue == "clinsig":
             return "ClinSig"
-        elif hue=="Super Population":
+        elif hue == "Super Population":
             return "Superpop"
         else:
             return hue
 
-    
-    # Plot distributions of unique haplotypes, instead of samples
+    # Prepare data for plotting: by unique haplotypes or by samples
     if unique_haplotypes:
         plot_df["Super Population"] = plot_df["top_superpop"].str.split(":").str[-1]
     else:
@@ -2176,156 +2265,208 @@ def plot_vep_by_superpop(vep_df,
     # Calculate global min and max for consistent x-axis limits
     x_min = plot_df[vep_col].min()
     x_max = plot_df[vep_col].max()
-    # Compute optimal binwidth
-    # bins=100
-    binwidth=(x_max-x_min)/binwidth_scaler
+    binwidth = (x_max - x_min) / binwidth_scaler
 
-    # Get unique super populations excluding REF
-    super_pops = plot_df.loc[plot_df["is_ref"]==False].dropna(subset=["Super Population"])["Super Population"].unique()
+    # Get unique super populations (excluding REF)
+    super_pops = plot_df.loc[
+        plot_df["is_ref"] == False
+    ].dropna(subset=["Super Population"])["Super Population"].unique()
     n_pops = len(super_pops)
 
-    # Create figure with subplots - adjust grid size based on number of populations
+    # Create figure with subplots
     fig = plt.figure(figsize=figsize)
-    gs = fig.add_gridspec(nrows=n_pops + 3, 
-                          ncols=1, 
-                          height_ratios= [1.5]+[1]+([1] * (n_pops + 1)), 
-                          hspace=0.1,
-                          top=0.9)
- 
+    gs = fig.add_gridspec(
+        nrows=n_pops + 3,
+        ncols=1,
+        height_ratios=[1.5] + [1] + ([1] * (n_pops + 1)),
+        hspace=0.1,
+        top=0.9
+    )
+
     # Add histogram with all data in first subplot
     ax0 = fig.add_subplot(gs[0])
-    
-    # Add REF lines and labels first
-    ref_rows = ref_rows = plot_df.loc[plot_df["is_ref"]==True].drop_duplicates(subset=[variant_col])
-    label_map = {"path":"P", "benign":"B", "likely_path":"LP", "likely_benign":"LB"}
-    
+
+    # Add REF lines and labels
+    ref_rows = plot_df.loc[plot_df["is_ref"] == True].drop_duplicates(subset=[variant_col])
+    label_map = {"path": "P", "benign": "B", "likely_path": "LP", "likely_benign": "LB"}
+
     # Create a new subplot for labels above the histogram
     ax_labels = fig.add_subplot(gs[0])
     ax_labels.set_axis_off()  # Hide the axis
-    
+
     for _, row in ref_rows.iterrows():
         ref_value = row[vep_col]
-        ax0.axvline(x=ref_value, color=mutant_palette[row[variant_col]], linestyle='--', label=row[variant_col])
-        label = row[variant_col] + " (" + label_map[row["clinsig"]] + ")" if add_clinsig_labels else row[variant_col]
+        ax0.axvline(
+            x=ref_value,
+            color=mutant_palette[row[variant_col]],
+            linestyle='--',
+            label=row[variant_col]
+        )
+        label = (
+            row[variant_col] + " (" + label_map.get(row["clinsig"], row["clinsig"]) + ")"
+            if add_clinsig_labels else row[variant_col]
+        )
         # Position text in the label subplot above the histogram
-        ax_labels.text(ref_value - 0.01, ax0.get_ylim()[1], 
-                      label, 
-                      color=mutant_palette[row[variant_col]], 
-                      rotation=90, 
-                      va='bottom', 
-                      ha='right',
-                      transform=ax0.transData)  # Use the data coordinates from ax0
-    # Now add the main histogram showing each mutant's distribution
+        ax_labels.text(
+            ref_value - 0.01,
+            ax0.get_ylim()[1],
+            label,
+            color=mutant_palette[row[variant_col]],
+            rotation=90,
+            va='bottom',
+            ha='right',
+            transform=ax0.transData
+        )
+
+    # Main histogram showing each mutant's distribution
     if multi_mutant:
-        sns.histplot(data=plot_df, 
-                     x="VEP", 
-                     hue=hue_top, 
-                     multiple="stack", 
-                     legend=False,
-                     ax=ax0, 
-                     palette=cmap_top,
-                     binwidth=binwidth
-                     )
+        sns.histplot(
+            data=plot_df,
+            x="VEP",
+            hue=hue_top,
+            multiple="stack",
+            legend=False,
+            ax=ax0,
+            palette=cmap_top,
+            binwidth=binwidth
+        )
     else:
-        sns.histplot(plot_df, 
-                    x=vep_col, 
-                    binwidth=binwidth,
-                    color="white",
-                    ax=ax0)
+        sns.histplot(
+            plot_df,
+            x=vep_col,
+            binwidth=binwidth,
+            color="white",
+            ax=ax0
+        )
     ax0.set_xlabel(None)
     ax0.set_xticklabels([])  # Remove x-tick labels
+
     # Adjust legend location
-    if legend_loc=="upper left":
+    if legend_loc == "upper left":
         ax0.text(0.02, 0.95, "All Populations", transform=ax0.transAxes, ha='left', va='top')
     else:
         ax0.text(0.98, 0.95, "All Populations", transform=ax0.transAxes, ha='right', va='top')
     ax0.set_xlim(x_min, x_max)
-    
+
     if not multi_mutant:
-        # Add mean line
-        ax0.axvline(x=plot_df[vep_col].mean(), color='grey', linestyle=':', label='Mean', linewidth=1)
-        ax0.text(plot_df[vep_col].mean() - 0.01, ax0.get_ylim()[1], f'Mean', color='grey', rotation=90, va='top', ha='right')
-        # Add median line
-        ax0.axvline(x=plot_df[vep_col].median(), color='grey', linestyle='--', label='Median', linewidth=1)
-        ax0.text(plot_df[vep_col].median() - 0.01, ax0.get_ylim()[1], f'Median', color='grey', rotation=90, va='top', ha='right')
+        # Add mean and median lines
+        ax0.axvline(
+            x=plot_df[vep_col].mean(),
+            color='grey',
+            linestyle=':',
+            label='Mean',
+            linewidth=1
+        )
+        ax0.text(
+            plot_df[vep_col].mean() - 0.01,
+            ax0.get_ylim()[1],
+            'Mean',
+            color='grey',
+            rotation=90,
+            va='top',
+            ha='right'
+        )
+        ax0.axvline(
+            x=plot_df[vep_col].median(),
+            color='grey',
+            linestyle='--',
+            label='Median',
+            linewidth=1
+        )
+        ax0.text(
+            plot_df[vep_col].median() - 0.01,
+            ax0.get_ylim()[1],
+            'Median',
+            color='grey',
+            rotation=90,
+            va='top',
+            ha='right'
+        )
 
-
-     # Add summary histogram with all superpopulations, colored by mutant
+    # Add summary histogram with all superpopulations, colored by mutant
     ax1 = fig.add_subplot(gs[1])
-    sns.histplot(plot_df.loc[plot_df["Super Population"]!="REF"], 
-                    x=vep_col, 
-                    # bins=bins,
-                    binwidth=binwidth*4,
-                    hue=hue_top,
-                    palette=cmap_top,
-                    legend=False,
-                    multiple="fill",
-                    ax=ax1)
-    # ax1.text(0.98, 0.95, "All Populations", transform=ax1.transAxes, ha='right', va='top')
+    sns.histplot(
+        plot_df.loc[plot_df["Super Population"] != "REF"],
+        x=vep_col,
+        binwidth=binwidth * 4,
+        hue=hue_top,
+        palette=cmap_top,
+        legend=False,
+        multiple="fill",
+        ax=ax1
+    )
     ax1.set_xlabel(f"Variant Effect Prediction ({vep_col})")
     ax1.set_ylabel(f"Proportion\nby {ylabeler(hue_top)}")
     ax1.set_xlim(x_min, x_max)
 
-
     # Add faceted histograms for each superpopulation
     for idx, pop in enumerate(sorted(super_pops)):
-        ax = fig.add_subplot(gs[idx+2])
-        sns.histplot(plot_df.loc[plot_df["Super Population"]==pop], 
-                    x=vep_col, 
-                    # bins=bins,
-                    binwidth=binwidth,
-                    hue=hue,
-                    palette=cmap,
-                    legend=True if hue=="Super Population" else False,
-                    ax=ax)
-        if hue==variant_col:
+        ax = fig.add_subplot(gs[idx + 2])
+        sns.histplot(
+            plot_df.loc[plot_df["Super Population"] == pop],
+            x=vep_col,
+            binwidth=binwidth,
+            hue=hue,
+            palette=cmap,
+            legend=True if hue == "Super Population" else False,
+            ax=ax
+        )
+        if hue == variant_col:
             ax.text(0.02, 0.95, pop, transform=ax.transAxes, ha='left', va='top')
-        else :
+        else:
             ax.legend(title="Superpop", loc=legend_loc, labels=[pop])
         ax.set_title(None)
         ax.set_xlabel(None)
         ax.set_xticklabels([])  # Remove x-tick labels
         ax.set_xlim(x_min, x_max)
 
-    # Add summary histogram with all superpopulations
+    # Add summary histogram with all superpopulations (bottom panel)
     ax1 = fig.add_subplot(gs[-1])
-    sns.histplot(plot_df.loc[plot_df["Super Population"]!="REF"], 
-                    x=vep_col, 
-                    # bins=bins,
-                    binwidth=binwidth*4,
-                    hue=hue_bottom,
-                    palette=cmap_bottom,
-                    legend=False,
-                    multiple="fill",
-                    ax=ax1)
-    # ax1.text(0.98, 0.95, "All Populations", transform=ax1.transAxes, ha='right', va='top')
+    sns.histplot(
+        plot_df.loc[plot_df["Super Population"] != "REF"],
+        x=vep_col,
+        binwidth=binwidth * 4,
+        hue=hue_bottom,
+        palette=cmap_bottom,
+        legend=False,
+        multiple="fill",
+        ax=ax1
+    )
     ax1.set_xlabel(f"Variant Effect Prediction ({vep_col})")
-    if hue_bottom==variant_col:
+    if hue_bottom == variant_col:
         ax1.set_ylabel("Proportion\nby Variant")
-    elif hue_bottom=="clinsig":
+    elif hue_bottom == "clinsig":
         ax1.set_ylabel("Proportion\nby ClinSig")
-    elif hue_bottom=="Super Population":
+    elif hue_bottom == "Super Population":
         ax1.set_ylabel("Proportion\nby Superpop")
     else:
         ax1.set_ylabel(f"Proportion\nby {hue_bottom}")
-    ax1.set_xlim(x_min, x_max) 
+    ax1.set_xlim(x_min, x_max)
 
+    # Add figure title
     if i is not None:
-        plt.suptitle(f"Distribution of VEP scores by Super Population\
-                    \n• Haplotypes: {row_selected['haplotype']}\
-                    \n• Variant (Protein): {plot_df['CLNHGVS'].iloc[0]} ({plot_df['protein'].iloc[0]})\
-                    \n• Disease: {row_selected['MONDO_label'].replace('_',' ')}\
-                    \n• Review Status: {plot_df['CLNREVSTAT'].iloc[0].replace('_',' ')}", 
-                    y=1.03, x=0.125, ha='left')
+        plt.suptitle(
+            f"Distribution of VEP scores by Super Population"
+            f"\n• Haplotypes: {plot_df['haplotype'].nunique()}"
+            f"\n• Proteins (Genes): "
+            f"{plot_df['protein'].iloc[0] if plot_df['protein'].nunique() == 1 else plot_df['protein'].nunique()} "
+            f"({plot_df['GENEINFO'].iloc[0].split(':')[0] if plot_df['GENEINFO'].nunique() == 1 else plot_df['GENEINFO'].nunique()})"
+            f"\n• Disease: {rows_selected['MONDO_label'].str.replace('_',' ').unique()}"
+            f"\n• Review Status: {plot_df['CLNREVSTAT'].iloc[0].replace('_',' ')}",
+            y=1.03, x=0.125, ha='left'
+        )
     else:
-        plt.suptitle(f"Distribution of VEP scores by Super Population\
-                     \n• Haplotypes: {plot_df['haplotype'].nunique()}\
-                     \n• Variants: {plot_df.groupby("clinsig")['mutant'].nunique().to_dict()}\
-                     \n• Proteins (Genes): {plot_df['protein'].iloc[0] if plot_df['protein'].nunique() == 1 else plot_df['protein'].nunique()} ({plot_df['GENEINFO'].iloc[0].split(":")[0] if plot_df['GENEINFO'].nunique() == 1 else plot_df['GENEINFO'].nunique()})\
-                     \n• Diseases: {plot_df['CLNDN'].iloc[0] if plot_df['CLNDN'].nunique() == 1 else plot_df['CLNDN'].nunique()}\
-                     ", 
-                     y=1.03, x=0.125, ha='left')
-    plt.tight_layout() 
+        plt.suptitle(
+            f"Distribution of VEP scores by Super Population"
+            f"\n• Haplotypes: {plot_df['haplotype'].nunique()}"
+            f"\n• Variants: {plot_df.groupby('clinsig')['mutant'].nunique().to_dict()}"
+            f"\n• Proteins (Genes): "
+            f"{plot_df['protein'].iloc[0] if plot_df['protein'].nunique() == 1 else plot_df['protein'].nunique()} "
+            f"({plot_df['GENEINFO'].iloc[0].split(':')[0] if plot_df['GENEINFO'].nunique() == 1 else plot_df['GENEINFO'].nunique()})"
+            f"\n• Diseases: {plot_df['CLNDN'].iloc[0] if plot_df['CLNDN'].nunique() == 1 else plot_df['CLNDN'].nunique()}",
+            y=1.03, x=0.125, ha='left'
+        )
+    plt.tight_layout()
 
     return plot_df
 
@@ -3411,3 +3552,5 @@ def identify_outliers(X):
     # Sort by adjusted p-value
     df = df.sort_values('p_adjusted')
     return df
+
+

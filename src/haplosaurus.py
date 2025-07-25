@@ -3,9 +3,11 @@ import warnings
 from typing import Dict, List, Optional, Union, Tuple, Set
 from pathlib import Path
 import pandas as pd
+import numpy as np
 from tqdm.auto import tqdm
 from traitlets import default
 import ensembl_rest
+import glob
 
 import src.utils as utils
 import src.config as config
@@ -21,7 +23,8 @@ DIR_DICT.update({
     "haplotypes_merged": er.DIR_DICT['haplotypes'].replace('haplotypes', 'haplotypes_merged'),
     "variants": os.path.join(config.DATA_DIR, "haplosaurus","variants",""),
     "variant_sets": os.path.join(config.DATA_DIR, "haplosaurus","variant_sets",""),
-    "tx_id_map": os.path.join(config.DATA_DIR, "haplosaurus","tx_id_map.pkl")
+    "tx_id_map": os.path.join(config.DATA_DIR, "haplosaurus","tx_id_map.pkl"),
+    "HGDP_haplotypes": os.path.join(config.DATA_DIR, "Human_Genome_Diversity_Project","haplosaurus",""),
 })
 
 def get_figshare(fname: Union[str, List[str]] = ["haplotype_analysis_database.zip",
@@ -800,7 +803,7 @@ def get_haplotype_seqs(haplotypes: Union[Dict[str, Dict], Dict[str, List[Dict]]]
 def haplotypes_to_df(haplotypes: Optional[Dict[str, Dict]] = None,
                      preprocess: bool = True,
                      max_tx_ids: Optional[int] = None,
-                     add_consensus: bool = True,
+                     add_consensus: bool = False,
                      add_missing_ref: bool = True,
                      key: str = 'protein_haplotypes',
                      verbose: bool = False) -> pd.DataFrame:
@@ -2144,7 +2147,7 @@ def haplotypes_to_samples(haplotypes=None,
                           max_tx_ids=None,
                           samples=None, 
                           return_seqs=True,
-                          cohort="1000GENOMES:phase_3", 
+                          cohort=None, 
                           key='protein_haplotypes',
                           as_df=False,
                           add_sample_metadata=False,
@@ -2206,6 +2209,10 @@ def haplotypes_to_samples(haplotypes=None,
                 continue
             
             sample_map = haplotypes[tx_id][key][hap_idx]['samples']
+            # Split the keys in sample_map by ":" and only keep the last item
+            # e.g. "1000Genomes:phase3:HG03235" --> "HG03235"
+            if cohort is None:
+                sample_map = {k.split(":")[-1]: v for k, v in sample_map.items()}
             seq = haplotypes[tx_id][key][hap_idx]['seq']
             hap_name = haplotypes[tx_id][key][hap_idx]['name']
             
@@ -2213,7 +2220,9 @@ def haplotypes_to_samples(haplotypes=None,
                 print(f"Haplotype index {hap_idx}, sequence length: {len(seq)}")
             
             for sample in samples:
-                sample_id = cohort+":"+sample
+                sample_id = sample
+                if cohort is not None:
+                    sample_id = cohort+":"+sample
                 if sample_id in sample_map.keys():
 
                     # Get the number of haplotypes with this sequence for this sample
@@ -2233,31 +2242,28 @@ def haplotypes_to_samples(haplotypes=None,
                 elif hap_idx == 0 and tx_id == tx_ids[0]:  # Only print this message once per sample for the first transcript
                     if verbose:
                         print(f"  Sample {sample}: not found in sample_map")
-
-          
-
+        
+        # Update the tx_sample_seqs dictionary
         tx_sample_seqs[tx_id] = sample_seqs
     
     # Return a DataFrame if requested
-    if as_df:
-        if return_seqs:
-            raise ValueError("Cannot return a DataFrame if return_seqs is True")
-        else:
+    if as_df:  
             df = pd.DataFrame(tx_sample_seqs).reset_index(names="sample").melt(id_vars="sample", 
-                                                                              var_name="ENST_haplosaurus", 
-                                                                              value_name="haplotype").explode("haplotype")
+                                                                            var_name="ENST_haplosaurus", 
+                                                                            value_name="haplotype").explode("haplotype") 
+
             # Add sample metadata
             if add_sample_metadata:
                 sample_metadata = og.get_sample_metadata()[["Individual ID","Gender","Population","Super Population"]].rename(columns={"Individual ID":"sample"})
                 df = df.merge(sample_metadata, on=["sample"], how="left") 
 
-            # Add REF haplotypes to the dataframe
-            if add_ref:
-                haps_to_ref = df.loc[df['haplotype'].str.endswith(":REF")]
-                haps_to_ref.loc[:,["sample","Population","Super Population"]] = "REF"
-                haps_to_ref.loc[:,["Gender"]] = pd.Int64Dtype().na_value
-                haps_to_ref= haps_to_ref.drop_duplicates()
-                df = pd.concat([haps_to_ref, df])
+                # Add REF haplotypes to the dataframe
+                if add_ref:
+                    haps_to_ref = df.loc[df['haplotype'].str.endswith(":REF")]
+                    haps_to_ref.loc[:,["sample","Population","Super Population"]] = "REF"
+                    haps_to_ref.loc[:,["Gender"]] = pd.Int64Dtype().na_value
+                    haps_to_ref= haps_to_ref.drop_duplicates()
+                    df = pd.concat([haps_to_ref, df])
 
             return df
     else:
@@ -2523,3 +2529,272 @@ def add_haplotype_diffs(df,
 
     return df
     
+
+def split_haplosaurus_results(
+    merged_json,
+    save_dir=DIR_DICT["HGDP_haplotypes"],
+    use_protein_ids: bool = False,
+    return_haplotypes: bool = False,
+    max_haplotypes: int = None,
+    max_line_len: int = None,
+    compress: bool = True,
+    force: bool = False,
+    verbose: bool = False
+):
+    """
+    Split a merged Haplosaurus JSON file (one line per transcript) into individual JSON files per transcript.
+    The expected input file is derived from running the [Haplosaurus tool within the VEP tool](https://github.com/Ensembl/ensembl-vep?tab=readme-ov-file#haplosaurus) 
+    when using the `--json` flag.
+
+    This function reads a gzipped JSON file where each line contains haplotype information for a single transcript.
+    It saves each transcript's haplotype data as a separate gzipped JSON file in the specified directory.
+
+    Args:
+        merged_json (str or Path): Path to the gzipped merged JSON file containing haplotype data for multiple transcripts.
+        save_dir (str or Path, optional): Directory to save the individual transcript JSON files. 
+            Defaults to DIR_DICT["haplotypes_HGDP"].
+        use_protein_ids (bool, optional): If True, use the "protein_haplotypes" key to extract transcript IDs.
+            If False, use the "cds_haplotypes" key. Defaults to False.
+        return_haplotypes (bool, optional): If True, return a dictionary mapping transcript IDs to their haplotype data.
+            If False, return the save_dir path. Defaults to False.
+        max_haplotypes (int, optional): Maximum number of haplotypes to save. Defaults to None.
+        max_line_len (int, optional): Maximum length of a line in the merged JSON file. Defaults to None.
+            This is to avoid loading very long lines into memory which can take a very long time.
+        compress (bool, optional): Whether to compress the output files. Defaults to True.
+        force (bool, optional): Whether to overwrite existing files. Defaults to False.
+        verbose (bool, optional): Whether to print verbose output. Defaults to False.
+
+    Returns:
+        dict or str:
+            - If return_haplotypes is True: Returns a dictionary {tx_id: haplotype_data}.
+            - If return_haplotypes is False: Returns the save_dir path.
+
+    Notes:
+        - The merged JSON file is expected to be gzipped and contain one JSON object per line.
+        - Each output file is named as "<transcript_id>.json.gz".
+        - The transcript ID is extracted from the haplotype name using the specified key.
+
+    Example:
+        >>> split_haplosaurus_results("all_haplotypes.json.gz", save_dir="output_dir", use_protein_ids=True)
+        'output_dir'
+    """
+    import gzip
+    import json
+
+    # Create the save directory if it doesn't exist
+    os.makedirs(save_dir, exist_ok=True) 
+    
+    # Get set of existing output files for fast lookup
+    if not force:
+        existing_files = set(os.path.basename(f) for f in glob.glob(os.path.join(save_dir, "*.json*")))
+    else:
+        existing_files = set()
+
+    # Select the key to use for extracting haplotype names
+    key = "protein_haplotypes" if use_protein_ids else "cds_haplotypes"
+
+    # Initialize the haplotypes dictionary if needed
+    haplotypes = {} if return_haplotypes else None
+
+    # Read and process the merged JSON file
+    with gzip.open(merged_json, "rt", encoding="utf-8") as f:
+        for line in tqdm(f, "Loading json"):
+            line = line.strip()
+            if line:
+                if max_line_len is not None and len(line) > max_line_len:
+                    if verbose:
+                        print(f"Skipping line because it is too long: {len(line)} > {max_line_len}")
+                    continue
+                data = json.loads(line)
+                if max_haplotypes is not None and len(data[key]) > max_haplotypes:
+                    if verbose:
+                        print(f"Skipping {tx_id} because it has more than {max_haplotypes} haplotypes")
+                    continue
+                # Extract transcript ID from the haplotype name
+                tx_id = data[key][0]['name'].split(':')[0]
+                out_fname = f"{tx_id}.json.gz"
+                save_path = os.path.join(save_dir, out_fname)
+                if (not force) and (out_fname in existing_files):
+                    if verbose:
+                        print(f"Skipping {tx_id} because it already exists")
+                    continue
+
+                # Save the data
+                utils.save_json(obj=data,
+                                save_path=save_path,
+                                compress=compress,
+                                verbose=verbose)
+                # Store the haplotypes in the dictionary if requested
+                if return_haplotypes:
+                    haplotypes[tx_id] = data
+
+    # Return the haplotypes dictionary if requested
+    if return_haplotypes:
+        return haplotypes
+    else:
+        return save_dir
+
+def merge_haplotype_datasets(haplotype_datasets,
+                             use_deepcopy: bool = True,
+                             verbose: bool = True):
+    """
+    Merge a list of haplotype datasets (dicts keyed by tx_id) into a single merged dict.
+    For each tx_id, merges total_population_counts, protein_haplotypes, and cds_haplotypes.
+    Sets total_haplotype_count to None for merged entries.
+
+    Args:
+        haplotype_datasets (dict): A dict of haplotype datasets (dicts keyed by tx_id) to merge. 
+            Each top-level key is a string identifier for the dataset (e.g. "1KG", "HGDP").
+        use_deepcopy (bool): Whether to use deepcopy to merge the datasets. Defaults to False.
+        verbose (bool): Whether to print verbose output. Defaults to True.
+
+    Returns:
+        dict: A merged haplotype dataset (dict keyed by tx_id).
+
+
+    Example:
+        import src.haplosaurus as hs
+        haplotypes_1kg = hs.get_haplotypes(cache = hs.DIR_DICT["haplotypes"],
+                                    tx_ids = tx_ids_all,
+                                    cache_only = True)
+        haplotypes_hgdp = hs.get_haplotypes(cache = hs.DIR_DICT["HGDP_haplotypes"],
+                                    tx_ids = tx_ids_all,
+                                    cache_only = True)
+        haplotypes_merged = merge_haplotype_datasets({"1KG":haplotypes_1kg, "HGDP":haplotypes_hgdp})
+    """  
+    import copy
+    import numpy as np
+
+    if use_deepcopy:
+        merged = copy.deepcopy(list(haplotype_datasets.values())[0])
+    else:
+        merged = list(haplotype_datasets.values())[0].copy()
+    
+    # Helper functions
+    def _check_all(freq_dict,
+                    dataset_id):
+        non_all_keys = [k for k in freq_dict if k != "_all" and not k.endswith(":ALL")]
+        # Rename if only ALL columns are present
+        if len(non_all_keys) == 0:
+            all_keys = [k for k in freq_dict if k == "_all" or k.endswith(":ALL")]
+            if len(all_keys)>0:
+                freq_dict[dataset_id] = freq_dict[all_keys[0]] 
+        return freq_dict
+    
+    def _update_all(freq_dict,
+                    agg_func = np.mean,
+                    type_func = float): 
+        all_keys = [k for k in freq_dict if k != "_all" and not k.endswith(":ALL")]
+        if all_keys:
+            freq_dict["_all"] = type_func(agg_func([freq_dict[k] for k in all_keys]))
+        return freq_dict
+
+    # Iterate over the rest of the datasets
+    for i, (dataset_id, ds) in tqdm(enumerate(haplotype_datasets.items()), 
+                    desc="Merging haplotype datasets"):
+        
+        # Skip the first dataset (used for 'merged' variable)
+        if i == 0:
+            continue
+
+        # Iterate over the haplotypes in the current dataset
+        for tx_id, hap_tx_other in tqdm(ds.items(), 
+                                        desc="Merging haplotypes", 
+                                        leave=False):
+            
+            # If tx_id is not present, just copy it in 
+            if tx_id not in merged: 
+                merged[tx_id] = copy.deepcopy(hap_tx_other) 
+                continue
+
+            hap_tx = merged[tx_id]
+
+            #### total_population_counts ####
+            hap_tx['total_population_counts'].update(hap_tx_other['total_population_counts'])
+
+            #### protein_haplotypes ####
+            phap_ids_other = set(get_haplotype_names(hap_tx_other, key='protein_haplotypes'))
+            phap_ids_merged = set(get_haplotype_names(hap_tx, key='protein_haplotypes'))
+            phap_ids_new = phap_ids_other - phap_ids_merged
+            phap_ids_shared = phap_ids_merged & phap_ids_other
+
+            # Simply append new haplotypes 
+            if phap_ids_new: 
+                hap_tx['protein_haplotypes'] += [x for x in hap_tx_other['protein_haplotypes'] if x['name'] in phap_ids_new]
+
+            # For existing haplotypes, the procedure is more complex
+            ## dict_keys(['frequency', 'other_hexes', 'type', 'count', 'has_indel', 'diffs', 'samples', 
+            ## 'contributing_variants', 'flags', 'population_counts', 
+            ## 'name', 'seq', 'hex', 'population_frequencies', 'aligned_sequences'])
+            # Can skip: other_hexes, type, count, has_indel, diffs, contributing_variants, flags, name, seq, hex, aligned_sequences
+            if phap_ids_shared:
+                phap_other = {x['name']:x for x in hap_tx_other['protein_haplotypes'] if x['name'] in phap_ids_shared}
+                phap_merged = {x['name']:x for x in hap_tx['protein_haplotypes']}
+
+                # Merge frequency
+                for phap_id in phap_ids_shared:  
+                    phap_merged[phap_id]['frequency'] = float(np.mean([phap_merged[phap_id]['frequency'], phap_other[phap_id]['frequency']])) 
+
+                    # Merge samples
+                    phap_merged[phap_id]['samples'].update(phap_other[phap_id]['samples'])
+
+                    # Merge population_counts
+                    _check_all(phap_merged[phap_id]['population_counts'],
+                               dataset_id)
+                    phap_merged[phap_id]['population_counts'].update(phap_other[phap_id]['population_counts'])
+                    phap_merged[phap_id]['population_counts'] = _update_all(phap_merged[phap_id]['population_counts'], 
+                                                                            agg_func = np.sum, 
+                                                                            type_func = int)
+
+                    # Merge population_frequencies
+                   
+
+                    
+                    phap_merged[phap_id]['population_frequencies'].update(phap_other[phap_id]['population_frequencies']) 
+                    phap_merged[phap_id]['population_frequencies'] = _update_all(phap_merged[phap_id]['population_frequencies'], 
+                                                                                agg_func = np.mean, 
+                                                                                type_func = float)
+                # Update the merged haplotypes
+                hap_tx['protein_haplotypes'] = list(phap_merged.values())
+
+            #### cds_haplotypes ####
+            chap_ids_other = set(get_haplotype_names(hap_tx_other, key='cds_haplotypes'))
+            chap_ids_merged = set(get_haplotype_names(hap_tx, key='cds_haplotypes'))
+            chap_ids_new = chap_ids_other - chap_ids_merged
+            chap_ids_shared = chap_ids_merged & chap_ids_other
+
+            # Simply append new haplotypes 
+            if chap_ids_new:
+                hap_tx['cds_haplotypes'] += [x for x in hap_tx_other['cds_haplotypes'] if x['name'] in chap_ids_new]
+
+            # For existing haplotypes, the procedure is more complex
+            if chap_ids_shared:
+                chap_other = {x['name']:x for x in hap_tx_other['cds_haplotypes'] if x['name'] in chap_ids_shared}
+                chap_merged = {x['name']:x for x in hap_tx['cds_haplotypes']}
+
+                # Merge frequency
+                for chap_id in chap_ids_shared:  
+                    chap_merged[chap_id]['frequency'] = float(np.mean([chap_merged[chap_id]['frequency'], chap_other[chap_id]['frequency']])) 
+
+                    # Merge samples
+                    chap_merged[chap_id]['samples'].update(chap_other[chap_id]['samples'])
+
+                    # Merge population_counts
+                    chap_merged[chap_id]['population_counts'].update(chap_other[chap_id]['population_counts'])
+                    chap_merged[chap_id]['population_counts'] = _update_all(chap_merged[chap_id]['population_counts'], 
+                                                                            agg_func = np.sum, 
+                                                                            type_func = int)
+
+                    # Merge population_frequencies
+                    chap_merged[chap_id]['population_frequencies'].update(chap_other[chap_id]['population_frequencies'])
+                    chap_merged[chap_id]['population_frequencies'] = _update_all(chap_merged[chap_id]['population_frequencies'], 
+                                                                                agg_func = np.mean, 
+                                                                                type_func = float)
+
+                # Update the merged haplotypes
+                hap_tx['cds_haplotypes'] = list(chap_merged.values())
+
+            # Set total_haplotype_count to None (as in original code)
+            hap_tx['total_haplotype_count'] = None
+
+    return merged
