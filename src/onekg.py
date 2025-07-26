@@ -125,14 +125,17 @@ def list_remote_vcf(key=DEFAULT_KEY,
                                header = None)
     if key == "1000_Genomes_on_GRCh38":
         manifest = manifest.loc[manifest['fname'].str.contains("ALL.chr")]
-        manifest.insert(0, "chrom", manifest["fname"].str.split(".").str[2])
-    
+        manifest.insert(0, "chrom", manifest["fname"].str.extract(r'(chr[0-9XYM]+)', expand=False))
+
+    elif key == "Human_Genome_Diversity_Project":
+        # Use regex to extract 'chr#' pattern from the filename for the chrom column
+        manifest.insert(0, "chrom", manifest["fname"].str.extract(r'(chr[0-9XYM]+)', expand=False))
     manifest['url'] = ftp+manifest['fname'].str.replace(r'^\./', '', regex=True)
     
     # Add key subdirectory if requested
     if add_key_subdir:
         # print(cache)
-        manifest['local'] = cache+manifest['fname'].str.replace(r'^\.', '', regex=True)
+        manifest['local'] = cache+"/"+manifest['fname'].str.replace(r'^\.', '', regex=True)
     
     manifest["key"] = key
 
@@ -299,10 +302,10 @@ def get_sample_metadata(key=DEFAULT_KEY,
                                                         "Population elastic ID":"population",
                                                         "Population name":"population_name",
                                                         "Superpopulation code":"superpopulation",
+                                                        "Superpopulation name":"superpopulation_name",
                                                         "Sex":"sex"})
-        # Parse cohort information
-        sample_metadata['cohort'] = sample_metadata['cohort_sample'].str.split(":").str[0]
-        sample_metadata.loc[sample_metadata['cohort'].str.startswith("HGDP"), "cohort"] = "HGDP"
+        # Reassign non-standard superpopulation codes
+        sample_metadata.loc[sample_metadata['superpopulation']=="EUR,AFR", "superpopulation"] = "AFR"
     else:
         ped = get_ped(key=key)
         

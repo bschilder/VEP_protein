@@ -1621,16 +1621,15 @@ def fill_coordinates(df,
     )
     return X
 
-
-
 def vep_to_matrix(
     vep_df,
     sample_col="sample",
     site_col="site",
     ploid_col="ploid",
-    vep_col="VEP",
-    fill_value="mean",
+    value_col="VEP",
+    fillna_method=None,#"mean",
     duplicate_ref_hap=True,
+    sort_index=True,
     verbose=True
 ):
     """
@@ -1648,14 +1647,16 @@ def vep_to_matrix(
         Name of the column in `vep_df` identifying samples. Default is "sample".
     site_col : str, optional
         Name of the column in `vep_df` identifying variant sites. Default is "site".
-    vep_col : str, optional
+    value_col : str, optional
         Name of the column in `vep_df` containing VEP scores. Default is "VEP".
     ploid_col : str, optional
         Name of the column in `vep_df` identifying ploidy (i.e. which haplotype). Default is "ploid".
-    fill_value : scalar, optional
-        Value to use for missing entries in the resulting matrix. Default is np.nan.
+    fillna_method : str, optional
+        Method to use for filling missing values. Default is None.
     duplicate_ref_hap : bool, optional
         Whether to duplicate the REF haplotype to avoid NAs. Default is True.
+    sort_index : bool, optional
+        Whether to sort the index and columns. Default is True.
     verbose : bool, optional
         Whether to print progress. Default is True.
 
@@ -1703,22 +1704,213 @@ def vep_to_matrix(
         print("Converting vep_df dtypes")
     vep_df[sample_col] = vep_df[sample_col].astype(object)
     vep_df[site_col] = vep_df[site_col].astype(object)
-    vep_df[vep_col] = vep_df[vep_col].astype(float)
+    vep_df[value_col] = vep_df[value_col].astype(float)
 
-    # Compute fill value
-    if fill_value == "mean":
-        fill_value = vep_df[vep_col].mean(skipna=True)
-    elif fill_value == "median":
-        fill_value = vep_df[vep_col].median(skipna=True)
-    elif fill_value == "mode":
-        fill_value = vep_df[vep_col].mode(dropna=True)[0]
-    else:
-        fill_value = np.nan
+    if verbose:
+        calc_percent_nas(vep_df)
 
     # Use much faster groupby.unstack with built-in mean (skipna by default)
     # takes 4.7s, as opposed to pivot_table which takes 90 seconds!
     X = vep_df.groupby([sample_col, site_col], sort=False, observed=True
-                       )[vep_col].mean().unstack(fill_value=fill_value)
+                       )[value_col].mean().unstack()
+
+    X = fill_na(X, fillna_method)
+
+    # Ensure index and columns are sorted for consistency
+    if sort_index:
+        X = X.sort_index(axis=0).sort_index(axis=1)
+
+    return X
+
+def calc_percent_nas(df):
+    percent_nas = df.isna().sum().sum() / df.size * 100
+    print(f"Percent of cells in df that are NaN: {percent_nas:.2f}%") 
+
+def fill_na(X, 
+            fillna_method=None,
+            verbose=True):
+
+    if verbose:
+        calc_percent_nas(X)
+        print(f"Filling NaNs with {fillna_method}")
+
+
+
+    # Compute fill value for missing data
+    if fillna_method == "colmean":
+        # Fill NaNs in each column with the column mean
+        col_means = X.mean(axis=0, skipna=True)
+        X = X.fillna(col_means)
+    elif fillna_method == "colmedian":
+        # Fill NaNs in each column with the column median
+        col_medians = X.median(axis=0, skipna=True)
+        X = X.fillna(col_medians)
+    elif fillna_method == "rowmean":
+        # Fill NaNs in each row with the row mean
+        row_means = X.mean(axis=1, skipna=True)
+        X = X.T.fillna(row_means).T
+    elif fillna_method == "rowmedian":
+        # Fill NaNs in each row with the row median
+        row_medians = X.median(axis=1, skipna=True)
+        X = X.T.fillna(row_medians).T
+    elif isinstance(fillna_method, (int, float)):
+        X = X.fillna(fillna_method)
+    elif fillna_method is None or fillna_method is False:
+        # Do not fill NaNs, just return as is
+        pass
+    else:
+        raise ValueError(f"Invalid fillna_method: {fillna_method}")
+    
+    if verbose:
+        calc_percent_nas(X)
+        print(f"Final matrix shape: {X.shape}")
+    
+    return X
+
+
+def vep_to_matrix_torch(vep_samples,
+                        sample_col = "sample",
+                        site_col = "site",
+                        ploid_col = "ploid",
+                        value_col = "VEP_norm",
+                        device = "cuda:3",
+                        fillna_method="colmean",
+                        drop_allna_rows=True,
+                        drop_allna_cols=True,
+                        return_as = "pandas", # "pandas", "numpy", "torch"
+                        verbose = True
+                        ):
+    import torch
+
+    # Explicitly set device to cuda:3 for all allocations and tensor moves
+    device = torch.device(device)
+
+    if verbose:
+        print("Cleaning and copying vep_samples...")
+    shape1 = vep_samples.shape[0]
+    vep_samples = vep_samples.dropna(subset=[sample_col, site_col, value_col]).copy()
+    if verbose:
+        print(f"Dropped {shape1 - vep_samples.shape[0]} rows with NaNs in required columns...")
+
+
+    if ploid_col is not None and ploid_col in vep_samples.columns:
+        new_site_col = site_col + "_" + ploid_col
+        if new_site_col not in vep_samples.columns:
+            vep_samples[new_site_col] = vep_samples[site_col].astype(str) + "_" + vep_samples[ploid_col].astype(str)
+        if verbose:
+            print(f"Setting site_col to {new_site_col}")
+        site_col = new_site_col 
+
+    if verbose:
+        print("Preparing index mappings for samples and sites...")
+    sample_codes, sample_idx = torch.unique(torch.tensor(pd.factorize(vep_samples[sample_col])[0]), return_inverse=True)
+    site_codes, site_idx = torch.unique(torch.tensor(pd.factorize(vep_samples[site_col])[0]), return_inverse=True)
+
+    if verbose:
+        print(f"Preparing {value_col} values as torch tensor...")
+    vep_values = torch.tensor(vep_samples[value_col].values, dtype=torch.float32)
+
+    if verbose:
+        print("Determining matrix shape...")
+    n_samples = sample_codes.shape[0]
+    n_sites = site_codes.shape[0]
+
+    if verbose:
+        print(f"Creating empty ({n_samples}, {n_sites}) matrix and count matrix on CUDA:3...")
+    X_torch = torch.zeros((n_samples, n_sites), dtype=torch.float32, device=device)
+    count_torch = torch.zeros((n_samples, n_sites), dtype=torch.float32, device=device)
+
+    if verbose:
+        print("Moving indices and values to GPU 3...")
+    sample_idx = sample_idx.to(device)
+    site_idx = site_idx.to(device)
+    vep_values = vep_values.to(device)
+
+    if verbose:
+        print("Accumulating VEP values and counts...")
+    X_torch.index_put_((sample_idx, site_idx), vep_values, accumulate=True)
+    count_torch.index_put_((sample_idx, site_idx), torch.ones_like(vep_values), accumulate=True)
+
+    if verbose:
+        print("Averaging VEP values and handling missing data...")
+    count_torch[count_torch == 0] = 1
+    X_torch = X_torch / count_torch
+    X_torch[count_torch == 1] = float('nan')
+
+    if verbose:
+        print(f"Filling missing values with {fillna_method}...")
+    inds = torch.isnan(X_torch)
+    num_total = X_torch.numel()
+    num_filled = torch.sum(~torch.isnan(X_torch)).item()
+    percent_filled = 100 * num_filled / num_total
+    if verbose:
+        print(f"Matrix fill: {num_filled}/{num_total} ({percent_filled:.2f}%)")
+
+    if drop_allna_rows:
+        if verbose:
+            print("Removing rows with all NaNs...")
+        rows_to_keep = ~torch.all(torch.isnan(X_torch), dim=1)
+        if verbose:
+            print(f"Dropped {(~rows_to_keep).sum().item()}/{X_torch.shape[0]} rows ({100 * (~rows_to_keep).sum().item() / X_torch.shape[0]:.2f}%) with all NaNs...")
+        X_torch = X_torch[rows_to_keep, :]
+
+    if drop_allna_cols:
+        if verbose:
+            print("Removing columns with all NaNs...")
+        cols_to_keep = ~torch.all(torch.isnan(X_torch), dim=0)
+        if verbose:
+            print(f"Dropped {(~cols_to_keep).sum().item()}/{X_torch.shape[1]} columns ({100 * (~cols_to_keep).sum().item() / X_torch.shape[1]:.2f}%) with all NaNs...")
+        X_torch = X_torch[:, cols_to_keep]
+
+    if fillna_method == "colmean":
+        col_means = torch.nanmean(X_torch, dim=0)
+        X_torch[inds] = col_means[inds.nonzero(as_tuple=True)[1]]
+    elif fillna_method == "rowmean":
+        row_means = torch.nanmean(X_torch, dim=1)
+        X_torch[inds] = row_means[inds.nonzero(as_tuple=True)[0]]
+    elif isinstance(fillna_method, int) or isinstance(fillna_method, float):
+        X_torch[inds] = fillna_method
+    else:
+        if verbose:
+            print("NA filling will be skipped")
+
+    if return_as == "torch":
+        return X_torch
+
+    if verbose:
+        print("Moving matrix back to CPU and converting to numpy array...")
+    X_np = X_torch.cpu().numpy()
+    del X_torch
+
+    if return_as == "numpy":
+        return X_np
+
+    if verbose:
+        print("Building pandas DataFrame with correct index and columns, accounting for dropped columns...")
+    # Get the unique samples and sites that remain after dropping columns
+    unique_samples = vep_samples[sample_col].astype('category').cat.categories
+    unique_sites = vep_samples[site_col].astype('category').cat.categories
+
+    # If any samples or sites were dropped in the earlier merge/drop steps, ensure the DataFrame index/columns match X_np shape
+    if X_np.shape[0] != len(unique_samples):
+        if verbose:
+            print(f"Warning: Number of samples in matrix ({X_np.shape[0]}) does not match unique samples ({len(unique_samples)}). Adjusting index.")
+        unique_samples = unique_samples[:X_np.shape[0]]
+    if X_np.shape[1] != len(unique_sites):
+        if verbose:
+            print(f"Warning: Number of sites in matrix ({X_np.shape[1]}) does not match unique sites ({len(unique_sites)}). Adjusting columns.")
+        unique_sites = unique_sites[:X_np.shape[1]]
+
+    X = pd.DataFrame(
+        X_np,
+        index=unique_samples,
+        columns=unique_sites
+    )
+    del X_np
+
+    if verbose:
+        print("Matrix shape:", X.shape)
+
     return X
 
 def vep_distance(

@@ -245,6 +245,7 @@ def transcript_haplotypes_get(ids: Optional[List[str]] = None,
                               error: bool = False,
                               timeout: int = TIMEOUT,
                               leave: bool = True,
+                              check_names: bool = True,
                               verbose: bool = True) -> dict:
     """Get haplotype information for transcript IDs from Ensembl REST API.
     For more information, see:
@@ -261,6 +262,7 @@ def transcript_haplotypes_get(ids: Optional[List[str]] = None,
         force (bool, optional): Whether to force API request even if cached data exists. Defaults to False.
         cache_only (bool, optional): Whether to only return cached data without making API requests. Defaults to False.
         error (bool, optional): Whether to raise exceptions on API errors. Defaults to False.
+        check_names (bool, optional): Whether to check and rename the keys of the haplotypes. Defaults to True.
         verbose (bool, optional): Whether to print progress messages. Defaults to True.
 
     Returns:
@@ -333,16 +335,25 @@ def transcript_haplotypes_get(ids: Optional[List[str]] = None,
                     if verbose:
                         warnings.warn(f"Error getting haplotypes for {tx_id}: {e}")
                     continue
+
+    if check_names:
+         haplotypes = rename_haplotypes_keys(haplotypes, verbose=verbose)
     return haplotypes
 
 
-def _rename_haplotypes_keys(haplotypes: dict):
-    for tx_id, haplotype_dict in haplotypes.items():
-        for key, value in haplotype_dict.items():
-            if key.startswith("ENST"):
-                haplotypes[tx_id][key] = value
-            else:
-                haplotypes[tx_id][key] = value
+def rename_haplotypes_keys(haplotypes: dict, 
+                           verbose: bool = True):
+    renamed_count = 0
+    for tx_id in list(haplotypes.keys()):
+        hap_tx = haplotypes[tx_id]
+        if tx_id.startswith("ENST") and 'transcript_id' in hap_tx.keys():
+            if tx_id != hap_tx['transcript_id']:
+                new_key = hap_tx['transcript_id']
+                haplotypes[new_key] = haplotypes.pop(tx_id)
+                renamed_count += 1
+    if verbose and renamed_count > 0:
+        print(f"Renamed {renamed_count} haplotypes")
+        
     return haplotypes
 
 def get_vep(ids: Union[str, List[str]],

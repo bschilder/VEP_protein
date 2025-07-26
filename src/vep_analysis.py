@@ -3939,3 +3939,194 @@ def plot_dr_with_kde_topo(
     )
     
     fig.show()
+
+
+
+def merge_vep_and_samples(vep_df, 
+                          haps_to_samples,
+                          vep_cols = ["VEP","VEP_norm"],
+                          tx_id_col = ["ENST","ENST_haplosaurus"],
+                          site_col = "site",
+                          ploid_col = "ploid",
+                          haplotype_col = "haplotype",
+                          protein_col = "protein", 
+                          extra_cols = [],
+                          check_ploid = True,
+                          verbose=True):
+    import numpy as np
+
+    # Check if the number of rows is as expected
+    # Each sample has exactly 2 haplotypes, and each haplotype should be tested against each site
+    if check_ploid:
+        haps2 = haps_to_samples.loc[haps_to_samples['ploid_count']==2]
+        vep_df_filtered = vep_df.loc[~vep_df[tx_id_col[0]].isin(haps_to_samples.loc[haps_to_samples['ploid_count']!=2]['ENST_haplosaurus'].unique())]
+    else:
+        haps2 = haps_to_samples
+        vep_df_filtered = vep_df
+    
+    # Expected rows = samples × 2 haplotypes per sample × sites
+    expected_rows = haps2['sample'].nunique() * 2 * vep_df_filtered['site'].nunique()
+    if verbose:
+        print(f"Expected rows: {expected_rows}")
+        print(f"Unique samples: {haps2['sample'].nunique()}")
+        print(f"Unique sites after filtering: {vep_df_filtered['site'].nunique()}")
+        print(f"Calculation: {haps2['sample'].nunique()} samples × 2 haplotypes × {vep_df_filtered['site'].nunique()} sites = {expected_rows}")
+
+    # Fast merge, but ensure all relevant columns are preserved and join is correct
+    vep_df_tmp = vep_df[[protein_col, haplotype_col,site_col,tx_id_col[0]]+vep_cols+extra_cols].copy()
+    # Ensure 'haplotype' is string for merge
+    vep_df_tmp["haplotype"] = vep_df_tmp["haplotype"].astype(str)
+    haps_to_samples["haplotype"] = haps_to_samples["haplotype"].astype(str)
+    
+
+    # Filter once, no .copy() needed for merge
+    if check_ploid:
+        rm_transcripts = haps_to_samples.loc[haps_to_samples['ploid_count']!=2]['ENST_haplosaurus'].unique()
+        if verbose:
+            print(len(rm_transcripts),"transcripts removed due to ploidy != 2")
+        vep_df_tmp = vep_df_tmp.loc[~vep_df_tmp[tx_id_col[0]].isin(rm_transcripts)]
+        haps2 = haps_to_samples.loc[~haps_to_samples[tx_id_col[1]].isin(rm_transcripts)]
+    else:
+        haps2 = haps_to_samples
+
+    haps2.drop_duplicates(inplace=True)
+    vep_df_tmp.drop_duplicates(inplace=True)
+
+    if verbose:
+        print("Mapping haplotype codes")
+        print(f"After deduplication - VEP_df_tmp shape: {vep_df_tmp.shape}")
+        print(f"After deduplication - haps2 shape: {haps2.shape}")
+
+    if verbose and verbose > 1:
+        # Check for potential merge issues that could cause doubling
+        print(f"Checking for merge issues that could cause doubling:")
+        
+        # Check if there are any columns that might be causing issues
+        common_cols = set(vep_df_tmp.columns) & set(haps2.columns)
+        print(f"Common columns between VEP and haps2: {common_cols}")
+        
+        # Check if haplotype column has any issues
+        vep_haplotype_duplicates = vep_df_tmp['haplotype'].duplicated().sum()
+        haps2_haplotype_duplicates = haps2['haplotype'].duplicated().sum()
+        print(f"Duplicate haplotypes in VEP after dedup: {vep_haplotype_duplicates}")
+        print(f"Duplicate haplotypes in haps2 after dedup: {haps2_haplotype_duplicates}")
+        
+        # Check for potential many-to-many relationships
+        vep_haplotype_counts = vep_df_tmp['haplotype'].value_counts()
+        haps2_haplotype_counts = haps2['haplotype'].value_counts()
+        
+        # Find haplotypes that appear multiple times in either dataset
+        vep_multi = vep_haplotype_counts[vep_haplotype_counts > 1]
+        haps2_multi = haps2_haplotype_counts[haps2_haplotype_counts > 1]
+        
+        print(f"Haplotypes appearing >1 time in VEP: {len(vep_multi)}")
+        print(f"Haplotypes appearing >1 time in haps2: {len(haps2_multi)}")
+        
+        if len(vep_multi) > 0:
+            print(f"Example VEP haplotype with multiple entries: {vep_multi.head(1)}")
+        if len(haps2_multi) > 0:
+            print(f"Example haps2 haplotype with multiple entries: {haps2_multi.head(1)}")
+        print(f"VEP_df_tmp shape: {vep_df_tmp.shape}")
+        print(f"haps2 shape: {haps2.shape}")
+        print(f"Unique haplotypes in VEP: {vep_df_tmp['haplotype'].nunique()}")
+        print(f"Unique haplotypes in haps2: {haps2['haplotype'].nunique()}")
+        print(f"Common haplotypes: {len(set(vep_df_tmp['haplotype']) & set(haps2['haplotype']))}")
+        
+        # Check for potential issues
+        print(f"Duplicate haplotypes in haps2: {haps2['haplotype'].duplicated().sum()}")
+        print(f"Duplicate haplotypes in VEP: {vep_df_tmp['haplotype'].duplicated().sum()}")
+        
+        # Check haplotype distribution
+        haplotype_counts = haps2['haplotype'].value_counts()
+        print(f"Most common haplotype appears {haplotype_counts.max()} times")
+        print(f"Average haplotype frequency: {haplotype_counts.mean():.2f}")
+    
+    # Only keep necessary columns from haps_to_samples to avoid duplicate columns
+    merge_cols = [col for col in haps_to_samples.columns if col != "site"]  # avoid duplicate 'site'
+    
+    if verbose and verbose > 1:
+        print(f"Merge columns: {merge_cols}")
+        print(f"VEP_df_tmp columns: {list(vep_df_tmp.columns)}")
+        print(f"haps2 columns: {list(haps2.columns)}")
+        
+        # Check for any potential merge issues
+        vep_haplotype_counts = vep_df_tmp['haplotype'].value_counts()
+        haps2_haplotype_counts = haps2['haplotype'].value_counts()
+        
+        print(f"Top 5 haplotypes in VEP data:")
+        print(vep_haplotype_counts.head())
+        print(f"Top 5 haplotypes in haps2 data:")
+        print(haps2_haplotype_counts.head())
+        
+        # Check if there are any haplotypes that appear many times in haps2
+        if haps2_haplotype_counts.max() > 100:
+            print(f"WARNING: Some haplotypes appear very frequently in haps2!")
+            print(f"Haplotypes appearing >100 times: {(haps2_haplotype_counts > 100).sum()}")
+    
+    vep_samples = vep_df_tmp.merge(
+        haps2[merge_cols],
+        on="haplotype",
+        how="inner",
+        # validate="many_to_many"
+    )
+    
+    if verbose:
+        print(f"After merge - vep_samples shape: {vep_samples.shape}")
+        print(f"Expected shape: {expected_rows}")
+        print(f"Ratio: {vep_samples.shape[0]/expected_rows:.2f}")
+        
+    if verbose and verbose > 1:
+        # If we're getting close to 2x, let's investigate further
+        if 1.8 < vep_samples.shape[0]/expected_rows < 2.2:
+            print("WARNING: Getting close to 2x expected rows - investigating...")
+            
+            # Check if there are any haplotypes that appear exactly twice as much as expected
+            haplotype_counts = vep_samples['haplotype'].value_counts()
+            site_counts = vep_samples['site'].value_counts()
+            
+            # Check if some haplotypes are appearing twice as much as they should
+            expected_per_haplotype = vep_samples['sample'].nunique() * vep_samples['site'].nunique()
+            print(f"Expected rows per haplotype: {expected_per_haplotype}")
+            print(f"Actual max rows per haplotype: {haplotype_counts.max()}")
+            print(f"Actual min rows per haplotype: {haplotype_counts.min()}")
+            
+            # Check for any obvious patterns
+            if haplotype_counts.max() > expected_per_haplotype * 1.5:
+                print("Some haplotypes are appearing more than expected!")
+                print(f"Haplotypes with >1.5x expected: {(haplotype_counts > expected_per_haplotype * 1.5).sum()}")
+
+    ## Add site ploid col
+    if ploid_col is not None and ploid_col in vep_samples.columns:
+        site_ploid_col = site_col + "_" + ploid_col
+        if site_ploid_col not in vep_samples.columns:
+            vep_samples[site_ploid_col] = vep_samples[site_col].astype(str) + "_" + vep_samples[ploid_col].astype(str)
+       
+    if verbose:
+        print(f"Final vep_samples shape: {vep_samples.shape}")
+        print(f"Expected shape: {expected_rows}")
+        print(f"Ratio actual/expected: {vep_samples.shape[0]/expected_rows:.2f}")
+        
+        for col in ['sample','haplotype','ploid']:
+            if col in vep_samples.columns:
+                print(f">> {col}(s): {vep_samples[col].nunique()}")
+        
+    if verbose and verbose > 1:
+        # Check for potential issues in the final dataframe
+        if vep_samples.shape[0] > expected_rows * 1.5:  # If more than 50% over expected
+            print("WARNING: Final dataframe has many more rows than expected!")
+            print("Checking for potential causes:")
+            
+            # Check if some haplotypes are creating too many combinations
+            haplotype_sample_counts = vep_samples.groupby('haplotype')['sample'].nunique()
+            print(f"Haplotypes appearing in >10 samples: {(haplotype_sample_counts > 10).sum()}")
+            if haplotype_sample_counts.max() > 50:
+                print(f"Most frequent haplotype appears in {haplotype_sample_counts.max()} samples")
+            
+            # Check for duplicate combinations
+            duplicate_check = vep_samples.groupby(['haplotype', 'site', 'sample']).size()
+            if duplicate_check.max() > 1:
+                print(f"WARNING: Found duplicate haplotype-site-sample combinations!")
+                print(f"Max duplicates: {duplicate_check.max()}")
+    
+    return vep_samples
+

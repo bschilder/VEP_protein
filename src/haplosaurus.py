@@ -17,6 +17,8 @@ import src.ensembl_rest as er
 import src.onekg as og
 import src.Align.align_utils as au
 
+from src.ensembl_rest import rename_haplotypes_keys as rename_haplotypes_keys
+
 
 DIR_DICT = er.DIR_DICT
 DIR_DICT.update({
@@ -518,6 +520,7 @@ def get_haplotypes(tx_ids: Optional[List[str]] = None,
                    cache: Path = Path(DIR_DICT["haplotypes"]),
                    cache_only: bool = False,
                    cache_merged: Optional[Path] = None,
+                   check_names: bool = True,
                 #    cache_merged: Path = Path(DIR_DICT["haplotypes_merged"]),
                    error: bool = False,
                    timeout: int = er.TIMEOUT,
@@ -544,6 +547,7 @@ def get_haplotypes(tx_ids: Optional[List[str]] = None,
             Defaults to DIR_DICT["haplotypes_merged"].
             If None, will not cache merged haplotypes.
         error (bool, optional): Whether to raise exceptions on API errors. Defaults to False.
+        check_names (bool, optional): Whether to check and rename the keys of the haplotypes. Defaults to True.
         verbose (bool, optional): Whether to print progress messages. Defaults to True.
 
     Returns:
@@ -607,6 +611,7 @@ def get_haplotypes(tx_ids: Optional[List[str]] = None,
                                             error=error,
                                             timeout=timeout,
                                             leave=leave,
+                                            check_names=check_names,
                                             verbose=verbose)
     
     # Save haplotypes
@@ -2151,7 +2156,7 @@ def haplotypes_to_samples(haplotypes=None,
                           key='protein_haplotypes',
                           as_df=False,
                           add_sample_metadata=False,
-                          add_ref=True,
+                          add_ref=True, 
                           duplicate_ref=False,
                           verbose=False):
     """
@@ -2207,7 +2212,7 @@ def haplotypes_to_samples(haplotypes=None,
         for hap_idx in range(len(haplotypes[tx_id][key])):
             
             if 'samples' not in haplotypes[tx_id][key][hap_idx]:
-                if verbose:
+                if verbose>1:
                     print(f"'samples' misssing from haplotypes for '{tx_id}'")
                 continue
             
@@ -2219,7 +2224,7 @@ def haplotypes_to_samples(haplotypes=None,
             seq = haplotypes[tx_id][key][hap_idx]['seq']
             hap_name = haplotypes[tx_id][key][hap_idx]['name']
             
-            if verbose:
+            if verbose>1:
                 print(f"Haplotype index {hap_idx}, sequence length: {len(seq)}")
             
             for sample in samples:
@@ -2239,11 +2244,11 @@ def haplotypes_to_samples(haplotypes=None,
                         sample_seqs[sample] += [hap_name]*sample_count
                         
                     # Reduce verbosity to avoid excessive output
-                    if verbose:
+                    if verbose>1:
                         if hap_idx == 0 and tx_id == tx_ids[0]:
                             print(f"  Sample {sample}: added {sample_count} sequences from haplotype {hap_idx}")
                 elif hap_idx == 0 and tx_id == tx_ids[0]:  # Only print this message once per sample for the first transcript
-                    if verbose:
+                    if verbose>1:
                         print(f"  Sample {sample}: not found in sample_map")
         
         # Update the tx_sample_seqs dictionary
@@ -2251,26 +2256,45 @@ def haplotypes_to_samples(haplotypes=None,
     
     # Return a DataFrame if requested
     if as_df:  
-        print("Converting haplotypes to DataFrame")
+
+        # Convert haplotypes to DataFrame
+        if verbose:
+            print("Converting haplotypes to DataFrame")
         df = pd.concat(
             {k: pd.Series(v) for k, v in tx_sample_seqs.items()},
             names=["ENST_haplosaurus", "cohort_sample"]
         ).reset_index(name="haplotype")
+        
+        # Parse cohort and sample information
+        df['cohort'] = df['cohort_sample'].str.split(":").str[0]
+        df.loc[df['cohort'].str.startswith("HGDP"), "cohort"] = "HGDP"
         df['sample'] = df['cohort_sample'].str.split(":").str[-1]
+        
+        # Add ploid information
         df['ploid_count'] = df['haplotype'].str.len()
         df['ploid'] = df['ploid_count'].apply(lambda x: list(range(x)))
         df = df.explode(["haplotype", "ploid"], ignore_index=True)
 
         # Add sample metadata
         if add_sample_metadata:
+            if verbose:
+                print("Adding sample metadata to the DataFrame")
             sample_metadata = og.get_sample_metadata(harmonized=True)
-            df = df.merge(sample_metadata, on=["sample"], how="left") 
+            sample_metadata.drop_duplicates(subset=["sample"], inplace=True)
+            if verbose:
+                print("Samples before merging:", df['sample'].nunique())
+            df = df.merge(sample_metadata, 
+                          on=["sample"], 
+                          how="left") 
+            if verbose:
+                print("Samples after merging:", df['sample'].nunique())
 
             # Add REF haplotypes to the dataframe
             if add_ref:
-                print("Adding REF haplotypes to the DataFrame")
+                if verbose:
+                    print("Adding REF haplotypes to the DataFrame")
                 haps_to_ref = df.loc[df['haplotype'].str.endswith(":REF")].copy()
-                haps_to_ref.loc[:,["sample","population","superpopulation"]] = "REF"
+                haps_to_ref.loc[:,["sample","population","population_name","superpopulation","superpopulation_name"]] = "REF"
                 haps_to_ref.loc[:,["sex"]] = pd.Int64Dtype().na_value
                 haps_to_ref.loc[:,["ploid_count"]] = 2
                 haps_to_ref = haps_to_ref.drop_duplicates()
@@ -2279,12 +2303,26 @@ def haplotypes_to_samples(haplotypes=None,
                 if duplicate_ref: 
                     df = pd.concat([haps_to_ref.assign(ploid=0), 
                                     haps_to_ref.copy().assign(ploid=1), 
-                                    df.loc[~df['haplotype'].str.endswith(":REF")].copy()
+                                    df.loc[df['sample']!="REF"].copy()
                                     ])
                 else: 
                     df = pd.concat([haps_to_ref.assign(ploid=0), 
-                                    df.loc[~df['haplotype'].str.endswith(":REF")].copy()
+                                    df.loc[df['sample']!="REF"].copy()
                                     ])
+                    
+                if verbose:
+                    print("Samples after adding REF haplotypes:", df['sample'].nunique())
+        
+        # Ensure there's not any duplicates
+        df.drop_duplicates(subset=["sample","haplotype","ploid"],inplace=True)
+                    
+        if verbose:
+            print(f"Final shape: {df.shape}")
+            for col in ['haplotype','cohort','cohort_sample',
+                        'sample','population',
+                        'superpopulation','sex']:
+                if verbose and col in df.columns:
+                    print(f">> {col}(s): {df[col].nunique()}")
 
         return df
     else:
@@ -2656,6 +2694,7 @@ def split_haplosaurus_results(
         return save_dir
 
 def merge_haplotype_datasets(haplotype_datasets,
+                             tx_id_method="union",
                              use_deepcopy: bool = True,
                              verbose: bool = True):
     """
@@ -2686,10 +2725,44 @@ def merge_haplotype_datasets(haplotype_datasets,
     import copy
     import numpy as np
 
+    # Remove any items with None values from each dataset using list comprehensions
+    haplotype_datasets = {
+        ds_key:ds  for ds_key, ds in haplotype_datasets.items() if ds is not None
+    }
+
+    # If there is only one dataset, return it
+    if len(haplotype_datasets) == 1:
+        return list(haplotype_datasets.values())[0]
+
+    # Use deepcopy or copy depending on the use_deepcopy flag
     if use_deepcopy:
+        if verbose:
+            print("Using deepcopy")
         merged = copy.deepcopy(list(haplotype_datasets.values())[0])
     else:
+        if verbose:
+            print("Using copy")
         merged = list(haplotype_datasets.values())[0].copy()
+    
+    if tx_id_method == "union":
+        tx_ids = set(merged.keys())
+        for ds in haplotype_datasets.values():
+            tx_ids.update(set(ds.keys()))
+        tx_ids = list(tx_ids)
+        if verbose:
+            print(f"Merging {len(tx_ids)} tx_ids using union")
+    elif tx_id_method == "intersection":
+        tx_ids = set(merged.keys())
+        for ds in haplotype_datasets.values():
+            tx_ids.intersection_update(set(ds.keys()))
+        tx_ids = list(tx_ids)
+        if len(tx_ids)<len(merged):
+            # subset merged to tx_ids
+            merged = {tx_id:merged[tx_id] for tx_id in tx_ids}
+        if verbose:
+            print(f"Merging {len(tx_ids)} tx_ids using intersection")
+    else:
+        raise ValueError(f"Invalid tx_id_method: {tx_id_method}")
     
     # Helper functions
     def _check_all(freq_dict,
@@ -2722,9 +2795,13 @@ def merge_haplotype_datasets(haplotype_datasets,
         for tx_id, hap_tx_other in tqdm(ds.items(), 
                                         desc="Merging haplotypes", 
                                         leave=False):
+            if tx_id not in tx_ids:
+                if verbose:
+                    print(f"Skipping {tx_id} because it is not in the tx_ids list")
+                continue
             
             # If tx_id is not present, just copy it in 
-            if tx_id not in merged: 
+            if tx_id not in merged and tx_id in tx_ids: 
                 merged[tx_id] = copy.deepcopy(hap_tx_other) 
                 continue
 
@@ -2760,8 +2837,7 @@ def merge_haplotype_datasets(haplotype_datasets,
                     phap_merged[phap_id]['samples'].update(phap_other[phap_id]['samples'])
 
                     # Merge population_counts
-                    _check_all(phap_merged[phap_id]['population_counts'],
-                               dataset_id)
+                    phap_other[phap_id]['population_counts'] = _check_all(phap_other[phap_id]['population_counts'], dataset_id)
                     phap_merged[phap_id]['population_counts'].update(phap_other[phap_id]['population_counts'])
                     phap_merged[phap_id]['population_counts'] = _update_all(phap_merged[phap_id]['population_counts'], 
                                                                             agg_func = np.sum, 
@@ -2798,6 +2874,7 @@ def merge_haplotype_datasets(haplotype_datasets,
                     chap_merged[chap_id]['samples'].update(chap_other[chap_id]['samples'])
 
                     # Merge population_counts
+                    chap_merged[chap_id]['population_counts'] = _check_all(chap_merged[chap_id]['population_counts'], dataset_id)
                     chap_merged[chap_id]['population_counts'].update(chap_other[chap_id]['population_counts'])
                     chap_merged[chap_id]['population_counts'] = _update_all(chap_merged[chap_id]['population_counts'], 
                                                                             agg_func = np.sum, 
@@ -2816,5 +2893,6 @@ def merge_haplotype_datasets(haplotype_datasets,
             hap_tx['total_haplotype_count'] = None
 
     if verbose:
-        print(f"Merged {len(merged)} haplotypes")
+        haplotype_names = get_haplotype_names(merged, key='protein_haplotypes', as_df=True)
+        print(f"Merged {haplotype_names['haplotype'].nunique()} haplotypes across {len(merged)} tx_ids.")
     return merged

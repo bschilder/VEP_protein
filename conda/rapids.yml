@@ -1,0 +1,36 @@
+name: rapids
+channels:
+    - conda-forge
+    - nvidia
+    - rapidsai
+dependencies:
+    - python>=3.9.0
+    - pandas
+    - numpy>=1.15.1
+    - cuml
+    - cudf
+    - openpyxl
+    - tqdm
+    - IProgress
+    - ipywidgets
+    - ipykernel
+    - entrypoints
+    - seaborn
+    - plotly
+    - scikit-learn
+    - pyarrow
+    - conda-forge::biopython
+    # - bioconda::clustalw # Optional, for consensus sequence
+    # - bioconda::clustalo # Optional, for consensus sequence
+    - setuptools==69.5.1
+    - cmake 
+    - pooch
+    - pip
+    - pip: 
+        - torch 
+        - torchvision 
+        - torchaudio 
+        - python-Levenshtein
+        - ensembl-rest
+        - gprofiler-official
+        - script-utils
