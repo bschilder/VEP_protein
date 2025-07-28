@@ -519,9 +519,9 @@ def get_haplotypes(tx_ids: Optional[List[str]] = None,
                    force: bool = False,
                    cache: Path = Path(DIR_DICT["haplotypes"]),
                    cache_only: bool = False,
-                   cache_merged: Optional[Path] = None,
-                   check_names: bool = True,
-                #    cache_merged: Path = Path(DIR_DICT["haplotypes_merged"]),
+                   cache_merged: Optional[Path] = None,#    cache_merged: Path = Path(DIR_DICT["haplotypes_merged"]),
+                   check_names: bool = False,
+                   add_missing_ref: bool = False,
                    error: bool = False,
                    timeout: int = er.TIMEOUT,
                    leave: bool = True,
@@ -547,7 +547,8 @@ def get_haplotypes(tx_ids: Optional[List[str]] = None,
             Defaults to DIR_DICT["haplotypes_merged"].
             If None, will not cache merged haplotypes.
         error (bool, optional): Whether to raise exceptions on API errors. Defaults to False.
-        check_names (bool, optional): Whether to check and rename the keys of the haplotypes. Defaults to True.
+        check_names (bool, optional): Whether to check and rename the keys of the haplotypes. Defaults to False.
+        add_missing_ref (bool, optional): Whether to add missing reference sequences. Defaults to False.
         verbose (bool, optional): Whether to print progress messages. Defaults to True.
 
     Returns:
@@ -619,6 +620,10 @@ def get_haplotypes(tx_ids: Optional[List[str]] = None,
         utils.save_pickle(haplotypes, 
                           checksum_path, 
                           verbose=verbose)
+        
+    if add_missing_ref:
+        haplotypes = add_missing_ref_seqs(haplotypes,  
+                                          verbose=verbose)
     
     # Convert to protein IDs if requested
     if use_protein_ids:
@@ -1298,7 +1303,7 @@ def get_haplotype_ref(haplotypes: Union[List[Dict], Dict[str, Dict]],
                                                             disable=not verbose,
                                                             leave=False)]
     elif key in haplotypes.keys():
-        hap_ref = [x for x in haplotypes[key] if ":REF" in tqdm(x['name'], leave=False)]
+        hap_ref = [x for x in haplotypes[key] if ":REF" in x['name']]
     elif isinstance(haplotypes, dict):
         hap_ref = {}
         for tx_id in tqdm(haplotypes.keys(),
@@ -2696,6 +2701,8 @@ def split_haplosaurus_results(
 def merge_haplotype_datasets(haplotype_datasets,
                              tx_id_method="union",
                              use_deepcopy: bool = True,
+                             protein_key_missing: str = "warning",
+                             cds_key_missing: str = "warning",
                              verbose: bool = True):
     """
     Merge a list of haplotype datasets (dicts keyed by tx_id) into a single merged dict.
@@ -2724,6 +2731,16 @@ def merge_haplotype_datasets(haplotype_datasets,
     """  
     import copy
     import numpy as np
+
+    def _check_key(key,
+                   data_type,
+                   key_missing):
+        if key_missing == "error":
+            if key not in hap_tx:
+                raise ValueError(f"'{data_type}' {key} not found")
+        elif key_missing == "warning":
+            if key not in hap_tx:
+                warnings.warn(f"'{data_type}' {key} not found")
 
     # Remove any items with None values from each dataset using list comprehensions
     haplotype_datasets = {
@@ -2831,23 +2848,49 @@ def merge_haplotype_datasets(haplotype_datasets,
 
                 # Merge frequency
                 for phap_id in phap_ids_shared:  
-                    phap_merged[phap_id]['frequency'] = float(np.mean([phap_merged[phap_id]['frequency'], phap_other[phap_id]['frequency']])) 
+                    if "frequency" in phap_other[phap_id]:
+                        if "frequency" in phap_merged[phap_id]:
+                            phap_merged[phap_id]['frequency'] = float(np.mean([phap_merged[phap_id]['frequency'], phap_other[phap_id]['frequency']])) 
+                        else:
+                            phap_merged[phap_id]['frequency'] = phap_other[phap_id]['frequency']
+                    else:
+                        _check_key("frequency", f"protein_haplotypes {tx_id} - {phap_id}", protein_key_missing)
 
                     # Merge samples
-                    phap_merged[phap_id]['samples'].update(phap_other[phap_id]['samples'])
+                    if "samples" in phap_other[phap_id]:    
+                        if "samples" in phap_merged[phap_id]:
+                            phap_merged[phap_id]['samples'].update(phap_other[phap_id]['samples'])
+                        else:
+                            phap_merged[phap_id]['samples'] = phap_other[phap_id]['samples']
+                    else:
+                        _check_key("samples", f"protein_haplotypes {tx_id} - {phap_id}", protein_key_missing)
 
                     # Merge population_counts
-                    phap_other[phap_id]['population_counts'] = _check_all(phap_other[phap_id]['population_counts'], dataset_id)
-                    phap_merged[phap_id]['population_counts'].update(phap_other[phap_id]['population_counts'])
-                    phap_merged[phap_id]['population_counts'] = _update_all(phap_merged[phap_id]['population_counts'], 
-                                                                            agg_func = np.sum, 
-                                                                            type_func = int)
+                    if "population_counts" in phap_other[phap_id]:
+                        if "population_counts" in phap_merged[phap_id]:
+                            phap_merged[phap_id]['population_counts'].update(phap_other[phap_id]['population_counts'])  
+                        else:
+                            phap_merged[phap_id]['population_counts'] = phap_other[phap_id]['population_counts']
+                        phap_merged[phap_id]['population_counts'] = _check_all(phap_merged[phap_id]['population_counts'], dataset_id)
+                        phap_merged[phap_id]['population_counts'] = _update_all(phap_merged[phap_id]['population_counts'], 
+                                                                                agg_func = np.sum, 
+                                                                                type_func = int)
+                    else:
+                        _check_key("population_counts", f"protein_haplotypes {tx_id} - {phap_id}", protein_key_missing)
 
                     # Merge population_frequencies 
-                    phap_merged[phap_id]['population_frequencies'].update(phap_other[phap_id]['population_frequencies']) 
-                    phap_merged[phap_id]['population_frequencies'] = _update_all(phap_merged[phap_id]['population_frequencies'], 
-                                                                                agg_func = np.mean, 
-                                                                                type_func = float)
+                    if "population_frequencies" in phap_other[phap_id]:
+                        if "population_frequencies" in phap_merged[phap_id]:
+                            phap_merged[phap_id]['population_frequencies'].update(phap_other[phap_id]['population_frequencies']) 
+                        else:
+                            phap_merged[phap_id]['population_frequencies'] = phap_other[phap_id]['population_frequencies']
+                        phap_merged[phap_id]['population_frequencies'] = _check_all(phap_merged[phap_id]['population_frequencies'], dataset_id)
+                        phap_merged[phap_id]['population_frequencies'] = _update_all(phap_merged[phap_id]['population_frequencies'], 
+                                                                                    agg_func = np.mean, 
+                                                                                    type_func = float)
+                    else:
+                        _check_key("population_frequencies", f"protein_haplotypes {tx_id} - {phap_id}", protein_key_missing)
+
                 # Update the merged haplotypes
                 hap_tx['protein_haplotypes'] = list(phap_merged.values())
 
@@ -2868,23 +2911,48 @@ def merge_haplotype_datasets(haplotype_datasets,
 
                 # Merge frequency
                 for chap_id in chap_ids_shared:  
-                    chap_merged[chap_id]['frequency'] = float(np.mean([chap_merged[chap_id]['frequency'], chap_other[chap_id]['frequency']])) 
+                    if "frequency" in chap_other[chap_id]:
+                        if "frequency" in chap_merged[chap_id]:
+                            chap_merged[chap_id]['frequency'] = float(np.mean([chap_merged[chap_id]['frequency'], chap_other[chap_id]['frequency']])) 
+                        else:
+                            chap_merged[chap_id]['frequency'] = chap_other[chap_id]['frequency']
+                    else:
+                        _check_key("frequency", f"cds_haplotypes {tx_id} - {chap_id}", cds_key_missing)
 
                     # Merge samples
-                    chap_merged[chap_id]['samples'].update(chap_other[chap_id]['samples'])
+                    if "samples" in chap_other[chap_id]:
+                        if "samples" in chap_merged[chap_id]:
+                            chap_merged[chap_id]['samples'].update(chap_other[chap_id]['samples'])
+                        else:
+                            chap_merged[chap_id]['samples'] = chap_other[chap_id]['samples']
+                    else:
+                        _check_key("samples", f"cds_haplotypes {tx_id} - {chap_id}", cds_key_missing)
 
                     # Merge population_counts
-                    chap_merged[chap_id]['population_counts'] = _check_all(chap_merged[chap_id]['population_counts'], dataset_id)
-                    chap_merged[chap_id]['population_counts'].update(chap_other[chap_id]['population_counts'])
-                    chap_merged[chap_id]['population_counts'] = _update_all(chap_merged[chap_id]['population_counts'], 
-                                                                            agg_func = np.sum, 
-                                                                            type_func = int)
+                    if "population_counts" in chap_other[chap_id]:
+                        if "population_counts" in chap_merged[chap_id]:
+                            chap_merged[chap_id]['population_counts'].update(chap_other[chap_id]['population_counts'])
+                        else:
+                            chap_merged[chap_id]['population_counts'] = chap_other[chap_id]['population_counts']
+                        chap_merged[chap_id]['population_counts'] = _check_all(chap_merged[chap_id]['population_counts'], dataset_id)
+                        chap_merged[chap_id]['population_counts'] = _update_all(chap_merged[chap_id]['population_counts'], 
+                                                                                agg_func = np.sum, 
+                                                                                type_func = int)
+                    else:
+                        _check_key("population_counts", f"cds_haplotypes {tx_id} - {chap_id}", cds_key_missing)
 
                     # Merge population_frequencies
-                    chap_merged[chap_id]['population_frequencies'].update(chap_other[chap_id]['population_frequencies'])
-                    chap_merged[chap_id]['population_frequencies'] = _update_all(chap_merged[chap_id]['population_frequencies'], 
-                                                                                agg_func = np.mean, 
-                                                                                type_func = float)
+                    if "population_frequencies" in chap_other[chap_id]:
+                        if "population_frequencies" in chap_merged[chap_id]:
+                            chap_merged[chap_id]['population_frequencies'].update(chap_other[chap_id]['population_frequencies'])
+                        else:
+                            chap_merged[chap_id]['population_frequencies'] = chap_other[chap_id]['population_frequencies']
+                        chap_merged[chap_id]['population_frequencies'] = _check_all(chap_merged[chap_id]['population_frequencies'], dataset_id)
+                        chap_merged[chap_id]['population_frequencies'] = _update_all(chap_merged[chap_id]['population_frequencies'], 
+                                                                                    agg_func = np.mean, 
+                                                                                    type_func = float)
+                    else:
+                        _check_key("population_frequencies", f"cds_haplotypes {tx_id} - {chap_id}", cds_key_missing)
 
                 # Update the merged haplotypes
                 hap_tx['cds_haplotypes'] = list(chap_merged.values())

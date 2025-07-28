@@ -133,18 +133,20 @@ def get_contact_map(structure,
                     max_distance: float = 8.0,  # Maximum distance to consider
                     continuous: bool = True,  # Flag to control whether contact map is continuous or binary
                     return_distance_map: bool = True,  # Flag to control whether to return distance map or contact map
+                    return_raw_distance_map: bool = False,  # Flag to control whether to return raw distance map
                     chain_id: str = "A",
                     structure_id: int = 0,
+                    verbose: bool = False,
                     ) -> np.ndarray:
     """Calculate contact map or distance map from a protein structure.
     
     Args:
         structure: Bio.PDB.Structure object containing the protein structure
-        max_distance: Maximum distance (Å) to consider for contact scoring
+        max_distance: Maximum distance in units of Angstroms (Å) to consider for contact scoring
         continuous: If True, returns continuous contact scores using inverse distance.
                    If False, returns binary contact map
         return_distance_map: If True, returns distance map normalized to [0,1].
-                           If False, returns contact map
+                           If False, returns a binarized contact map.
         chain_id: Chain identifier to analyze
         structure_id: Model number to analyze (default: 0 for first model)
         
@@ -177,6 +179,9 @@ def get_contact_map(structure,
     diff = ca_coords[:, np.newaxis, :] - ca_coords[np.newaxis, :, :]
     distance_matrix = np.sqrt(np.sum(diff**2, axis=2))
 
+    if return_raw_distance_map:
+        return distance_matrix
+
     if return_distance_map:
         # Normalize distance matrix to [0,1] range
         max_dist = distance_matrix.max()
@@ -186,7 +191,16 @@ def get_contact_map(structure,
         if continuous:
             # Continuous scoring using inverse distance with vectorized operations
             mask = distance_matrix < max_distance
+
+            # Report the percentage of contacts
+            if verbose:
+                num_contacts = np.count_nonzero(mask) - distance_matrix.shape[0]  # exclude diagonal
+                total_possible_contacts = distance_matrix.shape[0] * (distance_matrix.shape[0] - 1)
+                percent_contacts = 100.0 * num_contacts / total_possible_contacts if total_possible_contacts > 0 else 0.0
+                print(f"Percentage of contacts (distance < {max_distance} Å): {percent_contacts:.2f}%")
+            
             contact_map = np.zeros_like(distance_matrix)
+            # Transform distance to contact score
             contact_map[mask] = 1.0 / (1.0 + distance_matrix[mask])
         else:
             # Binary scoring with vectorized operations
@@ -1549,3 +1563,325 @@ def create_bokeh_interactive_umap(af2_meta, contact_maps,
     layout = column(instructions, row(p1, p2))
     
     return layout
+
+
+def get_ref_key(contact_maps, pattern="REF"):
+    """
+    Find and return the key from contact_maps whose filename contains the given pattern
+    in the second underscore-separated field.
+
+    Args:
+        contact_maps (dict): Dictionary where keys are file paths or names.
+        pattern (str): Pattern to search for in the second field of the filename (default: "REF").
+
+    Returns:
+        str: The first key matching the pattern.
+
+    Raises:
+        IndexError: If no key matches the pattern.
+        ValueError: If the filename does not have at least two underscore-separated fields.
+
+    Example:
+        >>> contact_maps = {
+        ...     '/path/to/sample_REF_001.npy': ...,
+        ...     '/path/to/sample_ALT_002.npy': ...,
+        ... }
+        >>> get_ref_key(contact_maps)
+        '/path/to/sample_REF_001.npy'
+    """
+    return [x for x in contact_maps.keys() if pattern in os.path.basename(x).split("_")[1]][0]
+
+
+def plot_contact_map_entropy(
+    contact_maps,
+    bin_size=None,
+    cmap="viridis",
+    figsize=(8, 6),
+    dpi=100,
+    agg_func=np.nanmax,
+    title="Contact Map Entropy",
+):
+    """
+    Plot the per-pixel entropy across a set of contact maps.
+
+    This function computes the entropy at each (i, j) position across all provided contact maps,
+    optionally bins the result, and displays it as a heatmap.
+
+    Args:
+        contact_maps (dict): Dictionary mapping keys (e.g., filenames) to 2D numpy arrays representing contact maps.
+        bin_size (int, optional): If provided, bin the entropy map into square bins of this size using `agg_func`.
+        cmap (str): Colormap to use for the heatmap.
+        figsize (tuple): Figure size for matplotlib.
+        dpi (int): Dots per inch for the figure.
+        agg_func (callable): Aggregation function to use when binning (default: np.nanmax).
+        title (str): Title for the plot.
+
+    Returns:
+        np.ndarray: The (possibly binned and expanded) entropy map as a numpy array.
+
+    Raises:
+        ValueError: If no contact maps match the reference number of residues.
+
+    Example:
+        >>> entropy_map = plot_contact_map_entropy(contact_maps, bin_size=10)
+    """
+    import torch
+    import numpy as np
+    import matplotlib.pyplot as plt
+
+    # Determine the reference contact map (assume first in dict is ref)
+    ref_key = get_ref_key(contact_maps)
+    ref_map = contact_maps[ref_key]
+    ref_n_res = ref_map.shape[0]
+
+    # Only include contact maps with the same number of residues as the reference
+    filtered_contact_maps = {k: v for k, v in contact_maps.items() if v.shape[0] == ref_n_res}
+
+    if len(filtered_contact_maps) == 0:
+        raise ValueError("No contact maps match the reference number of residues.")
+
+    # Stack all contact maps into a 3D tensor (n_maps, n_res, n_res)
+    contact_map_tensor = torch.tensor(np.stack(list(filtered_contact_maps.values())), dtype=torch.float32)
+
+    # Compute per-pixel entropy across all contact maps
+    # For each (i,j), treat the values across maps as a distribution
+
+    # Add a small epsilon to avoid log(0)
+    eps = 1e-8
+    probs = contact_map_tensor + eps
+    probs = probs / probs.sum(dim=0, keepdim=True)
+
+    # Entropy: -sum(p * log(p)) over the first axis (maps)
+    # entropy_map = -torch.sum(probs * torch.log(probs), dim=0)
+    # NOTE: The following is not true entropy, but is used for visualization
+    entropy_map = -torch.sum(probs * probs, dim=0)
+
+    # Convert to numpy for further plotting/analysis
+    entropy_map_np = entropy_map.numpy()
+
+    print("Entropy map shape:", entropy_map_np.shape)
+
+    if bin_size is not None:
+        entropy_map_np = bin_matrix(entropy_map_np, bin_size=bin_size, agg_func=agg_func)
+        entropy_map_np = expand_matrix(entropy_map_np, target_size=ref_map.shape[0])
+
+    plt.figure(figsize=figsize, dpi=dpi)
+    im = plt.imshow(entropy_map_np, cmap=cmap, interpolation='nearest')
+    plt.title(title)
+    plt.xlabel("Residue index")
+    plt.ylabel("Residue index")
+    plt.colorbar(im, label="Entropy")
+    plt.tight_layout()
+    plt.show()
+
+    return entropy_map_np
+
+
+def nonzero_mean(arr, axis=None):
+    """
+    Compute the mean of nonzero elements in an array, optionally along a given axis.
+
+    Args:
+        arr (array-like): Input array.
+        axis (int or None): Axis along which to compute the mean. If None, compute over the flattened array.
+
+    Returns:
+        float or np.ndarray: Mean of nonzero elements (np.nan if all are zero).
+    """
+    arr = np.array(arr)
+    mask = arr != 0
+    # If axis is None, just flatten
+    if axis is None:
+        if np.any(mask):
+            return np.nanmean(arr[mask])
+        else:
+            return np.nan
+    else:
+        # Compute mean only over nonzero elements along the given axis
+        # To avoid broadcasting issues, use masked arrays
+        arr_masked = np.ma.masked_where(~mask, arr)
+        mean = arr_masked.mean(axis=axis)
+        # Convert masked means to np.nan where all values were masked
+        return mean.filled(np.nan)
+
+
+def plot_contact_map_diff(
+    contact_maps,
+    bin_size=20,
+    cmap="seismic_r",
+    figsize=(8, 6),
+    dpi=100,
+    agg_func=nonzero_mean,
+    title="Gain/Loss of Contact Relative to REF",
+):
+    """
+    Plot the difference in contact probability between reference and non-reference contact maps.
+
+    This function compares each non-reference contact map to the reference, binarizes contacts,
+    and computes, for each (i, j), the fraction of non-reference maps that differ from the reference.
+    The result is visualized as a heatmap, with negative values indicating loss of contact,
+    positive values indicating gain, and zero indicating no change.
+
+    Args:
+        contact_maps (dict): Dictionary mapping keys (e.g., filenames) to 2D numpy arrays representing contact maps.
+        bin_size (int): Bin size for aggregating the difference map (default: 20).
+        cmap (str): Colormap to use for the heatmap.
+        figsize (tuple): Figure size for matplotlib.
+        dpi (int): Dots per inch for the figure.
+        agg_func (callable): Aggregation function to use when binning (default: nonzero_mean).
+        title (str): Title for the plot.
+
+    Returns:
+        np.ndarray: The difference map (not binned/expanded).
+
+    Raises:
+        ValueError: If no contact maps match the reference number of residues,
+                    or if there are no non-reference contact maps to compare.
+
+    Example:
+        >>> diff_map = plot_contact_map_diff(contact_maps, bin_size=10)
+    """
+    import numpy as np
+    import matplotlib.pyplot as plt
+
+    # Determine the reference contact map (assume first in dict is ref)
+    ref_key = get_ref_key(contact_maps)
+    ref_map = contact_maps[ref_key]
+    ref_n_res = ref_map.shape[0]
+
+    # Only include contact maps with the same number of residues as the reference
+    filtered_contact_maps = {k: v for k, v in contact_maps.items() if v.shape[0] == ref_n_res}
+
+    if len(filtered_contact_maps) == 0:
+        raise ValueError("No contact maps match the reference number of residues.")
+
+    # Identify non-REF keys (all except the first one)
+    non_ref_keys = [k for k in filtered_contact_maps.keys() if k != ref_key]
+
+    if len(non_ref_keys) == 0:
+        raise ValueError("No non-REF contact maps to compare.")
+
+    # Binarize the contact maps: treat values >=0.5 as 1, <0.5 as 0
+    def binarize_map(contact_map, threshold=0.5):
+        return (contact_map >= threshold).astype(int)
+
+    ref_bin = binarize_map(ref_map)
+
+    # Stack all non-REF binarized contact maps into a 3D array (n_nonref, n_res, n_res)
+    nonref_bin_maps = np.stack([binarize_map(filtered_contact_maps[k]) for k in non_ref_keys])
+
+    # Compute, for each (i,j), the proportion of non-REF maps that differ from REF
+    # But also distinguish between loss and gain of contact:
+    #   - If REF has contact (1) and most non-REF lose it (0), value will be negative
+    #   - If REF has no contact (0) and most non-REF gain it (1), value will be positive
+    #   - If no change, value is 0
+
+    # For each (i,j), count how many non-REFs have a contact (1)
+    nonref_contact_sum = nonref_bin_maps.sum(axis=0)  # shape: (n_res, n_res)
+    n_nonref = nonref_bin_maps.shape[0]
+
+    # For each (i,j), compute the difference in contact probability relative to REF
+    # If REF has contact (1): (fraction of non-REFs with contact) - 1  (so negative if most lose)
+    # If REF has no contact (0): (fraction of non-REFs with contact) - 0 (so positive if most gain)
+    fraction_nonref_contact = nonref_contact_sum / n_nonref
+    diff_vs_ref = fraction_nonref_contact - ref_bin  # shape: (n_res, n_res)
+    # Range: -1 (all lost contact), 0 (no change), +1 (all gained contact)
+
+    print("Difference-vs-REF map shape:", diff_vs_ref.shape)
+    diff_vs_ref_binned = bin_matrix(diff_vs_ref, bin_size=bin_size, agg_func=agg_func)
+    diff_vs_ref_binned = expand_matrix(diff_vs_ref_binned, target_size=ref_map.shape[0])
+
+    plt.figure(figsize=figsize, dpi=dpi)
+    im = plt.imshow(
+        diff_vs_ref_binned,
+        cmap=cmap,
+        interpolation='nearest',
+        vmin=-1, vmax=1
+    )
+    plt.title(title)
+    plt.xlabel("Residue index")
+    plt.ylabel("Residue index")
+    cbar = plt.colorbar(im, label="Contact change vs REF")
+    cbar.set_ticks([-1, -0.5, 0, 0.5, 1])
+    cbar.set_ticklabels(['Lost in all', '-0.5', 'No change', '+0.5', 'Gained in all'])
+    plt.tight_layout()
+    plt.show()
+
+    return diff_vs_ref
+
+
+def plot_contact_map_diff_barplot(
+    diff_map, 
+    title="Contact Points Gained vs Lost", 
+    figsize=(4, 5), 
+    cmap="seismic_r",
+    percent_precision=2
+):
+    """
+    Plot a barplot of the number of contact points gained and lost,
+    showing both the count and the percent in parentheses.
+
+    Args:
+        diff_map: 2D numpy array of contact map differences.
+        title: Title for the plot.
+        figsize: Figure size for the plot.
+        cmap: Colormap for the bars.
+        percent_precision: Number of decimal places to show for percent values.
+    """
+    import matplotlib.pyplot as plt
+    import numpy as np
+    import pandas as pd
+
+    # Only consider the upper triangle (excluding the diagonal) to avoid double counting
+    # np.triu with k=1 already excludes the diagonal
+    triu_mask = np.triu(np.ones(diff_map.shape, dtype=bool), k=1)
+    total_contacts = np.sum(triu_mask)
+
+    # Contacts gained: elements > 0 in upper triangle (excluding diagonal)
+    contacts_gained = np.sum((diff_map > 0) & triu_mask)
+    # Contacts lost: elements < 0 in upper triangle (excluding diagonal)
+    contacts_lost = np.sum((diff_map < 0) & triu_mask)
+
+    # Calculate percentages (excluding diagonal)
+    percent_gained = 100.0 * contacts_gained / total_contacts if total_contacts > 0 else 0.0
+    percent_lost = 100.0 * contacts_lost / total_contacts if total_contacts > 0 else 0.0
+
+    # Store results in a DataFrame
+    df = pd.DataFrame({
+        'Type': ['Gained', 'Lost'],
+        'Count': [contacts_gained, contacts_lost],
+        'Percent': [percent_gained, percent_lost]
+    })
+
+    # Plot as barplot
+    import matplotlib as mpl
+    cmap_obj = mpl.colormaps.get_cmap(cmap)
+    # For "Gained" (positive), use the high end; for "Lost" (negative), use the low end
+    gained_color = cmap_obj(1.0)
+    lost_color = cmap_obj(0.0)
+    colors = [gained_color, lost_color]
+
+    labels = df['Type']
+    values = df['Count']
+
+    fig, ax = plt.subplots(figsize=figsize)
+    bars = ax.bar(labels, values, color=colors)
+    ax.set_ylabel('Number of contact points')
+    ax.set_title(title)
+    for i, bar in enumerate(bars):
+        height = bar.get_height()
+        percent = df['Percent'].iloc[i]
+        percent_fmt = f"{{:.{percent_precision}f}}"
+        ax.annotate(f'{int(height)} ({percent_fmt.format(percent)}%)',
+                    xy=(bar.get_x() + bar.get_width() / 2, height),
+                    xytext=(0, 3),  # 3 points vertical offset
+                    textcoords="offset points",
+                    ha='center', va='bottom', fontsize=12)
+
+    # Expand the y-axis to avoid cutting off the text
+    ymin, ymax = ax.get_ylim()
+    ax.set_ylim(ymin, ymax + max(values)*0.08 + 10)
+
+    plt.show()
+
+    return df

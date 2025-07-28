@@ -245,7 +245,7 @@ def transcript_haplotypes_get(ids: Optional[List[str]] = None,
                               error: bool = False,
                               timeout: int = TIMEOUT,
                               leave: bool = True,
-                              check_names: bool = True,
+                              check_names: bool = False,
                               verbose: bool = True) -> dict:
     """Get haplotype information for transcript IDs from Ensembl REST API.
     For more information, see:

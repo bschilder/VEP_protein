@@ -919,13 +919,12 @@ def make_palette(values,
     dict
         Dictionary mapping values to hex colors
     """
-    values = as_list(values)
-    values = set(list(values))
+    values = as_list(values) 
     n = n_colors if n_colors is not None else len(values)
     return dict(zip(values, sns.color_palette(palette, n_colors=n).as_hex()))
 
 def get_clinsig_palette(values=['path', 'likely_path', 'likely_benign', 'benign'],
-                         palette='bwr'):
+                         palette='bwr_r'):
     return make_palette(values, palette) 
 
 
