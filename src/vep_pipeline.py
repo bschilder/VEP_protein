@@ -127,7 +127,8 @@ def vep_pipeline(prot_df: pd.DataFrame = None,
     # Infer ens_id_col
     if ens_id_col is None:
         ens_id_col = _infer_ens_id_col(prot_df=prot_df,
-                                        verbose=verbose)
+                                       hap_dir=hap_dir,
+                                       verbose=verbose)
     assert ens_id_col in prot_df.columns
 
     # Check models
@@ -812,6 +813,7 @@ def filter_prot_df(prot_df: pd.DataFrame,
 def _infer_ens_id_col(prot_df: pd.DataFrame,
                       tx_ids: list[str] = None,
                       hap_seqs: dict[str, dict[str, str]] = None,
+                      hap_dir: str = hs.DIR_DICT["haplotypes"],
                       verbose: bool = True) -> str:
     """Infer the Ensembl ID column from the protein dataframe.
     """
@@ -819,7 +821,7 @@ def _infer_ens_id_col(prot_df: pd.DataFrame,
         if hap_seqs is not None:
             tx_ids = list(hap_seqs.keys())
         else:
-            tx_ids = hs.list_haplotypes()
+            tx_ids = hs.list_haplotypes(cache=hap_dir)
         
     if  utils.most_startswith(tx_ids, prefix='ENST'):
         assert 'ENST' in prot_df.columns

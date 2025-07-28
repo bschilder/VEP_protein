@@ -775,7 +775,7 @@ def get_aa_tokens(as_dict=False):
         return toks
 
 def as_checksum(text, algorithm='md5'):
-  """
+    """
     Generates a checksum for a given string using the specified algorithm.
 
     Args:
@@ -784,17 +784,16 @@ def as_checksum(text, algorithm='md5'):
 
     Returns:
         The checksum as a hexadecimal string.
-  """
-  import hashlib
-  encoded_text = text.encode('utf-8')
-    
-  if algorithm == 'md5':
-    checksum = hashlib.md5(encoded_text).hexdigest()
-  elif algorithm == 'sha256':
-      checksum = hashlib.sha256(encoded_text).hexdigest()
-  else:
-    raise ValueError("Unsupported algorithm. Choose 'md5' or 'sha256'.")
-  return checksum
+    """
+    import hashlib
+    encoded_text = text.encode('utf-8')
+    if algorithm == 'md5':
+        checksum = hashlib.md5(encoded_text).hexdigest()
+    elif algorithm == 'sha256':
+        checksum = hashlib.sha256(encoded_text).hexdigest()
+    else:
+        raise ValueError("Unsupported algorithm. Choose 'md5' or 'sha256'.")
+    return checksum
 
 
 def ids_to_checksum_filename(ids: List[str],
@@ -840,6 +839,46 @@ def encode_haplotype_name(seq_name,
         return f"{tx_id}:{del_count}del|{ins_count}ins|{sub_count}sub|md5:{checksum}"
     else:
         return f"{tx_id}:md5:{checksum}"
+    
+def decode_haplotype_name(seq_name, original_names=None):
+    """
+    Attempt to reverse the encoding process and recover the original haplotype name.
+
+    Args:
+        seq_name: The encoded haplotype name string.
+        original_names: Optional. A list or dict of original haplotype names to search for a matching checksum.
+                        If a dict, keys should be checksums and values the original names.
+                        If a list, will compute checksums for all and match.
+
+    Returns:
+        The original haplotype name if found in original_names, else None.
+        If the input is not encoded, returns the input as is.
+    """
+    # If not encoded, just return as is
+    if "md5:" not in seq_name:
+        return seq_name
+
+    # Extract checksum
+    try:
+        checksum = seq_name.split("md5:")[-1]
+        checksum = checksum.strip()
+    except Exception:
+        return None
+
+    # If original_names is provided, try to match
+    if original_names is not None:
+        # If dict, assume keys are checksums
+        if isinstance(original_names, dict):
+            return original_names.get(checksum, None)
+        # If list, compute checksums and match
+        else:
+            for name in original_names:
+                if as_checksum(name) == checksum:
+                    return name
+            return None
+    else:
+        # No way to recover original name without a mapping
+        return None
  
 
 def get_candidate_proteins():
@@ -886,7 +925,7 @@ def make_palette(values,
     return dict(zip(values, sns.color_palette(palette, n_colors=n).as_hex()))
 
 def get_clinsig_palette(values=['path', 'likely_path', 'likely_benign', 'benign'],
-                         palette='bwr_r'):
+                         palette='bwr'):
     return make_palette(values, palette) 
 
 
@@ -2040,3 +2079,74 @@ topo_colorscale = [
                     [0.90, "#5c3a21"],   # deep brown (shale)
                     [1.00, "#ffffff"],   # white (snow)
                 ]
+
+
+
+
+aa_3to1 = {
+    'A': 'Ala', 'R': 'Arg', 'N': 'Asn', 'D': 'Asp', 'C': 'Cys',
+    'Q': 'Gln', 'E': 'Glu', 'G': 'Gly', 'H': 'His', 'I': 'Ile',
+    'L': 'Leu', 'K': 'Lys', 'M': 'Met', 'F': 'Phe', 'P': 'Pro',
+    'S': 'Ser', 'T': 'Thr', 'W': 'Trp', 'Y': 'Tyr', 'V': 'Val'
+}
+
+def add_hgvsp_id(
+    vep_prot,
+    variant_col="variant",
+    position_col="wt_p.position",
+    ref_col="wt_p.REF",
+    alt_col="wt_p.ALT",
+    protein_col="protein",
+    wt_HGVSp_col="wt_HGVSp"
+):
+    """
+    Add an HGVSp (protein-level HGVS) identifier column to a DataFrame.
+
+    This function generates a column containing HGVSp IDs in the format:
+        <protein>:p.<REF><position><ALT>
+    where <REF> and <ALT> are converted from one-letter to three-letter amino acid codes.
+
+    Parameters
+    ----------
+    vep_prot : pandas.DataFrame
+        DataFrame containing variant and protein information.
+    variant_col : str, default="variant"
+        Name of the column containing variant identifiers.
+    position_col : str, default="wt_p.position"
+        Name of the column containing the protein position.
+    ref_col : str, default="wt_p.REF"
+        Name of the column containing the reference amino acid (one-letter code).
+    alt_col : str, default="wt_p.ALT"
+        Name of the column containing the alternate amino acid (one-letter code).
+    protein_col : str, default="protein"
+        Name of the column containing the protein identifier.
+    wt_HGVSp_col : str, default="wt_HGVSp"
+        Name of the new column to be created with the HGVSp IDs.
+
+    Returns
+    -------
+    pandas.DataFrame
+        The input DataFrame with an additional column containing HGVSp IDs.
+
+    Notes
+    -----
+    This function assumes that the input DataFrame contains the specified columns.
+    The function also calls `variants_to_positions` to ensure position and amino acid columns are present.
+    """
+    # Add site info for WT variants (variant)
+    vep_prot = variants_to_positions(
+        vep_prot,
+        variant_col=variant_col,
+        position_col=position_col,
+        ref_col=ref_col,
+        alt_col=alt_col
+    )
+
+    vep_prot[wt_HGVSp_col] = (
+        vep_prot[protein_col]
+        + ":p."
+        + vep_prot[ref_col].map(aa_3to1)
+        + vep_prot[position_col].astype(str)
+        + vep_prot[alt_col].map(aa_3to1)
+    )
+    return vep_prot

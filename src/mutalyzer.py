@@ -13,32 +13,6 @@ import pandas as pd
 import src.utils as utils
 
 
-aa_3to1 = {
-    'A': 'Ala', 'R': 'Arg', 'N': 'Asn', 'D': 'Asp', 'C': 'Cys',
-    'Q': 'Gln', 'E': 'Glu', 'G': 'Gly', 'H': 'His', 'I': 'Ile',
-    'L': 'Leu', 'K': 'Lys', 'M': 'Met', 'F': 'Phe', 'P': 'Pro',
-    'S': 'Ser', 'T': 'Thr', 'W': 'Trp', 'Y': 'Tyr', 'V': 'Val'
-}
-
-def add_hgvsp(vep_prot,
-              variant_col="variant",
-              position_col="wt_p.position",
-              ref_col="wt_p.REF",
-              alt_col="wt_p.ALT",
-              protein_col="protein",
-              wt_HGVSp_col="wt_HGVSp"):  
-    
-    # Add site info for WT variants (variant) 
-    vep_prot = utils.variants_to_positions(vep_prot, 
-                                           variant_col=variant_col, 
-                                           position_col=position_col, 
-                                           ref_col=ref_col,
-                                           alt_col=alt_col)
- 
-    vep_prot[wt_HGVSp_col] = vep_prot[protein_col] + ":p." +  vep_prot[ref_col].map(aa_3to1) + vep_prot[position_col].astype(str) + vep_prot[alt_col].map(aa_3to1)
-    return vep_prot
-
-
 def backtranslate_hgvsp_ids(hgvsp_ids,
                             remove_parentheses=True,
                             sleep_time=0.1,

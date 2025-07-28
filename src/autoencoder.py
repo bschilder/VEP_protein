@@ -1,330 +1,268 @@
 import torch
-from tqdm.auto import tqdm
-import src.utils as utils
+import torch.nn as nn
+import torch.optim as optim
+from torch.utils.data import Dataset, DataLoader
+from sklearn.preprocessing import StandardScaler
+import numpy as np
+import pandas as pd
 
+class XDataset(Dataset):
+    def __init__(self, X, contrastive=False, noise_std=0.1):
+        # Store as numpy for NaN handling, but keep original shape
+        self.X = np.asarray(X)
+        self.contrastive = contrastive
+        self.noise_std = noise_std
 
-def make_autoencoder(input_dim, 
-                     hidden_dims=[512, 256, 128, 64], 
-                     latent_dim=32,
-                     n_heads=4,
-                     transformer_layers=2):
-    """
-    Create an autoencoder model with transformer layers to learn relationships
-    between transcripts and phases for each patient.
-    
-    Parameters:
-    -----------
-    input_dim : int
-        Dimension of the input features
-    hidden_dims : list
-        List of hidden dimensions for the encoder (decoder will be symmetric)
-    latent_dim : int
-        Dimension of the latent space
-    n_heads : int
-        Number of attention heads in transformer layers
-    transformer_layers : int
-        Number of transformer encoder layers
-        
-    Returns:
-    --------
-    model : torch.nn.Module
-        Autoencoder model with transformer layers
-    """
-    import torch.nn as nn
-    
-    class PatientAutoencoder(nn.Module):
-        def __init__(self, input_dim, hidden_dims, latent_dim, n_heads, transformer_layers):
-            super(PatientAutoencoder, self).__init__()
-            
-            # Feature embedding layers
-            self.feature_embedding = nn.Sequential(
-                nn.Linear(input_dim, hidden_dims[0]),
-                nn.ReLU()
-            )
-            
-            # Transformer encoder to learn relationships between transcripts and phases
-            encoder_layer = nn.TransformerEncoderLayer(
-                d_model=hidden_dims[0],
-                nhead=n_heads,
-                dim_feedforward=hidden_dims[0] * 4,
-                batch_first=True
-            )
-            self.transformer_encoder = nn.TransformerEncoder(
-                encoder_layer,
-                num_layers=transformer_layers
-            )
-            
-            # Build encoder layers after transformer
-            encoder_layers = []
-            prev_dim = hidden_dims[0]
-            for dim in hidden_dims[1:]:
-                encoder_layers.append(nn.Linear(prev_dim, dim))
-                encoder_layers.append(nn.ReLU())
-                prev_dim = dim
-            encoder_layers.append(nn.Linear(prev_dim, latent_dim))
-            self.encoder = nn.Sequential(*encoder_layers)
-            
-            # Build decoder layers (symmetric to encoder)
-            decoder_layers = []
-            prev_dim = latent_dim
-            for dim in reversed(hidden_dims[1:]):
-                decoder_layers.append(nn.Linear(prev_dim, dim))
-                decoder_layers.append(nn.ReLU())
-                prev_dim = dim
-            decoder_layers.append(nn.Linear(prev_dim, hidden_dims[0]))
-            decoder_layers.append(nn.ReLU())
-            self.decoder = nn.Sequential(*decoder_layers)
-            
-            # Final projection back to original feature space
-            self.output_projection = nn.Linear(hidden_dims[0], input_dim)
-            
-            # Store dimensions for reshaping
-            self.hidden_dims = hidden_dims
-            self.latent_dim = latent_dim
-        
-        def forward(self, x, mask=None):
-            # x shape: [batch_size, n_transcripts * n_phases, n_features]
-            batch_size, seq_len, _ = x.shape
-            
-            # Embed features
-            embedded = self.feature_embedding(x)  # [batch_size, seq_len, hidden_dim]
-            
-            # Apply transformer to learn relationships between transcripts and phases
-            if mask is not None:
-                transformed = self.transformer_encoder(embedded, src_key_padding_mask=mask)
-            else:
-                transformed = self.transformer_encoder(embedded)
-            
-            # Pool across sequence dimension (mean pooling)
-            pooled = transformed.mean(dim=1)  # [batch_size, hidden_dim]
-            
-            # Encode to latent space
-            encoded = self.encoder(pooled)  # [batch_size, latent_dim]
-            
-            # Decode from latent space
-            decoded = self.decoder(encoded)  # [batch_size, hidden_dim]
-            
-            # Expand back to sequence length
-            expanded = decoded.unsqueeze(1).expand(-1, seq_len, -1)  # [batch_size, seq_len, hidden_dim]
-            
-            # Project back to original feature space
-            output = self.output_projection(expanded)  # [batch_size, seq_len, n_features]
-            
-            return output
-        
-        def encode(self, x, mask=None):
-            batch_size, seq_len, _ = x.shape
-            
-            # Embed features
-            embedded = self.feature_embedding(x)
-            
-            # Apply transformer
-            if mask is not None:
-                transformed = self.transformer_encoder(embedded, src_key_padding_mask=mask)
-            else:
-                transformed = self.transformer_encoder(embedded)
-            
-            # Pool across sequence dimension
-            pooled = transformed.mean(dim=1)
-            
-            # Encode to latent space
-            encoded = self.encoder(pooled)
-            
-            return encoded
-    
-    return PatientAutoencoder(input_dim, hidden_dims, latent_dim, n_heads, transformer_layers)
+    def __len__(self):
+        return self.X.shape[0]
 
-def train_autoencoder(patient_tensor, 
-                      model,
-                      batch_size=8,
-                      learning_rate=1e-3,
-                      num_epochs=100,
-                      device=None,
-                      save_path=None,
-                      verbose=True):
+    def _get_tensor_and_mask(self, idx):
+        x_np = self.X[idx]
+        mask = ~np.isnan(x_np)
+        # Replace NaNs with zero for input, mask will be used in loss
+        x = torch.tensor(np.nan_to_num(x_np, nan=0.0), dtype=torch.float32)
+        mask = torch.tensor(mask, dtype=torch.float32)
+        return x, mask
+
+    def __getitem__(self, idx):
+        if self.contrastive:
+            x, mask = self._get_tensor_and_mask(idx)
+            # Add noise only to observed values
+            noise1 = torch.randn_like(x) * self.noise_std * mask
+            noise2 = torch.randn_like(x) * self.noise_std * mask
+            x1 = x + noise1
+            x2 = x + noise2
+            # Return masks for both views and targets
+            return x1, x2, x, x, mask, mask  # (view1, view2, original1, original2, mask1, mask2)
+        else:
+            x, mask = self._get_tensor_and_mask(idx)
+            return x, x, mask  # input, target, mask
+
+# Use a simple autoencoder (not UNet) for tabular data
+class TabularAutoencoder(nn.Module):
+    def __init__(self, input_dim, 
+                 embedding_dim=2,
+                 hidden_dims=[128, 64, 32]):
+        super().__init__()
+        # Encoder
+        self.encoder = nn.Sequential(
+            nn.Linear(input_dim, hidden_dims[0]),
+            nn.ReLU(),
+            nn.BatchNorm1d(hidden_dims[0]),
+            nn.Linear(hidden_dims[0], hidden_dims[1]),
+            nn.ReLU(),
+            nn.BatchNorm1d(hidden_dims[1]),
+            nn.Linear(hidden_dims[1], hidden_dims[2]),
+            nn.ReLU(),
+            nn.BatchNorm1d(hidden_dims[2]),
+            nn.Linear(hidden_dims[2], embedding_dim)
+        )
+        # Decoder
+        self.decoder = nn.Sequential(
+            nn.Linear(embedding_dim, hidden_dims[2]),
+            nn.ReLU(),
+            nn.BatchNorm1d(hidden_dims[2]),
+            nn.Linear(hidden_dims[2], hidden_dims[1]),
+            nn.ReLU(),
+            nn.BatchNorm1d(hidden_dims[1]),
+            nn.Linear(hidden_dims[1], hidden_dims[0]),
+            nn.ReLU(),
+            nn.BatchNorm1d(hidden_dims[0]),
+            nn.Linear(hidden_dims[0], input_dim)
+        )
+    def forward(self, x):
+        z = self.encoder(x)
+        out = self.decoder(z)
+        return out, z
+
+def masked_mse_loss(pred, target, mask):
+    # mask: 1 for observed, 0 for missing
+    # Only compute loss on observed values
+    diff = (pred - target) * mask
+    mse = (diff ** 2).sum() / (mask.sum() + 1e-8)
+    return mse
+
+def nt_xent_loss(z1, z2, temperature=0.5):
     """
-    Train a deep autoencoder to compress the patient tensor.
-    
-    Parameters:
-    -----------
-    patient_tensor : torch.Tensor
-        The patient tensor with shape [n_samples, n_transcripts, n_phases, n_features]
-    model : torch.nn.Module
-        A self-supervised model
-    batch_size : int
-        Batch size for training
-    learning_rate : float
-        Learning rate for optimizer
-    num_epochs : int
-        Number of epochs to train
-    device : str
-        Device to use for training ('cuda' or 'cpu')
-    save_path : str
-        Path to save the trained model
-    verbose : bool
-        Whether to print progress
-        
-    Returns:
-    --------
-    model : torch.nn.Module
-        Trained autoencoder model
-    history : dict
-        Training history
+    Normalized Temperature-scaled Cross Entropy Loss (NT-Xent) for contrastive learning.
+    z1, z2: (batch_size, embedding_dim)
     """
-    
-    import torch.nn as nn
-    import torch.optim as optim
-    from torch.utils.data import DataLoader, TensorDataset
-    
-    # Determine device
-    if device is None:
-        device = 'cuda' if torch.cuda.is_available() else 'cpu'
-    
-    # Get dimensions
-    n_samples, n_transcripts, n_phases, n_features = patient_tensor.shape
-    
-    # Reshape tensor for transformer-based autoencoder
-    # Combine transcripts and phases into a single sequence dimension
-    X = patient_tensor.reshape(n_samples, n_transcripts * n_phases, n_features)
-    
-    # Create masks for padding (where all features are zero)
-    padding_mask = ~torch.any(X != 0, dim=2)  # True where all features are zero
-    
-    # Create dataset and dataloader
-    dataset = TensorDataset(X, padding_mask)
+    batch_size = z1.size(0)
+    z1 = nn.functional.normalize(z1, dim=1)
+    z2 = nn.functional.normalize(z2, dim=1)
+    representations = torch.cat([z1, z2], dim=0)  # (2*batch_size, embedding_dim)
+    similarity_matrix = torch.matmul(representations, representations.T)  # (2*batch_size, 2*batch_size)
+    # Remove self-similarity
+    mask = torch.eye(2 * batch_size, dtype=torch.bool, device=z1.device)
+    similarity_matrix = similarity_matrix / temperature
+    similarity_matrix = similarity_matrix.masked_fill(mask, -9e15)
+
+    # For each anchor, the positive is at index: (i + batch_size) % (2*batch_size)
+    positive_indices = (torch.arange(2 * batch_size, device=z1.device) + batch_size) % (2 * batch_size)
+    logits = similarity_matrix
+    loss = nn.CrossEntropyLoss()(logits, positive_indices)
+    return loss
+
+def prepare_data(X, normalize=True):
+    import pandas as pd
+    # Optionally scale the data to avoid degenerate (zero) embeddings
+    # Fit scaler only on observed values
+    if isinstance(X, pd.DataFrame):
+        X_np = np.asarray(X.values)
+    else:
+        X_np = np.asarray(X)
+
+    mask = ~np.isnan(X_np)
+    if normalize:
+        scaler = StandardScaler()
+        # Flatten to 1D for scaler, then reshape
+        X_flat = X_np[mask].reshape(-1, 1)
+        scaler.fit(X_flat)
+        # Transform, but keep NaNs
+        X_scaled = X_np.copy()
+        X_scaled[mask] = scaler.transform(X_np[mask].reshape(-1, 1)).flatten()
+    else:
+        scaler = None
+        X_scaled = X_np.copy()
+    return X_scaled, mask, scaler
+
+def train_autoencoder(X, 
+                      n_epochs=100, 
+                      shuffle=True,
+                      embedding_dim=2,
+                      hidden_dims=[128, 64, 32],
+                      batch_size=32, 
+                      lr=1e-3, 
+                      weight_decay=1e-5,
+                      use_contrastive=False,
+                      contrastive_weight=1.0,
+                      temperature=0.5,
+                      noise_std=0.1, 
+                      seed=42,
+                      normalize=True):
+    """
+    If use_contrastive is True, use a combination of reconstruction and contrastive loss.
+    Handles NaNs in X by masking them during loss computation.
+    Set normalize=False to keep original scales (no per-column normalization).
+    """
+    # Set seed
+    torch.manual_seed(seed)
+    np.random.seed(seed)
+
+    # Set device
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+    # Prepare data
+    X_scaled, mask, scaler = prepare_data(X, normalize=normalize)
+
+    # Prepare data
+    dataset = XDataset(X_scaled, contrastive=use_contrastive, noise_std=noise_std)
     dataloader = DataLoader(dataset, 
                             batch_size=batch_size, 
-                            shuffle=True)
+                            shuffle=shuffle)
+
+    # Model, optimizer, loss
+    input_dim = X.shape[1]
+    autoencoder = TabularAutoencoder(input_dim=input_dim, 
+                                     embedding_dim=embedding_dim, 
+                                     hidden_dims=hidden_dims)
     
-    # Move model to device
-    model = model.to(device)
-    
-    # Define loss function and optimizer
-    criterion = nn.MSELoss()
-    optimizer = optim.Adam(model.parameters(), 
-                           lr=learning_rate)
-    
-    # Training loop
-    history = {'loss': []}
-    pbar = tqdm(range(num_epochs), 
-                desc="Epochs completed") if verbose else range(num_epochs)
-    
-    for epoch in pbar:
-        epoch_loss = 0
+    autoencoder = autoencoder.to(device)
+    optimizer = optim.Adam(autoencoder.parameters(), 
+                           lr=lr, 
+                           weight_decay=weight_decay)
+
+    # Training loop 
+    for epoch in range(n_epochs):
+        autoencoder.train()
+        total_loss = 0
         for batch in dataloader:
-            # Get batch
-            x, mask = batch
-            x = x.to(device)
-            mask = mask.to(device)
-            
-            # Forward pass
-            outputs = model(x, mask)
-            
-            # Calculate loss only on non-padded elements
-            loss = 0
-            for i in range(x.size(0)):  # For each sample in batch
-                # Get non-padded positions
-                valid_pos = ~mask[i]
-                if valid_pos.sum() > 0:  # If there are valid positions
-                    # Calculate MSE only on valid positions
-                    sample_loss = criterion(outputs[i, valid_pos], x[i, valid_pos])
-                    loss += sample_loss
-            
-            loss = loss / x.size(0)  # Average loss across batch
-            
-            # Backward pass and optimize
             optimizer.zero_grad()
+            if use_contrastive:
+                x1, x2, y1, y2, mask1, mask2 = batch
+                x1, x2, y1, y2 = x1.to(device), x2.to(device), y1.to(device), y2.to(device)
+                mask1, mask2 = mask1.to(device), mask2.to(device)
+                out1, z1 = autoencoder(x1)
+                out2, z2 = autoencoder(x2)
+                # Reconstruction loss for both views, only on observed values
+                recon_loss = (masked_mse_loss(out1, y1, mask1) + masked_mse_loss(out2, y2, mask2)) / 2
+                # Contrastive loss
+                contrastive_loss = nt_xent_loss(z1, z2, temperature=temperature)
+                loss = recon_loss + contrastive_weight * contrastive_loss
+                total_loss += loss.item() * x1.size(0)
+            else:
+                xb, yb, maskb = batch
+                xb, yb, maskb = xb.to(device), yb.to(device), maskb.to(device)
+                out, _ = autoencoder(xb)
+                loss = masked_mse_loss(out, yb, maskb)
+                loss.backward()
+                optimizer.step()
+                total_loss += loss.item() * xb.size(0)
+                continue  # skip the rest, already stepped
             loss.backward()
             optimizer.step()
-            
-            epoch_loss += loss.item() * x.size(0)
-        
-        # Calculate average loss for the epoch
-        epoch_loss /= n_samples
-        history['loss'].append(epoch_loss)
-        
-        if verbose and isinstance(pbar, tqdm):
-            pbar.set_postfix({'loss': f'{epoch_loss:.6f}'})
-    
-    # Save model if path is provided
-    if save_path is not None:
-        utils.save_torch({
-            'model_state_dict': model.state_dict(),
-            'optimizer_state_dict': optimizer.state_dict(),
-            'input_dim': n_features,
-            'history': history,
-            'n_transcripts': n_transcripts,
-            'n_phases': n_phases
-        }, save_path)
-    
-    return model, history
+        avg_loss = total_loss / len(dataset)
+        if (epoch+1) % 10 == 0 or epoch == 0:
+            print(f"Epoch {epoch+1}/{n_epochs}, Loss: {avg_loss:.4f}")
 
-def encode_patient_tensor(model, 
-                          patient_tensor, 
-                          device=None, 
-                          batch_size=32,
-                          save_path=None):
-    """
-    Encode the patient tensor using a trained autoencoder in batches.
-    
-    Parameters:
-    -----------
-    model : torch.nn.Module
-        Trained autoencoder model
-    patient_tensor : torch.Tensor
-        The patient tensor with shape [n_samples, n_transcripts, n_phases, n_features]
-    device : str
-        Device to use for encoding ('cuda' or 'cpu')
-    batch_size : int
-        Size of batches for processing
-    save_path : str
-        Path to save the encoded tensor
-        
-    Returns:
-    --------
-    encoded_tensor : torch.Tensor
-        Encoded patient tensor with shape [n_samples, latent_dim]
-    """
-    import torch
-    from tqdm.auto import tqdm
-    
-    # Determine device
-    if device is None:
-        device = 'cuda' if torch.cuda.is_available() else 'cpu'
-    
-    # Get dimensions
-    n_samples, n_transcripts, n_phases, n_features = patient_tensor.shape
-    
-    # Reshape tensor for transformer-based autoencoder
-    X = patient_tensor.reshape(n_samples, n_transcripts * n_phases, n_features)
-    
-    # Create masks for padding (where all features are zero)
-    padding_mask = ~torch.any(X != 0, dim=2)  # True where all features are zero
-    
-    # Prepare model
-    model.eval()
-    model = model.to(device)
-    
-    # Process in batches
-    encoded_batches = []
+    # Get embeddings
+    autoencoder.eval()
     with torch.no_grad():
-        for i in tqdm(range(0, n_samples, batch_size),
-                      desc="Encoding patient tensor",
-                      total=n_samples // batch_size,
-                      leave=False):
-            # Get batch
-            batch_end = min(i + batch_size, n_samples)
-            X_batch = X[i:batch_end].to(device)
-            mask_batch = padding_mask[i:batch_end].to(device)
-            
-            # Encode batch
-            encoded_batch = model.encode(X_batch, mask_batch).cpu()
-            encoded_batches.append(encoded_batch)
-    
-    # Concatenate all batches
-    encoded_tensor = torch.cat(encoded_batches, dim=0)
+        # Prepare X_tensor with NaNs replaced by zero
+        X_tensor = torch.tensor(np.nan_to_num(X_scaled, nan=0.0), dtype=torch.float32).to(device)
+        _, embeddings = autoencoder(X_tensor)
+        embeddings = embeddings.cpu().numpy()
 
-    if save_path is not None:
-        utils.save_torch(encoded_tensor, save_path) 
-    
-    return encoded_tensor
+    # Compute reconstruction error
+    reconstruction_error = compute_reconstruction_error(autoencoder, 
+                                                        X_scaled, 
+                                                        mask=mask)
+    print(f"Reconstruction error: {reconstruction_error:.4f}")
+
+    return {    "embeddings": embeddings, 
+                "X_tensor": X_tensor, 
+                "X_scaled": X_scaled,
+                "model": autoencoder,
+                "scaler": scaler,
+                "mask": mask,
+                "reconstruction_error": reconstruction_error}
+
+def compute_reconstruction_error(autoencoder, X, mask=None, device='cpu'):
+    """
+    Compute the mean squared reconstruction error for X.
+    If mask is provided, only compute error on observed values.
+    X: numpy array or torch tensor, shape (n_samples, n_features)
+    mask: numpy array or torch tensor, same shape as X, 1 for observed, 0 for missing
+
+    Example:
+        >>> # Assume autoencoder is a trained model, X_test is a numpy array
+        >>> # Optionally, mask_test is a numpy array with 1 for observed, 0 for missing
+        >>> error = compute_reconstruction_error(autoencoder, X_test)
+        >>> print("Reconstruction error (all values):", error)
+        >>> # With mask
+        >>> error_masked = compute_reconstruction_error(autoencoder, X_test, mask=mask_test)
+        >>> print("Reconstruction error (observed only):", error_masked)
+    """
+    # Ensure model is on the correct device
+    autoencoder = autoencoder.to(device)
+    autoencoder.eval()
+    with torch.no_grad():
+        if isinstance(X, np.ndarray):
+            X_tensor = torch.tensor(np.nan_to_num(X, nan=0.0), dtype=torch.float32)
+        else:
+            X_tensor = X.detach().clone()
+        X_tensor = X_tensor.to(device)
+        if mask is not None:
+            if isinstance(mask, np.ndarray):
+                mask_tensor = torch.tensor(mask, dtype=torch.float32)
+            else:
+                mask_tensor = mask.detach().clone()
+            mask_tensor = mask_tensor.to(device)
+        out, _ = autoencoder(X_tensor)
+        if mask is not None:
+            mse = ((out - X_tensor) ** 2) * mask_tensor
+            error = mse.sum() / mask_tensor.sum()
+        else:
+            mse = (out - X_tensor) ** 2
+            error = mse.mean()
+    return error.item()

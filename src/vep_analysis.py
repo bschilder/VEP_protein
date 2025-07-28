@@ -3555,16 +3555,16 @@ def identify_outliers(X):
 
 
 
-
 def plot_dr_with_kde_topo(
         dr_df, 
         x_col="dim1",
         y_col="dim2",
         hue_col="superpopulation",
+        sort=True,
         symbol_col=None, #"Sex",
         point_opacity=0.95,
         point_size=3,
-
+        color_continuous_scale="Viridis",
         # KDE background
         add_kde=False, 
         kde_bw_method='scott', 
@@ -3595,6 +3595,7 @@ def plot_dr_with_kde_topo(
         # New argument for cluster labeling
         cluster_col=None,
         scatter_kwargs={},
+        point_outline_kwargs=dict(width=0),
     ): 
     """
     Plots a dimensionality reduction (DR) scatter plot with optional KDE topographic background.
@@ -3609,6 +3610,8 @@ def plot_dr_with_kde_topo(
         Column name for the y-axis (second DR dimension).
     hue_col : str, default="Super Population"
         Column name for coloring points by group.
+    sort : str or bool, default=None
+        Column name to sort by, or True to sort by hue_col.
     symbol_col : str or None, default=None
         Column name for symbolizing points by group.
     add_kde : bool, default=False
@@ -3661,9 +3664,35 @@ def plot_dr_with_kde_topo(
     import plotly.graph_objects as go
     import numpy as np
     from scipy.stats import gaussian_kde
-    
 
+    # --- Begin: Mark mean REF hue_col value on color bar ---
+    # We'll do this after the scatter is created, but need to compute it now
+    # Find REF points
+    if "sample" in dr_df.columns:
+        ref_points = dr_df[dr_df["sample"] == "REF"]
+    else:
+        ref_points = dr_df[dr_df["haplotype"].str.endswith(":REF")]
+    # Only compute if hue_col is numeric
+    ref_hue_mean = None
+    hue_is_numeric = False
+    if not ref_points.empty and hue_col in dr_df.columns:
+        try:
+            # Try to convert to float to check if numeric
+            _ = dr_df[hue_col].astype(float)
+            hue_is_numeric = True
+        except Exception:
+            hue_is_numeric = False
+        if hue_is_numeric:
+            ref_hue_mean = ref_points[hue_col].astype(float).mean()
+    # --- End: Mark mean REF hue_col value on color bar ---
+
+    hover_data = [x for x in hover_data if x in dr_df.columns]
     palette = utils.get_superpop_palette()
+    if sort is True:
+        dr_df = dr_df.sort_values(by=hue_col, ascending=True)
+    if isinstance(sort, str):
+        dr_df = dr_df.sort_values(by=sort, ascending=True)
+    
     fig = go.Figure()
 
     # Optionally add KDE background
@@ -3777,6 +3806,7 @@ def plot_dr_with_kde_topo(
         color=hue_col,
         symbol=symbol_col,
         color_discrete_map=palette,
+        color_continuous_scale=color_continuous_scale,
         opacity=point_opacity, 
         hover_data=hover_data,
         width=width,
@@ -3784,7 +3814,13 @@ def plot_dr_with_kde_topo(
         **scatter_kwargs
     )
     # Decrease point size by setting marker size in the scatter plot
-    scatter.update_traces(marker=dict(size=point_size))
+    if point_size is not None and "size" not in scatter_kwargs.keys():
+        scatter.update_traces(marker=dict(size=point_size))
+
+    # Remove marker outline from scatter points
+    for trace in scatter.data:
+        if hasattr(trace, "marker") and trace.marker is not None:
+            trace.marker.line = point_outline_kwargs
 
     # Add shadow traces first (one per color group)
     if add_shadow:
@@ -3792,9 +3828,15 @@ def plot_dr_with_kde_topo(
             # Get the points for this trace
             x_shadow = [v + shadow_offset for v in trace.x]
             y_shadow = [v - shadow_offset for v in trace.y]
-            # Use the same marker size, but a bit larger for the shadow
+
+            # Handle marker size: could be scalar or array (if size is a column in df)
             marker_size = trace.marker.size if trace.marker.size is not None else 12
-            shadow_marker_size = marker_size + shadow_size_increase
+            if hasattr(marker_size, "__len__") and not isinstance(marker_size, str):
+                # marker_size is an array-like (e.g., list, np.ndarray, pd.Series)
+                shadow_marker_size = [s + shadow_size_increase for s in marker_size]
+            else:
+                # marker_size is a scalar
+                shadow_marker_size = marker_size + shadow_size_increase
 
             # Add shadow trace (underneath)
             fig.add_trace(
@@ -3819,7 +3861,7 @@ def plot_dr_with_kde_topo(
         fig.add_trace(trace)
  
     # Add a black diamond outline around the REF point
-    ref_points = dr_df[dr_df["sample"] == "REF"]
+    # (ref_points already computed above)
     if not ref_points.empty:
         fig.add_scatter(
             x=ref_points[x_col],
@@ -3895,7 +3937,7 @@ def plot_dr_with_kde_topo(
             fig.add_trace(trace)
 
     # Set axis ranges to match the KDE background, with extra padding to show full islands
-    if add_kde and 'xgrid' in locals() and 'ygrid' in locals() and len(x) > 1:
+    if add_kde and 'xgrid' in locals() and 'ygrid' in locals() and len(dr_df[x_col].values) > 1:
         fig.update_xaxes(range=[xgrid[0], xgrid[-1]])
         fig.update_yaxes(range=[ygrid[0], ygrid[-1]])
     else:
@@ -3937,7 +3979,72 @@ def plot_dr_with_kde_topo(
         ),
         margin=dict(l=40, r=40, t=40, b=40)
     )
-    
+
+    # --- Begin: Add marker to color bar for mean REF hue_col value ---
+    # Only if hue_col is numeric and ref_hue_mean is not None
+    if hue_is_numeric and ref_hue_mean is not None:
+        # Find the colorbar trace (should be the scatter trace with coloraxis)
+        # We'll add a dummy invisible scatter for the colorbar marker
+        # But first, find the min/max of the color scale
+        hue_vals = dr_df[hue_col].astype(float)
+        cmin = hue_vals.min()
+        cmax = hue_vals.max()
+        # Normalize the mean REF value to [0,1] for colorbar position
+        ref_norm = (ref_hue_mean - cmin) / (cmax - cmin) if cmax > cmin else 0.5
+        # Add a colorbar marker using an invisible scatter with a custom colorbar
+        # We'll use a single point at (None, None) so it doesn't show on the plot
+        # and set the colorbar with a marker at the mean REF value
+        # Only add a dummy invisible scatter to show the colorbar at the correct range;
+        # annotation will handle the REF label, so we don't need tickvals/ticktext
+        fig.add_trace(go.Scatter(
+            x=[None],
+            y=[None],
+            mode="markers",
+            marker=dict(
+                color=[ref_hue_mean],
+                colorscale=color_continuous_scale,
+                cmin=cmin,
+                cmax=cmax,
+                colorbar=dict(
+                    title=None,
+                    thickness=18,
+                    outlinewidth=1,
+                    ticks="outside",
+                    ticklen=8,
+                    tickcolor="white",
+                    tickfont=dict(color="white", size=12),
+                    lenmode="fraction",
+                    len=0.8,
+                ),
+                showscale=True,
+                size=0.1,  # invisible
+            ),
+            showlegend=False,
+            hoverinfo="skip"
+        ))
+        # Add annotation for vertical centering of the label
+        # The colorbar is placed at x=1.02 by default, so we offset x accordingly
+        # The y position is ref_norm * 0.8 + 0.1 to match colorbar's len and position (len=0.8, starts at 0.1)
+        fig.add_annotation(
+            x=1.04,  # slightly to the right of the colorbar
+            y=ref_norm ,
+            xref="paper",
+            yref="paper",
+            text=f"<b>REF</b>",
+            showarrow=False,
+            font=dict(color="black", size=14),
+            align="left",
+            xanchor="left",
+            yanchor="middle",
+            bgcolor="rgba(255,255,255,0.7)",
+            bordercolor="black",
+            borderwidth=0,
+            borderpad=2,
+        )
+        # Add a horizontal line on the colorbar at the REF mean value
+        # (Plotly does not support this natively, but the above tick is a good visual marker)
+    # --- End: Add marker to color bar for mean REF hue_col value ---
+
     fig.show()
 
 
