@@ -3688,6 +3688,8 @@ def plot_dr_with_kde_topo(
 
     hover_data = [x for x in hover_data if x in dr_df.columns]
     palette = utils.get_superpop_palette()
+    palette["N/A"] = "grey"
+    
     if sort is True:
         dr_df = dr_df.sort_values(by=hue_col, ascending=True)
     if isinstance(sort, str):

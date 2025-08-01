@@ -7,6 +7,19 @@ import numpy as np
 import pandas as pd
 
 class XDataset(Dataset):
+    """
+    PyTorch Dataset for tabular data with optional support for contrastive learning and missing values.
+
+    Args:
+        X (np.ndarray or pd.DataFrame): Input data of shape (n_samples, n_features). Can contain NaNs.
+        contrastive (bool): If True, returns two noisy views of each sample for contrastive learning.
+        noise_std (float): Standard deviation of Gaussian noise added to observed values for contrastive views.
+
+    Behavior:
+        - For each sample, missing values (NaN) are replaced with zero for input, and a mask is generated (1 for observed, 0 for missing).
+        - If contrastive=True, returns two noisy views (x1, x2), both original targets (x, x), and both masks.
+        - If contrastive=False, returns (x, x, mask) for standard autoencoder training.
+    """
     def __init__(self, X, contrastive=False, noise_std=0.1):
         # Store as numpy for NaN handling, but keep original shape
         self.X = np.asarray(X)
@@ -14,9 +27,23 @@ class XDataset(Dataset):
         self.noise_std = noise_std
 
     def __len__(self):
+        """
+        Returns:
+            int: Number of samples in the dataset.
+        """
         return self.X.shape[0]
 
     def _get_tensor_and_mask(self, idx):
+        """
+        Internal helper to get a single sample and its mask.
+
+        Args:
+            idx (int): Index of the sample.
+
+        Returns:
+            x (torch.Tensor): Input vector with NaNs replaced by zero, shape (n_features,).
+            mask (torch.Tensor): Mask vector, 1 for observed, 0 for missing, shape (n_features,).
+        """
         x_np = self.X[idx]
         mask = ~np.isnan(x_np)
         # Replace NaNs with zero for input, mask will be used in loss
@@ -25,6 +52,25 @@ class XDataset(Dataset):
         return x, mask
 
     def __getitem__(self, idx):
+        """
+        Get a sample for training.
+
+        Args:
+            idx (int): Index of the sample.
+
+        Returns:
+            If contrastive:
+                x1 (Tensor): First noisy view of input, shape (n_features,).
+                x2 (Tensor): Second noisy view of input, shape (n_features,).
+                x (Tensor): Original input (target for both views), shape (n_features,).
+                x (Tensor): Original input (target for both views), shape (n_features,).
+                mask (Tensor): Mask for first view, shape (n_features,).
+                mask (Tensor): Mask for second view, shape (n_features,).
+            If not contrastive:
+                x (Tensor): Input vector, shape (n_features,).
+                x (Tensor): Target vector (same as input), shape (n_features,).
+                mask (Tensor): Mask vector, shape (n_features,).
+        """
         if self.contrastive:
             x, mask = self._get_tensor_and_mask(idx)
             # Add noise only to observed values
@@ -38,8 +84,25 @@ class XDataset(Dataset):
             x, mask = self._get_tensor_and_mask(idx)
             return x, x, mask  # input, target, mask
 
-# Use a simple autoencoder (not UNet) for tabular data
 class TabularAutoencoder(nn.Module):
+    """
+    Simple feedforward autoencoder for tabular data.
+
+    Args:
+        input_dim (int): Number of input features.
+        embedding_dim (int): Size of the latent embedding (default: 2).
+        hidden_dims (list of int): List of hidden layer sizes (default: [128, 64, 32]).
+
+    Architecture:
+        - Encoder: MLP with hidden layers and batch normalization, outputs embedding of size embedding_dim.
+        - Decoder: MLP with hidden layers and batch normalization, reconstructs input from embedding.
+
+    Forward:
+        x (Tensor): Input tensor of shape (batch_size, input_dim).
+        Returns:
+            out (Tensor): Reconstructed input, shape (batch_size, input_dim).
+            z (Tensor): Latent embedding, shape (batch_size, embedding_dim).
+    """
     def __init__(self, input_dim, 
                  embedding_dim=2,
                  hidden_dims=[128, 64, 32]):
@@ -71,11 +134,32 @@ class TabularAutoencoder(nn.Module):
             nn.Linear(hidden_dims[0], input_dim)
         )
     def forward(self, x):
+        """
+        Forward pass through the autoencoder.
+
+        Args:
+            x (Tensor): Input tensor of shape (batch_size, input_dim).
+
+        Returns:
+            out (Tensor): Reconstructed input, shape (batch_size, input_dim).
+            z (Tensor): Latent embedding, shape (batch_size, embedding_dim).
+        """
         z = self.encoder(x)
         out = self.decoder(z)
         return out, z
 
 def masked_mse_loss(pred, target, mask):
+    """
+    Compute mean squared error (MSE) loss between pred and target, only over observed (non-missing) values.
+
+    Args:
+        pred (Tensor): Predicted output, shape (..., n_features).
+        target (Tensor): Target output, shape (..., n_features).
+        mask (Tensor): Mask tensor, 1 for observed, 0 for missing, shape (..., n_features).
+
+    Returns:
+        mse (Tensor): Scalar MSE loss over observed values.
+    """
     # mask: 1 for observed, 0 for missing
     # Only compute loss on observed values
     diff = (pred - target) * mask
@@ -84,8 +168,19 @@ def masked_mse_loss(pred, target, mask):
 
 def nt_xent_loss(z1, z2, temperature=0.5):
     """
-    Normalized Temperature-scaled Cross Entropy Loss (NT-Xent) for contrastive learning.
-    z1, z2: (batch_size, embedding_dim)
+    Compute the Normalized Temperature-scaled Cross Entropy Loss (NT-Xent) for contrastive learning.
+
+    This loss is used in self-supervised contrastive learning (e.g., SimCLR).
+    For a batch of paired embeddings (z1, z2), encourages each pair to be close in embedding space,
+    while pushing apart all other samples in the batch.
+
+    Args:
+        z1 (Tensor): First set of embeddings, shape (batch_size, embedding_dim).
+        z2 (Tensor): Second set of embeddings, shape (batch_size, embedding_dim).
+        temperature (float): Temperature parameter for scaling similarities.
+
+    Returns:
+        loss (Tensor): Scalar NT-Xent loss.
     """
     batch_size = z1.size(0)
     z1 = nn.functional.normalize(z1, dim=1)
@@ -105,10 +200,23 @@ def nt_xent_loss(z1, z2, temperature=0.5):
 
 def pairwise_distance_matrix(x, metric='euclidean'):
     """
-    Compute the pairwise distance matrix for a batch of vectors x.
-    x: (batch_size, dim)
-    metric: 'euclidean' or 'cosine'
-    Returns: (batch_size, batch_size) matrix
+    Compute the pairwise distance matrix for a batch of vectors.
+
+    Args:
+        x (Tensor): Input tensor of shape (batch_size, dim).
+        metric (str): Distance metric to use. One of:
+            - 'euclidean': Euclidean (L2) distance.
+            - 'cosine': Cosine distance (1 - cosine similarity).
+
+    Returns:
+        dist (Tensor): Pairwise distance matrix of shape (batch_size, batch_size).
+
+    Raises:
+        ValueError: If an unsupported metric is specified.
+
+    Notes:
+        - For Euclidean, uses efficient broadcasting to compute all pairwise distances.
+        - For cosine, returns 1 - cosine similarity.
     """
     if metric == 'euclidean':
         # x: (N, D)
@@ -200,6 +308,7 @@ def train_autoencoder(
     noise_std=0.1, 
     seed=42,
     normalize=True,
+    device=None,
     metric='euclidean'
 ):
     """
@@ -246,7 +355,10 @@ def train_autoencoder(
     np.random.seed(seed)
 
     # Set device
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    if device is None:
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    else:
+        device = torch.device(device)
 
     # Prepare data
     X_scaled, mask, scaler = prepare_data(X, normalize=normalize)
@@ -275,7 +387,7 @@ def train_autoencoder(
     for epoch in epoch_bar:
         autoencoder.train()
         total_loss = 0
-        for batch in tqdm(dataloader, desc=f"Epoch {epoch+1}/{n_epochs}", leave=False):
+        for batch in tqdm(dataloader, desc=f"Batches", leave=False):
             optimizer.zero_grad()
             if use_contrastive:
                 x1, x2, y1, y2, mask1, mask2 = batch
@@ -643,4 +755,244 @@ def train_unet_1d(
         "embeddings": embeddings,
         "model": model,
         "reconstruction_error": mse
+    }
+
+
+class TabularVAE(nn.Module):
+    """
+    Variational Autoencoder (VAE) for tabular data.
+
+    Args:
+        input_dim (int): Number of input features.
+        embedding_dim (int): Dimensionality of the latent space (default: 2).
+        hidden_dims (list of int): Sizes of hidden layers in the encoder/decoder (default: [128, 64, 32]).
+
+    Architecture:
+        - Encoder: MLP with hidden layers, outputs mean and log-variance for latent distribution.
+        - Decoder: MLP reconstructs input from latent variable.
+
+    Methods:
+        encode(x): Returns mean and log-variance of latent distribution for input x.
+        reparameterize(mu, logvar): Samples latent variable z using the reparameterization trick.
+        forward(x): Returns reconstruction, mean, log-variance, and latent variable for input x.
+    """
+    def __init__(self, input_dim, embedding_dim=2, hidden_dims=[128, 64, 32]):
+        super().__init__()
+        # Encoder network
+        self.encoder = nn.Sequential(
+            nn.Linear(input_dim, hidden_dims[0]),
+            nn.ReLU(),
+            nn.BatchNorm1d(hidden_dims[0]),
+            nn.Linear(hidden_dims[0], hidden_dims[1]),
+            nn.ReLU(),
+            nn.BatchNorm1d(hidden_dims[1]),
+            nn.Linear(hidden_dims[1], hidden_dims[2]),
+            nn.ReLU(),
+            nn.BatchNorm1d(hidden_dims[2])
+        )
+        self.fc_mu = nn.Linear(hidden_dims[2], embedding_dim)
+        self.fc_logvar = nn.Linear(hidden_dims[2], embedding_dim)
+        # Decoder network
+        self.decoder = nn.Sequential(
+            nn.Linear(embedding_dim, hidden_dims[2]),
+            nn.ReLU(),
+            nn.BatchNorm1d(hidden_dims[2]),
+            nn.Linear(hidden_dims[2], hidden_dims[1]),
+            nn.ReLU(),
+            nn.BatchNorm1d(hidden_dims[1]),
+            nn.Linear(hidden_dims[1], hidden_dims[0]),
+            nn.ReLU(),
+            nn.BatchNorm1d(hidden_dims[0]),
+            nn.Linear(hidden_dims[0], input_dim)
+        )
+
+    def encode(self, x):
+        """
+        Encode input x into mean and log-variance of the latent distribution.
+
+        Args:
+            x (Tensor): Input tensor of shape (batch_size, input_dim).
+
+        Returns:
+            mu (Tensor): Mean of latent distribution.
+            logvar (Tensor): Log-variance of latent distribution.
+        """
+        h = self.encoder(x)
+        mu = self.fc_mu(h)
+        logvar = self.fc_logvar(h)
+        return mu, logvar
+
+    def reparameterize(self, mu, logvar):
+        """
+        Sample from latent distribution using the reparameterization trick.
+
+        Args:
+            mu (Tensor): Mean of latent distribution.
+            logvar (Tensor): Log-variance of latent distribution.
+
+        Returns:
+            z (Tensor): Sampled latent variable.
+        """
+        std = torch.exp(0.5 * logvar)
+        eps = torch.randn_like(std)
+        return mu + eps * std
+
+    def forward(self, x):
+        """
+        Forward pass through the VAE.
+
+        Args:
+            x (Tensor): Input tensor of shape (batch_size, input_dim).
+
+        Returns:
+            recon (Tensor): Reconstructed input.
+            mu (Tensor): Mean of latent distribution.
+            logvar (Tensor): Log-variance of latent distribution.
+            z (Tensor): Sampled latent variable.
+        """
+        mu, logvar = self.encode(x)
+        z = self.reparameterize(mu, logvar)
+        recon = self.decoder(z)
+        return recon, mu, logvar, z
+
+def vae_loss_function(recon_x, x, mu, logvar, beta=1.0):
+    """
+    Compute the VAE loss as the sum of reconstruction loss and (weighted) KL divergence.
+
+    Args:
+        recon_x (Tensor): Reconstructed input.
+        x (Tensor): Original input.
+        mu (Tensor): Mean of latent distribution.
+        logvar (Tensor): Log-variance of latent distribution.
+        beta (float): Weight for KL divergence term (default: 1.0).
+
+    Returns:
+        total_loss (Tensor): Total VAE loss.
+        recon_loss (Tensor): Reconstruction loss (MSE).
+        kl_div (Tensor): KL divergence loss.
+
+    Notes:
+        - The beta parameter controls the trade-off between reconstruction accuracy and the regularization of the latent space.
+        - Increasing beta puts more emphasis on the KL divergence term, encouraging the latent embeddings to be closer to a standard normal distribution (more "regularized" and disentangled, but possibly less faithful reconstructions).
+        - Decreasing beta allows the model to focus more on reconstruction, which can lead to less regularized (and potentially more entangled) latent embeddings.
+        - In summary, higher beta values produce more "compressed" and regularized embeddings, while lower beta values allow embeddings to capture more information about the input at the cost of less regularization.
+    """
+    # Reconstruction loss (MSE)
+    recon_loss = nn.functional.mse_loss(recon_x, x, reduction='mean')
+    # KL divergence between approximate posterior and prior
+    kl_div = -0.5 * torch.mean(1 + logvar - mu.pow(2) - logvar.exp())
+    return recon_loss + beta * kl_div, recon_loss, kl_div
+
+def train_vae(
+    X,
+    n_epochs=100,
+    embedding_dim=2,
+    hidden_dims=[128, 64, 32],
+    batch_size=32,
+    lr=1e-3,
+    weight_decay=1e-5,
+    beta=1.0,
+    seed=42,
+    normalize=True,
+    device=None
+):
+    """
+    Train a Variational Autoencoder (VAE) for tabular data.
+
+    Args:
+        X (np.ndarray or pd.DataFrame): Input data of shape (n_samples, n_features). Can contain NaNs.
+        n_epochs (int): Number of training epochs.
+        embedding_dim (int): Dimensionality of the latent space.
+        hidden_dims (list of int): List of hidden layer sizes for encoder/decoder.
+        batch_size (int): Batch size for training.
+        lr (float): Learning rate for optimizer.
+        weight_decay (float): Weight decay (L2 regularization) for optimizer.
+        beta (float): Weight for KL divergence term in the loss.
+        seed (int): Random seed for reproducibility.
+        normalize (bool): If True, normalize each feature to zero mean and unit variance.
+        device (str or torch.device or None): Device to use ("cuda", "cpu", or None for auto).
+
+    Returns:
+        dict: Dictionary containing:
+            - "reconstructions": Reconstructed data as a numpy array.
+            - "X_tensor": Input data as a torch tensor (with NaNs replaced by zero).
+            - "embeddings": Latent mean representations (numpy array).
+            - "model": Trained VAE model.
+            - "reconstruction_error": Mean squared error on observed values.
+            - "scaler": Fitted scaler (if normalization was used), else None.
+            - "mask": Boolean mask of observed values (True for observed, False for NaN).
+
+    Notes:
+        - Handles NaNs in X by masking them during loss computation and replacing with zero for input.
+        - The returned "embeddings" are the mean of the latent distribution for the full dataset.
+        - If normalize=True, each feature is scaled to zero mean and unit variance.
+    """
+    from tqdm import trange, tqdm
+    torch.manual_seed(seed)
+    np.random.seed(seed)
+
+    # Set device
+    if device is None:
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    else:
+        device = torch.device(device)
+
+    # Prepare data (normalize and mask NaNs)
+    if isinstance(X, pd.DataFrame):
+        X_np = np.asarray(X.values)
+    else:
+        X_np = np.asarray(X)
+    mask = ~np.isnan(X_np)
+    if normalize:
+        scaler = StandardScaler()
+        X_flat = X_np[mask].reshape(-1, 1)
+        scaler.fit(X_flat)
+        X_scaled = X_np.copy()
+        X_scaled[mask] = scaler.transform(X_np[mask].reshape(-1, 1)).flatten()
+    else:
+        scaler = None
+        X_scaled = X_np.copy()
+
+    # Replace NaNs with zero for input
+    X_tensor = torch.tensor(np.nan_to_num(X_scaled, nan=0.0), dtype=torch.float32)
+    dataset = torch.utils.data.TensorDataset(X_tensor)
+    data_loader = DataLoader(dataset, batch_size=batch_size, shuffle=True)
+
+    input_dim = X_tensor.shape[1]
+    model = TabularVAE(input_dim=input_dim, embedding_dim=embedding_dim, hidden_dims=hidden_dims).to(device)
+    optimizer = optim.Adam(model.parameters(), lr=lr, weight_decay=weight_decay)
+
+    # Training loop
+    model.train()
+    for epoch in trange(n_epochs, desc="VAE Epochs"):
+        epoch_loss = 0.0
+        for (batch_x,) in tqdm(data_loader, desc=f"VAE Epoch {epoch+1}/{n_epochs}", leave=False):
+            batch_x = batch_x.to(device)
+            optimizer.zero_grad()
+            recon, mu, logvar, _ = model(batch_x)
+            loss, recon_loss, kl_div = vae_loss_function(recon, batch_x, mu, logvar, beta=beta)
+            loss.backward()
+            optimizer.step()
+            epoch_loss += loss.item() * batch_x.size(0)
+        # Optionally print progress
+        # print(f"VAE Epoch {epoch+1}/{n_epochs}, Loss: {epoch_loss / len(X_tensor):.6f}")
+
+    # Get embeddings and reconstructions
+    model.eval()
+    with torch.no_grad():
+        X_tensor = X_tensor.to(device)
+        recon, mu, logvar, z = model(X_tensor)
+        embeddings = mu.cpu().numpy()
+        reconstructions_np = recon.cpu().numpy()
+        # Compute MSE on observed values only
+        mse = ((reconstructions_np - X_np)[mask] ** 2).mean()
+
+    return {
+        "reconstructions": reconstructions_np,
+        "X_tensor": X_tensor,
+        "embeddings": embeddings,
+        "model": model,
+        "reconstruction_error": mse,
+        "scaler": scaler,
+        "mask": mask
     }

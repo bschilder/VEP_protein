@@ -890,9 +890,11 @@ def get_haplotype_counts(haplotypes: Dict[str, Dict],
 
 def pop_freqs_to_df(pop_freqs: Dict[str, Dict],
                     tx_id_col: str = 'ENST',
+                    haplotype_col: str = 'haplotype',
                     prefix: str = 'freq_', 
                     add_top_pop: bool = True, 
                     add_top_superpop: bool = True, 
+                    add_specific_pop: bool = True,
                     add_specific_superpop: bool = True,
                     verbose: bool = True,
                     force: bool = False,
@@ -913,10 +915,14 @@ def pop_freqs_to_df(pop_freqs: Dict[str, Dict],
     df = pd.DataFrame(flattened_pop_freqs).T
     # Move tx_id to the first column
     df = df.reset_index(drop=False)
-    df = df.rename(columns={'index': 'haplotype'})
-    df = df.loc[:, [tx_id_col, 'haplotype'] + [col for col in df.columns if col != tx_id_col and col != 'haplotype']]
+    df = df.rename(columns={'index': haplotype_col})
+    df = df.loc[:, [tx_id_col, haplotype_col] + [col for col in df.columns if col != tx_id_col and col != haplotype_col]]
     # Remname each column with the prefix
-    df.rename(columns={col: f"{prefix}{col}".replace("__", "_") for col in df.columns if col != tx_id_col and col != 'haplotype'}, inplace=True)
+    import re
+    def _clean_colname(name):
+        # Add prefix, then replace any sequence of underscores with a single underscore
+        return re.sub(r'_+', '_', f"{prefix}{name}")
+    df.rename(columns={col: _clean_colname(col) for col in df.columns if col != tx_id_col and col != haplotype_col}, inplace=True)
     
     freq_cols = _get_freq_cols(df=df,
                               verbose=verbose)
@@ -933,9 +939,20 @@ def pop_freqs_to_df(pop_freqs: Dict[str, Dict],
                          verbose=verbose,
                          force=force)
     
+    
+    # Add specific population
+    if add_specific_pop:
+        _add_specific_superpops(df=df,
+                                group_col='population',
+                                verbose=verbose)
+    
     # Add specific superpopulation
-    if add_specific_superpop:
-        _add_specific_superpops(df, verbose=verbose)
+    if add_specific_superpop:   
+        _add_specific_superpops(df=df,
+                                group_col='superpopulation',
+                                verbose=verbose)
+
+    
     
     # Return dataframe
     return df   
@@ -977,55 +994,65 @@ def get_haplotype_freqs(haplotypes: Optional[Dict[str, Dict]] = None,
         return pop_freqs, populations, cohorts
 
 
-def _add_specific_superpops(df: pd.DataFrame, 
-                           verbose: bool = True):
-    """Add a column indicating which superpopulation is specific to a variant.
-    
+def _add_specific_superpops(
+    df: pd.DataFrame, 
+    group_col: str = 'superpopulation',
+    verbose: bool = True
+):
+    """
+    Add a column indicating which group (superpopulation or population) is specific to a variant.
+
     Args:
-        df (pd.DataFrame): The dataframe to add the specific superpopulation to.
+        df (pd.DataFrame): The dataframe to add the specific group to.
+        group_col (str, optional): The column in sample metadata to use for grouping (e.g., 'superpopulation' or 'population').
         verbose (bool, optional): Whether to print verbose output. Defaults to True.
 
     Returns:
-        pd.DataFrame: The dataframe with the specific superpopulation added.
-    """ 
-    if 'specific_superpopulation' in df.columns:
+        pd.DataFrame: The dataframe with the specific group added.
+    """
+    specific_col = f'specific_{group_col}'
+    nonzero_col = f'nonzero_{group_col}_freqs'
+    top_col = f'top_{group_col}'
+
+    if specific_col in df.columns:
         if verbose:
-            print("Specific superpopulation column already exists")
+            print(f"{specific_col} column already exists")
         return df
 
-    if 'top_superpop' not in df.columns:
-        raise ValueError("top_superpop column not found in dataframe")
-    
-    # Add a new boolean col whether the haplotypes is specific to a population (all other populations are 0 or)
-    superpops = og.get_sample_metadata()["Super Population"].unique()
-    freq_cols = [col for col in df.columns if col.startswith('freq_') and col.endswith(tuple(superpops))]
+    if top_col not in df.columns:
+        raise ValueError(f"{top_col} column not found in dataframe")
 
-    if len(freq_cols)==0:
+    # Get group names from sample metadata
+    groups = og.get_sample_metadata()[group_col].dropna().unique()
+    freq_cols = [col for col in df.columns if col.startswith('freq_') and col.endswith(tuple(groups))]
+
+    if len(freq_cols) == 0:
         raise ValueError("No frequency columns found in dataframe")
 
     # Add a column indicating how many frequency columns are non-zero and non-nan for each row
-    df['nonzero_superpop_freqs'] = df[freq_cols].apply(
+    df[nonzero_col] = df[freq_cols].apply(
         lambda row: (row.notna() & (row > 0)).sum(), axis=1
     )
-    # For rows where only one frequency column is non-zero, identify which population it is
-    def get_nonzero_population(row):
-        if row['nonzero_superpop_freqs'] == 1:
-            # Find the single non-zero frequency column
+
+    # For rows where only one frequency column is non-zero, identify which group it is
+    def get_nonzero_group(row):
+        if row[nonzero_col] == 1:
             for col in freq_cols:
                 if pd.notna(row[col]) and row[col] > 0:
-                    # Extract the population name from the column name (after 'freq_')
                     return col.replace('freq_', '')
         return None
 
-    # Add a column indicating which population has the non-zero frequency (for population-specific variants)
-    df['specific_superpopulation'] = df.apply(get_nonzero_population, axis=1)
+    # Add a column indicating which group has the non-zero frequency (for group-specific variants)
+    df[specific_col] = df.apply(get_nonzero_group, axis=1)
 
-    # Count how many variants are specific to each population
+    # Count how many variants are specific to each group
     if verbose:
-        print("\nNumber of variants specific to each population:")
-        print(df[df['nonzero_superpop_freqs'] == 1]['specific_superpopulation'].value_counts())
-        # Calculate the percentage of variants that are population-specific
-        print(f"\nPercentage of population-specific haplotypes: {df.loc[df['nonzero_superpop_freqs'] == 1]['haplotype'].nunique()/df['haplotype'].nunique():.2%}")
+        print(f"\nNumber of variants specific to each {group_col}:")
+        print(df[df[nonzero_col] == 1][specific_col].value_counts())
+        # Calculate the percentage of variants that are group-specific
+        n_specific = df.loc[df[nonzero_col] == 1]['haplotype'].nunique()
+        n_total = df['haplotype'].nunique()
+        print(f"\nPercentage of {group_col}-specific haplotypes: {n_specific/n_total:.2%}")
 
     # return df
 
@@ -1046,7 +1073,7 @@ def _add_top_pop(df: pd.DataFrame,
                  verbose: bool = True, 
                  force: bool = False):
     """
-    Add the top population to a dataframe.
+    Add the top population and its frequency to a dataframe.
 
     Args:
         df (pd.DataFrame): The dataframe to add the top population to.
@@ -1055,15 +1082,17 @@ def _add_top_pop(df: pd.DataFrame,
         force (bool, optional): Whether to force the addition of the top population. Defaults to False.
 
     Returns:
-        pd.DataFrame: The dataframe with the top population added.
+        pd.DataFrame: The dataframe with the top population and its frequency added.
     """
-    if len(freq_cols)>0 or force:
+    if len(freq_cols) > 0 or force:
         # Check if there are any non-NA values
         has_freqs = ~df[freq_cols].isna().all(axis=1)
         if has_freqs.any():
             # Only compute max for rows with frequencies
             max_freq_idx = df.loc[has_freqs, freq_cols].idxmax(axis=1)
-            df.loc[has_freqs, 'top_pop'] = max_freq_idx.str.replace('freq_', '')
+            df.loc[has_freqs, 'top_population'] = max_freq_idx.str.replace('freq_', '')
+            # Add the frequency from the top population as well
+            df.loc[has_freqs, 'top_population_freq'] = df.loc[has_freqs, freq_cols].max(axis=1)
         else:
             warnings.warn("All frequency columns contain NA values")
     else:
@@ -1071,20 +1100,21 @@ def _add_top_pop(df: pd.DataFrame,
 
 
 def _add_top_superpop(df: pd.DataFrame,
+                      superpop_col: str = 'superpopulation',
                      verbose: bool = True,
                      force: bool = False):
     """
     Add the top superpopulation to a dataframe.
     """
-    if 'top_pop' in df.columns:
-        if 'top_superpop' not in df.columns or force:
+    if 'top_population' in df.columns:
+        if 'top_superpopulation' not in df.columns or force:
             if verbose:
                 print("Adding top superpopulation")
             ### Approach 1:
             # This approach does not consider the aggregate of freqs across populations,
             # but only the max freq in each population.
             pops = og.get_sample_metadata()
-            superpops = pops["Super Population"].unique()
+            superpops = pops[superpop_col].dropna().unique()
             # pop_map = dict(zip(pops['Population Code'], pops['Super Population']))
             # df.loc[:, 'top_superpop'] = df['top_pop'].str.replace(f'{cohorts[0]}:', '').str.split('_').str[0].map(pop_map)
             # df['top_superpop'].fillna('N/A', inplace=True) 
@@ -1094,14 +1124,14 @@ def _add_top_superpop(df: pd.DataFrame,
             # as long as the superpop is present as a column.
             superpop_cols = [col for col in df.columns if any([col.endswith(sp) for sp in superpops])]
             has_freqs = ~df[superpop_cols].isna().all(axis=1)
-            df.loc[has_freqs, 'top_superpop']  = df.loc[has_freqs, superpop_cols].idxmax(axis=1)
+            df.loc[has_freqs, 'top_superpopulation']  = df.loc[has_freqs, superpop_cols].idxmax(axis=1)
 
             # Extract the frequency value from the top_pop column for each row
-            df.loc[has_freqs,'top_superpop_freq'] = df.loc[has_freqs,:].apply(lambda row: row[row['top_superpop']], axis=1)
+            df.loc[has_freqs,'top_superpopulation_freq'] = df.loc[has_freqs,:].apply(lambda row: row[row['top_superpopulation']], axis=1)
 
 def add_haplotype_freqs(df: pd.DataFrame, 
                         haplotypes: Optional[Dict[str, Dict]] = None, 
-                        cohorts: Optional[List[str]] = ['1000GENOMES:phase_3'],
+                        cohorts: Optional[List[str]] = None,#['1000GENOMES:phase_3'],
                         haplotype_col: str = "haplotype",
                         protein_id_col: str = "ENSP",
                         tx_id_col: str = "ENST",
@@ -1176,13 +1206,21 @@ def add_haplotype_freqs(df: pd.DataFrame,
         df.drop(columns=freq_cols+['top_pop', 'top_superpop','top_superpop_freq', 'nonzero_superpop_freqs','specific_superpopulation'], 
                 errors='ignore', inplace=True)
         ## New method: faster
-        pop_freqs_df = pop_freqs_to_df(pop_freqs, tx_id_col=tx_id_col, 
+        pop_freqs_df = pop_freqs_to_df(pop_freqs, 
+                                       tx_id_col=tx_id_col, 
                                       add_top_pop=add_top_pop, 
                                       add_top_superpop=add_top_superpop, 
                                       add_specific_superpop=add_specific_superpop,
+                                      haplotype_col=haplotype_col,
                                       verbose=verbose,
                                       force=force)
-        df = df.merge(pop_freqs_df, on=['haplotype', tx_id_col], how='left')
+        # Before merging, drop columns from pop_freqs_df that are also in df,
+        # except for the columns we want to merge on (haplotype_col, tx_id_col)
+        merge_keys = [haplotype_col, tx_id_col]
+        cols_to_drop = [col for col in pop_freqs_df.columns if col in df.columns and col not in merge_keys]
+        if cols_to_drop:
+            df = df.drop(columns=cols_to_drop)
+        df = df.merge(pop_freqs_df, on=[haplotype_col, tx_id_col], how='left')
         ## Old method: slower
         # for i,pop in tqdm(enumerate(populations),
         #             desc="Adding haplotype frequencies per population",

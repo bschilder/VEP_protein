@@ -143,7 +143,7 @@ def map_ids(df,
     """
     assert on_left in df.columns, f"Column '{on_left}' not found in DataFrame"
 
-    existing_cols = utils.intersect(df.columns, [target_namespace,'incoming','converted','name'])
+    existing_cols = utils.intersect(df.columns.tolist(), [target_namespace,'incoming','converted','name'])
     if len(existing_cols) > 0:
         if verbose:
             print('Dropping columns in df and id_map overlap:',",".join(existing_cols))        

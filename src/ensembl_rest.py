@@ -516,8 +516,14 @@ def get_variation(variant_id: str,
     return variation
 
 
-def get_refseq_map():
-    return  pd.read_csv("https://ftp.ensembl.org/pub/current_tsv/homo_sapiens/Homo_sapiens.GRCh38.113.refseq.tsv.gz", sep="\t")
+def get_refseq_map(url="https://ftp.ensembl.org/pub/current_tsv/homo_sapiens/Homo_sapiens.GRCh38.114.refseq.tsv.gz"):
+    import pooch
+    fname = pooch.retrieve(url=url,
+                        #    known_hash="319905ff763d1e12cfb23098b1f24e48f8c3475bcf20734c0aae82c6a956ac39",
+                           known_hash=None
+                           )
+    return  pd.read_csv(fname, sep="\t")
 
 def map_to(ids):
     mapp = get_refseq_map()
+    return mapp

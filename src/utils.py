@@ -840,7 +840,7 @@ def encode_haplotype_name(seq_name,
     else:
         return f"{tx_id}:md5:{checksum}"
     
-def decode_haplotype_name(seq_name, original_names=None):
+def decode_haplotype_name(seq_name, original_names=None, verbose=False):
     """
     Attempt to reverse the encoding process and recover the original haplotype name.
 
@@ -877,7 +877,7 @@ def decode_haplotype_name(seq_name, original_names=None):
                     return name
             return None
     else:
-        # No way to recover original name without a mapping
+        print("No way to recover original name without a mapping")
         return None
  
 

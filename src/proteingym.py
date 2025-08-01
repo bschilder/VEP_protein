@@ -58,65 +58,101 @@ def get_resources_df(version = PROTEINGYM_VERSION,
         >>> resources_df.head()
     """
     # Create full save path
-    save_path = os.path.join(cache, 'ProteinGym_data_urls.tsv')
+    save_path = os.path.join(cache, version, 'ProteinGym_data_urls.tsv')
 
     # Copied from here: https://github.com/OATML-Markslab/ProteinGym?tab=readme-ov-file#resources
-    file_text = """Data	Size (unzipped)	Filename	Raw	Hash
-    DMS benchmark - Substitutions	1.0GB	DMS_ProteinGym_substitutions.zip	False	3a83766254ac9ac9984ec25cb73c6e010ea4418f5e35f143933e6b6e6473b921
-    DMS benchmark - Indels	200MB	DMS_ProteinGym_indels.zip	False	5c5c7446a8c8f89534dfa87e546d2f9c00590d19aa5ce4c01d271abc7c962f74
-    Zero-shot DMS Model scores - Substitutions	31GB	zero_shot_substitutions_scores.zip	False	22df5c0f47e8278b39d0c1a51518e20d674b5109e136578bbede660af2bd7ecd
-    Zero-shot DMS Model scores - Indels	5.2GB	zero_shot_indels_scores.zip	False	957dc5d0d3e4163f56b3d45b865150a44fcd8ea9e2cf172e9c3fbbac2e344d81
-    Supervised DMS Model performance - Substitutions	2.7MB	DMS_supervised_substitutions_scores.zip	False	8167ff7eee01e748a7820034940847f888532cb2c942bc9ae18e413f77bce2cb
-    Supervised DMS Model performance - Indels	0.9MB	DMS_supervised_indels_scores.zip	False	3cf375bc9ae80b878e6c55ddeade2ef5f2895d479e4d414872d205007351bf15
-    Multiple Sequence Alignments (MSAs) for DMS assays	5.2GB	DMS_msa_files.zip	False	f8c894f0f113f5f49f2945c512b73f488bdf582097dff04658fbb703d92fe34d
-    Redundancy-based sequence weights for DMS assays	200MB	DMS_msa_weights.zip	False	2f36a2a7882b264142eca273255da659fc8640249234edf934ffef364a585084
-    Predicted 3D structures from inverse-folding models	84MB	ProteinGym_AF2_structures.zip	False	c78f5ff60cf59104fe19b8318c5647587aad033ee832e051d0efec8e137c423a
-    Clinical benchmark - Substitutions	123MB	clinical_ProteinGym_substitutions.zip	False	afe711af49365bc1ee220a5d212c570a4d9bc35e6960d19a93a0d1ed4ce37be4
-    Clinical benchmark - Indels	2.8MB	clinical_ProteinGym_indels.zip	False	644192ef474998346ff760c3b3d6d0d731aebf79ce3c5057e3f2748c687128d6
-    Clinical MSAs	17.8GB	clinical_msa_files.zip	False	9f55b0792419f0f7f0d64f39f5345bb1510db5e02fb7a85347db3b0d2f8b3531
-    Clinical MSA weights	250MB	clinical_msa_weights.zip	False	564bbef2a6f22e544fc88ea49a31f1d1e585ad663e17d4d1e5f78f06a412fa49
-    Clinical Model scores - Substitutions	0.9GB	zero_shot_clinical_substitutions_scores.zip	False	8bd9bbfe2a686974072f28c10cb1e0418f37c44a1fddf6e6b820f06b5f4b6515
-    Clinical Model scores - Indels	0.7GB	zero_shot_clinical_indels_scores.zip	False	1834dfe2a43e34529eea77c1dbe7b0503153578455b7b146856b31268ee17aa7
-    CV folds - Substitutions - Singles	50M	cv_folds_singles_substitutions.zip	False	920f0be936233b96b5052cd23679e42355cfd2b4e6f45b4f571eb79c0b2f9c35
-    CV folds - Substitutions - Multiples	81M	cv_folds_multiples_substitutions.zip	False	4f1453ee8ccf2d38f23ae43f97fc7f962e54e5f10390711b59f6929538dd25f9
-    CV folds - Indels	19MB	cv_folds_indels.zip	False	b3f123321b499b470da03ddd3530241502851152f9a98775ecd6b508ae9c856d
-    DMS benchmark: Substitutions (raw)	500MB	substitutions_raw_DMS.zip	True	6d83b16585de2b71b67ae1985193b9eec2e01804784286c515ff276b5372e412
-    DMS benchmark: Indels (raw)	450MB	indels_raw_DMS.zip	True	93c21d4cdc09755428e417e330fdf7b3bf16705f125b23df208648b3ca5595a0
-    Clinical benchmark: Substitutions (raw)	58MB	substitutions_raw_clinical.zip	True	caa461bd2e0c58501131e7c1ad9d26c118c67704efe1b67c7ff7ca1d72ae7275
-    Clinical benchmark: Indels (raw)	12.4MB	indels_raw_clinical.zip	True	f9eb7232657ab5732eda8dcb922bf17b228eae212ca794e753ba73a017f40a8d
-    """
+    if version == "v1.1":
+        file_text = """Data	Size (unzipped)	Filename	Raw	Hash
+        DMS benchmark - Substitutions	1.0GB	DMS_ProteinGym_substitutions.zip	False	3a83766254ac9ac9984ec25cb73c6e010ea4418f5e35f143933e6b6e6473b921
+        DMS benchmark - Indels	200MB	DMS_ProteinGym_indels.zip	False	5c5c7446a8c8f89534dfa87e546d2f9c00590d19aa5ce4c01d271abc7c962f74
+        Zero-shot DMS Model scores - Substitutions	31GB	zero_shot_substitutions_scores.zip	False	22df5c0f47e8278b39d0c1a51518e20d674b5109e136578bbede660af2bd7ecd
+        Zero-shot DMS Model scores - Indels	5.2GB	zero_shot_indels_scores.zip	False	957dc5d0d3e4163f56b3d45b865150a44fcd8ea9e2cf172e9c3fbbac2e344d81
+        Supervised DMS Model performance - Substitutions	2.7MB	DMS_supervised_substitutions_scores.zip	False	8167ff7eee01e748a7820034940847f888532cb2c942bc9ae18e413f77bce2cb
+        Supervised DMS Model performance - Indels	0.9MB	DMS_supervised_indels_scores.zip	False	3cf375bc9ae80b878e6c55ddeade2ef5f2895d479e4d414872d205007351bf15
+        Multiple Sequence Alignments (MSAs) for DMS assays	5.2GB	DMS_msa_files.zip	False	f8c894f0f113f5f49f2945c512b73f488bdf582097dff04658fbb703d92fe34d
+        Redundancy-based sequence weights for DMS assays	200MB	DMS_msa_weights.zip	False	2f36a2a7882b264142eca273255da659fc8640249234edf934ffef364a585084
+        Predicted 3D structures from inverse-folding models	84MB	ProteinGym_AF2_structures.zip	False	c78f5ff60cf59104fe19b8318c5647587aad033ee832e051d0efec8e137c423a
+        Clinical benchmark - Substitutions	123MB	clinical_ProteinGym_substitutions.zip	False	afe711af49365bc1ee220a5d212c570a4d9bc35e6960d19a93a0d1ed4ce37be4
+        Clinical benchmark - Indels	2.8MB	clinical_ProteinGym_indels.zip	False	644192ef474998346ff760c3b3d6d0d731aebf79ce3c5057e3f2748c687128d6
+        Clinical MSAs	17.8GB	clinical_msa_files.zip	False	9f55b0792419f0f7f0d64f39f5345bb1510db5e02fb7a85347db3b0d2f8b3531
+        Clinical MSA weights	250MB	clinical_msa_weights.zip	False	564bbef2a6f22e544fc88ea49a31f1d1e585ad663e17d4d1e5f78f06a412fa49
+        Clinical Model scores - Substitutions	0.9GB	zero_shot_clinical_substitutions_scores.zip	False	8bd9bbfe2a686974072f28c10cb1e0418f37c44a1fddf6e6b820f06b5f4b6515
+        Clinical Model scores - Indels	0.7GB	zero_shot_clinical_indels_scores.zip	False	1834dfe2a43e34529eea77c1dbe7b0503153578455b7b146856b31268ee17aa7
+        CV folds - Substitutions - Singles	50M	cv_folds_singles_substitutions.zip	False	920f0be936233b96b5052cd23679e42355cfd2b4e6f45b4f571eb79c0b2f9c35
+        CV folds - Substitutions - Multiples	81M	cv_folds_multiples_substitutions.zip	False	4f1453ee8ccf2d38f23ae43f97fc7f962e54e5f10390711b59f6929538dd25f9
+        CV folds - Indels	19MB	cv_folds_indels.zip	False	b3f123321b499b470da03ddd3530241502851152f9a98775ecd6b508ae9c856d
+        DMS benchmark: Substitutions (raw)	500MB	substitutions_raw_DMS.zip	True	6d83b16585de2b71b67ae1985193b9eec2e01804784286c515ff276b5372e412
+        DMS benchmark: Indels (raw)	450MB	indels_raw_DMS.zip	True	93c21d4cdc09755428e417e330fdf7b3bf16705f125b23df208648b3ca5595a0
+        Clinical benchmark: Substitutions (raw)	58MB	substitutions_raw_clinical.zip	True	caa461bd2e0c58501131e7c1ad9d26c118c67704efe1b67c7ff7ca1d72ae7275
+        Clinical benchmark: Indels (raw)	12.4MB	indels_raw_clinical.zip	True	f9eb7232657ab5732eda8dcb922bf17b228eae212ca794e753ba73a017f40a8d
+        """
+    elif version == "v1.3":
+        file_text = """Data	Size (unzipped)	Filename	Raw	Hash
+        DMS benchmark - Substitutions	1.0GB	DMS_ProteinGym_substitutions.zip	False	None
+        DMS benchmark - Indels	200MB	DMS_ProteinGym_indels.zip	False	None
+        Zero-shot DMS Model scores - Substitutions	31GB	zero_shot_substitutions_scores.zip	False	3fd7cdb5e78f1d43cabfabfeb6578c252b63af23ba2ab44db0094dc3a42de36d
+        Zero-shot DMS Model scores - Indels	5.2GB	zero_shot_indels_scores.zip	False	7f29c8f4066c931e02a521b6154ada3db97d843ee84c9be647f7bb3380be0bf7
+        Supervised DMS Model performance - Substitutions	2.7MB	DMS_supervised_substitutions_scores.zip	False	ec72fab2c766db9aaf91fb4e64a28c44afbf219c52ba1835bcc3149f57bff805
+        Supervised DMS Model performance - Indels	0.9MB	DMS_supervised_indels_scores.zip	False	5d81aff98f39e8408111bd2df36e7fa65cc19be4b9529acb72cfe66e265b0297
+        Multiple Sequence Alignments (MSAs) for DMS assays	5.2GB	DMS_msa_files.zip	False	f8c894f0f113f5f49f2945c512b73f488bdf582097dff04658fbb703d92fe34d
+        Redundancy-based sequence weights for DMS assays	200MB	DMS_msa_weights.zip	False	c1a1a8403b8cf9d621d303d60640562b2d7092ea9cf35f184aa430eb01df5f4b
+        Predicted 3D structures from inverse-folding models	84MB	ProteinGym_AF2_structures.zip	False	ed8611bf12cfb840ea1c2561be36254901008610a49b1be475e917b6c5d6d56a
+        Clinical benchmark - Substitutions	123MB	clinical_ProteinGym_substitutions.zip	False	None
+        Clinical benchmark - Indels	2.8MB	clinical_ProteinGym_indels.zip	False	None
+        Clinical MSAs	17.8GB	clinical_msa_files.zip	False	9f55b0792419f0f7f0d64f39f5345bb1510db5e02fb7a85347db3b0d2f8b3531
+        Clinical MSA weights	250MB	clinical_msa_weights.zip	False	564bbef2a6f22e544fc88ea49a31f1d1e585ad663e17d4d1e5f78f06a412fa49
+        Clinical Model scores - Substitutions	0.9GB	zero_shot_clinical_substitutions_scores.zip	False	6ae0dd2c61ea3adc16f3b30866c311ab77c74713243398e6db883a89eadf0aeb
+        Clinical Model scores - Indels	0.7GB	zero_shot_clinical_indels_scores.zip	False	4d09c406f4b40d1c48934a19da55af2e8532c3b06313f1e471db0d11a19e5b6f
+        CV folds - Substitutions - Singles	50M	cv_folds_singles_substitutions.zip	False	920f0be936233b96b5052cd23679e42355cfd2b4e6f45b4f571eb79c0b2f9c35
+        CV folds - Substitutions - Multiples	81M	cv_folds_multiples_substitutions.zip	False	4f1453ee8ccf2d38f23ae43f97fc7f962e54e5f10390711b59f6929538dd25f9
+        CV folds - Indels	19MB	cv_folds_indels.zip	False	None
+        DMS benchmark: Substitutions (raw)	500MB	substitutions_raw_DMS.zip	True	None
+        DMS benchmark: Indels (raw)	450MB	indels_raw_DMS.zip	True	None
+        Clinical benchmark: Substitutions (raw)	58MB	substitutions_raw_clinical.zip	True	None
+        Clinical benchmark: Indels (raw)	12.4MB	indels_raw_clinical.zip	True	None
+        """
     if not os.path.exists(save_path) or force:
         from io import StringIO
         df = pd.read_csv(StringIO(file_text), sep='\t') 
         df['URL'] = df['Filename'].apply(lambda x: f"https://marks.hms.harvard.edu/proteingym/ProteinGym_{version}/{x}")
-        df['Version'] = version
+        df['Version'] = version 
+
+        # Add an extra row with some share raw data
+        new_row = pd.DataFrame({
+            'Data': 'dbNSFP/Ensembl VEP Annotations (raw)',
+            'Size (unzipped)': '981.5MB',
+            'Filename': 'all_models_deduplicated_scores_clinvar_proteingym_20230611.GRCh38_filter_isoform_clean.csv',
+            'Raw': True,
+            'Hash': "96a0e361040224444cb197c960383f0edb2330e55a65a29feeab030caf8d6bb3" if version == "v1.3" else "c7570c0c5c6c92a2ae2646aec9bd990a62fbc21f512d5acc81d9027fb9c338bf",
+            'URL': 'https://marks.hms.harvard.edu/proteingym/other/all_models_deduplicated_scores_clinvar_proteingym_20230611.GRCh38_filter_isoform_clean.csv',
+            'Version': version
+        }, index=[len(df)])
+        df = pd.concat([df, new_row], ignore_index=True) 
+
+        ## Unkown hashes for v1.3
+        # if version == "v1.3":
+        #     df["Hash"] = None
+
         # Create folder if it doesn't exist
         os.makedirs(os.path.dirname(save_path), exist_ok=True)
         df.to_csv(save_path, index=False, sep='\t')
     else:
         df = pd.read_csv(save_path, sep='\t')
 
-    # Add an extra row with some share raw data
-    new_row = pd.DataFrame({
-        'Data': 'dbNSFP/Ensembl VEP Annotations (raw)',
-        'Size (unzipped)': '981.5MB',
-        'Filename': 'all_models_deduplicated_scores_clinvar_proteingym_20230611.GRCh38_filter_isoform_clean.csv',
-        'Raw': True,
-        'Hash': 'c7570c0c5c6c92a2ae2646aec9bd990a62fbc21f512d5acc81d9027fb9c338bf',
-        'URL': 'https://marks.hms.harvard.edu/proteingym/other/all_models_deduplicated_scores_clinvar_proteingym_20230611.GRCh38_filter_isoform_clean.csv',
-        'Version': version
-    }, index=[len(df)])
-    df = pd.concat([df, new_row], ignore_index=True)
+    df.index = df['Filename']
     # Sort by Data column
     return df
 
 def download_resources(resources_df = None,
                        cache = PROTEINGYM_CACHE,
+                       version = PROTEINGYM_VERSION,
                        include_raw = False, 
                        remove_zip = False, 
                        redecompress = False, 
                        error = True,
                        progressbar = 1,
+                       force = False,
+                       force_resources_df = False,
                        verbose = False):
     """Download ProteinGym resources and optionally extract them.
     
@@ -142,7 +178,9 @@ def download_resources(resources_df = None,
         >>> count_resources(pg_resources)
     """
     if resources_df is None:
-        resources_df = get_resources_df()
+        resources_df = get_resources_df(cache=cache, 
+                                        version=version, 
+                                        force=force_resources_df)
     if not include_raw:
         resources_df = resources_df[~resources_df['Raw']]
         
@@ -159,6 +197,9 @@ def download_resources(resources_df = None,
                        desc='ProteinGym: Gathering resources', 
                        disable=progressbar<1,
                        leave=False): 
+        # print("\n")
+        cache_version = os.path.join(cache, version)
+
         try:
             unzipped_name = os.path.basename(row['URL']).removesuffix('.zip')
             if os.path.basename(row['URL']).endswith('.zip'):
@@ -172,16 +213,25 @@ def download_resources(resources_df = None,
                     file_dict[unzipped_name] = glob.glob(os.path.join(unzipped_name, '**/*'), recursive=True)
                     print(f"Skipping {unzipped_name} because it already exists")
                     if remove_zip:
-                        _rm_zip(row, cache, verbose=verbose)
+                        _rm_zip(row, cache_version, verbose=verbose)
                     continue
+
+            
+             # Skip re-downloading this file until the ProteinGym does better version-control of this file
+             # Correct file: https://github.com/bschilder/VEP_protein/releases/download/latest/all_models_deduplicated_scores_clinvar_proteingym_20230611.GRCh38_filter_isoform_clean.csv.gz
+             # See issue: OATML-Markslab/ProteinGym#72
+            if row['Filename'] == "all_models_deduplicated_scores_clinvar_proteingym_20230611.GRCh38_filter_isoform_clean.csv" and os.path.exists(os.path.join(cache_version, row['Filename'])):
+                file_dict[unzipped_name] = os.path.join(cache_version, row['Filename'])
+                continue
+
             file_dict[unzipped_name] = pooch.retrieve(url=row['URL'], 
                                                         fname=os.path.basename(row['URL']),
                                                         known_hash=None if pd.isna(row['Hash']) else row['Hash'], 
-                                                        path=cache,
+                                                        path=cache_version,
                                                         progressbar=progressbar>1,
                                                         processor=processor) 
             if remove_zip:
-                _rm_zip(row, cache, verbose=verbose)
+                _rm_zip(row, cache_version, verbose=verbose)
         except Exception as e:
             if error:
                 raise e
@@ -239,6 +289,8 @@ def count_resources(pg_resources):
 
 def merge_resources(keys=['clinical_ProteinGym_substitutions.zip', 
                           'clinical_ProteinGym_indels.zip'],
+                    version = PROTEINGYM_VERSION,
+                    cache = PROTEINGYM_CACHE,
                     redecompress = False,
                     map_ids = True,
                     rows_per_id = None,
@@ -246,13 +298,18 @@ def merge_resources(keys=['clinical_ProteinGym_substitutions.zip',
                     force = False,
                     verbose = False): 
 
-    resources_df = get_resources_df()
+    resources_df = get_resources_df(cache=cache, 
+                                    version=version, 
+                                    force=force>1)
     pg_resources = download_resources(
         resources_df.loc[resources_df['Filename'].isin(keys)],
+        cache = cache,
+        version = version,
         remove_zip = False, 
         include_raw = include_raw,
         redecompress = redecompress,
         error=False)
+    
     proteins_df = pd.DataFrame(
     list(set([
         f
@@ -273,11 +330,15 @@ def merge_resources(keys=['clinical_ProteinGym_substitutions.zip',
         proteins_df = map_resources(df=proteins_df, 
                                     force=force, 
                                     verbose=verbose,
+                                    version=version,
+                                    cache=cache,
                                     rows_per_id=rows_per_id)
 
     return proteins_df
 
 def map_resources(df, 
+                  version = PROTEINGYM_VERSION,
+                  cache = PROTEINGYM_CACHE,
                   input_col='protein',
                   select_cols = ['protein','genename',
                                  'Ensembl_geneid','Ensembl_transcriptid','Ensembl_proteinid',
@@ -342,6 +403,8 @@ def map_resources(df,
         df = map_proteingym_ids(df,
                                 select_cols=select_cols,
                                 rows_per_id=rows_per_id,
+                                version=version,
+                                cache=cache,
                                 force=force, 
                                 verbose=verbose)
         rename_cols = {'Ensembl_geneid':'ENSG',
@@ -367,6 +430,7 @@ def map_proteingym_ids(df=None,
                         return_map = False,
                         rows_per_id = None,
                         cache = PROTEINGYM_CACHE,
+                        version = PROTEINGYM_VERSION,
                         force = False,
                         verbose = True):
     """
@@ -410,10 +474,17 @@ def map_proteingym_ids(df=None,
         pg_annot = pd.read_csv(save_path, index_col=0)
     else:
         # Download the mapping file
-        resources_df = get_resources_df()
+        resources_df = get_resources_df(cache=cache, 
+                                        version=version, 
+                                        force=force>1)
         resources_df = resources_df.loc[resources_df['Data'] == 'dbNSFP/Ensembl VEP Annotations (raw)']
-        pg_resources = download_resources(resources_df = resources_df, include_raw=True) 
-        pg_annot = pd.read_csv(pg_resources['all_models_deduplicated_scores_clinvar_proteingym_20230611.GRCh38_filter_isoform_clean.csv'], index_col=0)
+        pg_resources = download_resources(resources_df = resources_df, 
+                                          include_raw=True,
+                                          cache=cache,
+                                          version=version) 
+        pg_annot = pd.read_csv(pg_resources['all_models_deduplicated_scores_clinvar_proteingym_20230611.GRCh38_filter_isoform_clean.csv'], 
+                               low_memory=False,
+                               index_col=0)
         pg_annot = pg_annot[select_cols].drop_duplicates()
 
         if 'genename' in pg_annot.columns:
@@ -451,3 +522,67 @@ CLINSIG_MAP = {'Pathogenic':'path',
                 'Likely_benign':'likely_benign', 
                 'Benign':'benign', 
                 'Benign/Likely_benign':'likely_benign'}
+
+
+def get_multi_dms(keys=["DMS_ProteinGym_substitutions.zip",
+                         "DMS_ProteinGym_indels.zip"]):
+    """
+    Identify Deep Mutational Scanning (DMS) experiments in the ProteinGym resource
+    that include two or more simultaneous perturbations (e.g., double mutants).
+
+    This function scans the provided DataFrame of DMS experiment metadata, opens each
+    associated data file, and counts the number of entries representing multiple
+    mutations (identified by the presence of a ":" in the 'mutant' column). Only files
+    containing at least one such entry are included in the output.
+
+    Args:
+        proteins_df (pd.DataFrame, optional): DataFrame of DMS experiment metadata,
+            typically generated by `merge_resources` with DMS resource keys.
+            Defaults to using both DMS substitutions and indels resources.
+
+    Returns:
+        pd.DataFrame: DataFrame with the following columns for each experiment
+            containing multiple perturbations:
+                - protein: Protein identifier
+                - source_file: Path to the data file
+                - n_double_mutants: Number of entries with multiple mutations
+                - gene: Gene symbol parsed from the protein identifier
+                - species: Species parsed from the protein identifier
+
+    Example:
+        >>> multi_dms_df = get_multi_dms()
+        >>> print(multi_dms_df.head())
+    """
+    import os
+    import pandas as pd
+    from tqdm import tqdm
+
+    proteins_df = merge_resources(keys=keys)
+
+    multi_dms_files = []
+    for idx, row in tqdm(proteins_df.iterrows(), 
+                         total=len(proteins_df),
+                         desc="Checking for multi-mutant files"):
+        source_file = row.get("source_file")
+        if pd.isna(source_file) or not os.path.isfile(source_file):
+            continue
+        try:
+            dms = pd.read_csv(source_file)
+            if "mutant" in dms.columns:
+                n_double = dms["mutant"].astype(str).str.contains(":").sum()
+                if n_double > 0:
+                    multi_dms_files.append({
+                        "protein": row.get("protein"),
+                        "source_file": source_file,
+                        "n_multi_mutants": n_double
+                    })
+        except Exception as e:
+            print(f"Error reading {source_file}: {e}")
+
+    multi_dms_df = pd.DataFrame(multi_dms_files)
+    multi_dms_df["gene"] = multi_dms_df["protein"].str.split("_").str[0]
+    multi_dms_df["species"] = multi_dms_df["protein"].str.split("_").str[1]
+
+    multi_dms_df.sort_values(["species","gene"], inplace=True)
+    return multi_dms_df
+
