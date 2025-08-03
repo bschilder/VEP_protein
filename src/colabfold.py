@@ -26,21 +26,31 @@
 #   - https://github.com/YoshitakaMo/localcolabfold#for-linux
 
 ##### Example usage: #####
-# module load CUDA/12.3.0 GCC
+## If using Elzar HPC:
+# module load CUDA/12.3.0 GCC 
+#
 # export PATH="/home/schilder/projects/localcolabfold/colabfold-conda/bin:$PATH"
 # export CUDA_VISIBLE_DEVICES=1,3
-# python >> import src.haplosaurus as hs;hs.haplotypes_to_fasta(tx_ids="ENST00000357654")
-# mkdir ENST00000357654 & cd ENST00000357654 
-# scp $HOME/projects/data/1KG/fasta/split/ENST00000357654.fasta.gz .
-# gunzip ENST00000357654.fasta.gz
+#
+# python: 
+# >> import src.haplosaurus as hs;
+# >> import os
+# >> haplotypes = hs.get_haplotypes(tx_ids=["ENST00000357654"], cache_only=True)
+# >> hs.haplotypes_to_fasta(haplotypes=haplotypes,  
+# >>                       save_dir=os.path.expanduser("~/projects/data/colabfold/ENST00000357654"), 
+# >>                       split_subdir="",
+# >>                       force=True,
+# >>                       compress=False) # Must be uncompressed for colabfold_batch
+#  
 #### Then run using different MSAs for each sequence (constructed using MMseqs2)
 # colabfold_batch --save-single-representations --save-pair-representations ENST00000357654.fasta af2
-#### OR using custom MSA (constructed using the same MSA template for all sequences)
+#
+#### OR using custom MSA (constructed using the same MSA template for all sequences using the create_haplotype_msas() function)
 # colabfold_batch --save-single-representations --save-pair-representations af2_sameMSA/ af2_sameMSA/
 
 from Bio.PDB import PDBParser, Selection
 from Bio.PDB.MMCIFParser import MMCIFParser
-from Bio.PDB import alphafold_db as af
+from Bio.PDB import alphafold_db as afdb
 from Bio.PDB.Structure import Structure
 
 from typing import Optional
@@ -55,7 +65,10 @@ from PIL import Image
 from tqdm import tqdm
 import os
 
-def import_pdb(pdb_path: str, protein_name: str = "BRCA1") -> Structure:
+AFDB_CACHE = pooch.os_cache("alphafold_db")
+
+def import_pdb(pdb_path: str, 
+               protein_name: str = "BRCA1") -> Structure:
     """
     Import a protein structure from a PDB file (local or remote).
     
@@ -99,8 +112,8 @@ def import_pdb(pdb_path: str, protein_name: str = "BRCA1") -> Structure:
             raise Exception(f"Local PDB file not found: {pdb_path}")
 
 def import_mmcif(protein_id,
-                 protein_name: Optional[str] = None,
-                 cache = pooch.os_cache("alphafold_db")) -> Structure:
+                 protein_name: Optional[str] = None, 
+                 cache = os.path.join(AFDB_CACHE, "cif")) -> Structure:
     """
     Import a protein structure from AlphaFold database in mmCIF format.
     See example here: https://alphafold.ebi.ac.uk/entry/P38398
@@ -120,14 +133,14 @@ def import_mmcif(protein_id,
         protein_name = protein_id
         
     # Download mmCIF file from AlphaFold database 
-    for pred in af.get_predictions(protein_id):
-        mmCIF = af.download_cif_for(pred, directory=cache)
+    # cif_path = f"{cache}/AF-{protein_id}-F1-model_v4.cif .cif"
+    mmCIFs = [afdb.download_cif_for(pred, directory=cache) for pred in afdb.get_predictions(protein_id)][-1]
     
-    # Parse mmCIF file into structure object
+    # Parse mmCIF file into structure object using list comprehension (for demonstration)
     parser = MMCIFParser()
-    structure = parser.get_structure(protein_name, mmCIF)
+    structures = [parser.get_structure(protein_name, mmCIFs)]
     
-    return structure
+    return structures
 
 def get_contact_map(structure, 
                     max_distance: float = 8.0,  # Maximum distance to consider
@@ -208,12 +221,13 @@ def get_contact_map(structure,
             
     return contact_map
 
-def get_plddt(structure) -> pd.DataFrame:
+def get_plddt(structure,
+              verbose: bool = False) -> pd.DataFrame:
     """Extract pLDDT scores from a protein structure and categorize them by confidence level.
     
     Args:
         structure: A BioPython structure object containing the protein model
-        
+        verbose: If True, print the number of residues and the mean pLDDT score
     Returns:
         pd.DataFrame: DataFrame containing pLDDT scores and confidence categories with columns:
             - residue: Residue number
@@ -257,8 +271,95 @@ def get_plddt(structure) -> pd.DataFrame:
     # Create DataFrame
     plddt_df = pd.DataFrame(plddt_data)
 
-    # Print basic statistics
-    print(f"Number of residues: {len(plddt_df)}")
+    if verbose:
+        # Print basic statistics
+        print(f"Number of residues: {len(plddt_df)}")
+        print(f"Mean pLDDT score: {plddt_df['pLDDT'].mean():.2f}")
+
+    return plddt_df
+
+
+def get_plddt_all(protein_ids,  
+                  verbose: bool = False,
+                  cache_only: bool = False,
+                  cache = AFDB_CACHE, 
+                  force=False):
+    """
+    Extract pLDDT scores and confidence annotations for multiple proteins.
+
+    Args:
+        protein_ids (list or iterable): List of UniProt IDs or protein identifiers to process.
+        verbose (bool, optional): If True, print summary statistics. Defaults to False.
+        cache_only (bool, optional): If True, only use cached CIF files. Defaults to False.
+        cache (str, optional): Path to the cache directory. Defaults to AFDB_CACHE.
+
+    Returns:
+        pd.DataFrame: Concatenated DataFrame containing pLDDT scores and confidence categories for all proteins.
+            Columns include:
+                - uniprot_id: Protein identifier
+                - residue: Residue number
+                - pLDDT: pLDDT score (0-100)
+                - confidence_category: Category name (very_high, high, low, very_low)
+                - confidence_label: Human-readable category description
+                - confidence_color: Hex color code for visualization
+
+    Example:
+        >>> protein_ids = ["P38398", "Q9Y2T1"]
+        >>> plddt_df = get_plddt_all(protein_ids)
+        >>> print(plddt_df.head())
+    """
+    import os
+    import glob
+    from IPython.display import clear_output
+
+    cache_cif = os.path.join(cache, "cif")
+    os.makedirs(cache_cif, exist_ok=True)
+
+    cache_plddt = os.path.join(cache, "plddt")
+    os.makedirs(cache_plddt, exist_ok=True)
+
+
+    if cache_only:
+        # Infer the CIF paths from the protein IDs
+        target_cif_paths = [f"{cache_cif}{os.path.sep}AF-{protein_id}-F1-model_v4.cif" for protein_id in protein_ids]
+        # Get the cached CIF paths
+        cached_cif_paths = glob.glob(os.path.join(cache_cif, "*.cif"))
+        # Get the protein IDs from the cached CIF paths
+        target_protein_ids = [cif_path.split(os.path.sep)[-1].split(".")[0].split("-")[1] for cif_path in target_cif_paths if cif_path in cached_cif_paths]
+    else:
+        target_protein_ids = protein_ids
+  
+    plddt_df = []
+    for protein_id in tqdm(target_protein_ids): 
+        save_path = os.path.join(cache_plddt, f"{protein_id}.parquet")
+        # Read in cached dataframe if it exists and force is False
+        if os.path.exists(save_path) and not force:
+            plddt_df_protein = pd.read_parquet(save_path)
+            plddt_df.append(plddt_df_protein)
+            continue
+        
+        try:
+            plddt_df_protein = []
+            for structure in import_mmcif(protein_id=protein_id,  
+                                          cache=cache_cif):
+                plddt = get_plddt(structure)
+                plddt.insert(0, "uniprot_id", protein_id)
+                plddt_df_protein.append(plddt)
+            # Concatenate protein-specific dataframes
+            plddt_df_protein = pd.concat(plddt_df_protein)
+            # Save protein-specific dataframe to parquet
+            plddt_df_protein.to_parquet(save_path)
+            # Append protein-specific dataframe to list
+            plddt_df.append(plddt_df_protein)
+        except Exception as e:
+            print(f"{protein_id}: {e}")
+            continue
+        clear_output()
+
+    # Concatenate all protein dataframes
+    plddt_df = pd.concat(plddt_df)
+    if verbose:
+        print(f"plddt_df.shape: {plddt_df.shape}") 
     return plddt_df
 
 def bin_matrix(X, bin_size=10, agg_func=np.nanmax):

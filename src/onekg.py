@@ -255,21 +255,131 @@ def get_ped(key=DEFAULT_KEY):
     if key == 'Human_Genome_Diversity_Project':
         ped.rename(columns={'sample': 'Individual ID'}, inplace=True)
         # Using mappings from https://doi.org/10.1101/2023.01.23.525248
-        superpop_dict = {'EAST_ASIA':'EAS',
-                         'CENTRAL_SOUTH_ASIA':'CSA',
-                         'MIDDLE_EAST':'MID',
-                         'EUROPE':'EUR',
-                         'AFRICA':'AFR',
-                         'AMERICA':'AMR',
-                         'OCEANIA':'OCE',
-                         'SOUTH_ASIA':'SAS'
-                         }
-        ped['superpopulation'] = ped['region'].map(superpop_dict)
+        # Map each region/population string to a superpopulation code (EAS, CSA, MID, EUR, AFR, AMR, OCE, SAS, or REF)
+     
+        ped['superpopulation'] = ped['region'].map(SUPERPOP_DICT)
 
     # Set index to sample column
     ped.index = ped['Individual ID'].tolist() 
     
     return ped
+
+SUPERPOP_DICT = {
+    # Self
+    "AFR": "AFR",
+    "AMR": "AMR",
+    "CSA": "CSA",
+    "EAS": "EAS",
+    "EUR": "EUR",
+    "MID": "MID",
+    "OCE": "OCE",
+    "SAS": "SAS",
+    "EUR,AFR": "AFR", # If mixed, assign to AFR 
+
+    # REF
+    "REF": "REF",
+
+    # Spelled out
+    "AFRICA": "AFR",
+    "AMERICA": "AMR",
+    "CENTRAL_SOUTH_ASIA": "CSA",
+    "EAST_ASIA": "EAS",
+    "EUROPE": "EUR",
+    "MIDDLE_EAST": "MID",
+    "OCEANIA": "OCE",
+    "SOUTH_ASIA": "SAS",
+
+    # Human Genome Diversity Project
+    "Africa (HGDP)": "AFR",
+    "Africa (SGDP)": "AFR",
+    "Africa (SGDP),Africa (HGDP)": "AFR",
+    "African Ancestry": "AFR",
+    "African Ancestry,Africa (SGDP)": "AFR",
+    "America (HGDP)": "AMR",
+    "America (SGDP)": "AMR",
+    "America (SGDP),America (HGDP)": "AMR",
+    "American Ancestry": "AMR",
+    "Central Asia and Siberia (SGDP)": "CSA",
+    "Central South Asia (HGDP)": "CSA",
+    "East Asia (HGDP)": "EAS",
+    "East Asia (SGDP)": "EAS",
+    "East Asia (SGDP),East Asia (HGDP)": "EAS",
+    "East Asia (SGDP),East Asian Ancestry": "EAS",
+    "East Asian Ancestry": "EAS",
+    "Europe (HGDP)": "EUR",
+    "European Ancestry": "EUR",
+    "European Ancestry,West Eurasia (SGDP)": "EUR",
+    "European Ancestry,African Ancestry": "AFR",  # If mixed, assign to AFR
+    "Middle East (HGDP)": "MID",
+    "Middle East (HGDP),Africa (SGDP)": "AFR",  # Assign to AFR, could also be MID
+    "Oceania (HGDP)": "OCE",
+    "Oceania (SGDP)": "OCE",
+    "Oceania (SGDP),Oceania (HGDP)": "OCE",
+    "South Asia (SGDP)": "SAS",
+    "South Asia (SGDP),Central South Asia (HGDP)": "CSA",
+    "South Asia (SGDP),South Asian Ancestry": "SAS",
+    "South Asian Ancestry": "SAS",
+    "West Eurasia (SGDP)": "EUR",
+}
+ 
+MISSING_SAMPLE_METADATA = {
+    'HGDP00927': {
+        'population': 'YRI',
+        'population_code': 'YRI',
+        'population_name': 'Yoruba',
+        'superpopulation': 'AFR',
+        'sex': 'male',
+        'source': 'https://www.cellosaurus.org/CVCL_I927'
+    },
+    'HGDP01284': {
+        'population': 'GWD',
+        'population_code': 'GWD',
+        'population_name': 'Gambian Mandinka',
+        'superpopulation': 'AFR',
+        'sex': 'male', 
+        'source': 'https://www.cellosaurus.org/CVCL_I420'
+    },
+    'HGDP01307': {
+        'population': 'CDX',
+        'population_code': 'CDX',
+        'population_name': 'Dai Chinese',
+        'superpopulation': 'EAS',
+        'sex': 'male', 
+        'source': 'https://www.cellosaurus.org/CVCL_I481'
+    },
+    'HGDP00665': {
+        'population': 'Sardinian',
+        'population_code': 'Sardinian',
+        'population_name': 'Sardinian',
+        'superpopulation': 'EUR',
+        'sex': 'male', 
+        'source': 'https://www.cellosaurus.org/CVCL_I665'
+    },
+    'HGDP00998': {
+        'population': 'Karitiana',
+        'population_code': 'Karitiana',
+        'population_name': 'Karitiana',
+        'superpopulation': 'AMR',
+        'sex': 'male',
+        'source': 'https://www.cellosaurus.org/CVCL_I998'
+    },
+    'HGDP00521': {
+        'population': 'French',
+        'population_code': 'French',
+        'population_name': 'French',
+        'superpopulation': 'EUR',
+        'sex': 'male',
+        'source': 'https://www.cellosaurus.org/CVCL_I521'
+    },
+    'HGDP00778': {
+        'population': 'Han Chinese',
+        'population_code': 'CHB',
+        'population_name': 'Han Chinese',
+        'superpopulation': 'EAS',
+        'sex': 'male',
+        'source': 'https://www.cellosaurus.org/CVCL_I778'
+    }
+}
 
 def get_sample_metadata(key=DEFAULT_KEY,
                         harmonized=True,
@@ -306,6 +416,18 @@ def get_sample_metadata(key=DEFAULT_KEY,
                                                         "Sex":"sex"})
         # Reassign non-standard superpopulation codes
         sample_metadata.loc[sample_metadata['superpopulation']=="EUR,AFR", "superpopulation"] = "AFR"
+        
+        # Some samples are missing metadata, so we add them manually
+        for sample, metadata in MISSING_SAMPLE_METADATA.items():
+            sample_metadata.loc[sample_metadata["sample"]==sample, "population"] = metadata["population"]
+            sample_metadata.loc[sample_metadata["sample"]==sample, "population_code"] = metadata["population_code"]
+            sample_metadata.loc[sample_metadata["sample"]==sample, "population_name"] = metadata["population_name"]
+            sample_metadata.loc[sample_metadata["sample"]==sample, "superpopulation"] = metadata["superpopulation"]
+            sample_metadata.loc[sample_metadata["sample"]==sample, "sex"] = metadata["sex"]
+            
+        sample_metadata.loc[sample_metadata['superpopulation'].isna(), "superpopulation"] = sample_metadata.loc[sample_metadata['superpopulation'].isna()]["superpopulation_name"].map(SUPERPOP_DICT)
+
+        print(sample_metadata['superpopulation'].isna().sum(), "samples are missing superpopulation metadata")
     else:
         ped = get_ped(key=key)
         

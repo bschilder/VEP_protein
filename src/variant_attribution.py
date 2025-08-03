@@ -3,6 +3,10 @@ import torch.nn as nn
 import pandas as pd
 import numpy as np
 import torch.optim as optim
+import matplotlib.pyplot as plt
+import seaborn as sns
+from scipy.stats import binomtest
+from tqdm import tqdm
 
 import src.vep_analysis as va
 import src.utils as utils
@@ -351,6 +355,7 @@ def wtvariants_to_vep_linear_model(
         alpha=1.0,
         random_state=42, 
         pivot_table_kwargs={},
+        add_positions=True,
     ):
         """
         Fit a Ridge or Lasso regression model to predict VEP values from wt_variant features,
@@ -377,6 +382,8 @@ def wtvariants_to_vep_linear_model(
             Random seed for reproducibility.
         pivot_table_kwargs : dict, default={}
             Additional keyword arguments to pass to the pivot table function.
+        add_positions : bool, default=True
+            If True, add positions to the interaction_df.
 
         Returns
         -------
@@ -446,7 +453,19 @@ def wtvariants_to_vep_linear_model(
             interaction_df["interaction_strength"] * interaction_df["n_haplotypes"]
         )
         interaction_df = interaction_df.sort_values('interaction_strength', ascending=False)
+        interaction_df["clinical_variant"] = interaction_df["site"].str.split(":").str[1]
 
+        if add_positions: 
+                interaction_df=  utils.variants_to_positions(interaction_df, 
+                                                            variant_col="wt_variant", 
+                                                            position_col="wt_position",
+                                                            ref_col="wt_REF",
+                                                            alt_col="wt_ALT")
+                interaction_df = utils.variants_to_positions(interaction_df, 
+                                                            variant_col="clinical_variant", 
+                                                            position_col="clinical_position",
+                                                            ref_col="clinical_REF",
+                                                            alt_col="clinical_ALT")
         return interaction_df, model
 
 
@@ -475,9 +494,7 @@ def wtvariants_to_vep_autoencoder(model,
         target=target,
         **pivot_table_kwargs
     )
-
-   
-
+ 
     # DataFrame to store results
     wt_site_importance = []
 
@@ -564,9 +581,7 @@ def check_multi_dms_overlap(multi_dms_df, vep_files):
     """
     import src.proteingym as pg
     import src.gprofiler as gp
-
-    import pandas as pd
-    from tqdm import tqdm
+ 
 
     # Map RefSeq protein IDs to gene names
     vep_files_map = gp.map_ids(
@@ -664,3 +679,291 @@ def check_multi_dms_overlap(multi_dms_df, vep_files):
 
     overlap_df = pd.DataFrame(overlap_df)
     return overlap_df
+
+ 
+
+def run_contact_enrichment(contact_map_binary,
+                            Xoutliers_sig, 
+                            Xoutliers_all=None,
+                            use_Xoutliers_all_non_na_baseline=False,
+                            exclude_diagonals=True,
+                            verbose=True):
+    """
+    Analyze overlap between non-NA Xoutliers_sig and contact map.
+
+    Parameters
+    ----------
+    contact_map_binary : np.ndarray
+        Binary contact map (1 = contact, 0 = no contact).
+    Xoutliers_sig : np.ndarray or DataFrame, optional
+        Matrix of significant outlier values (e.g., z-scores). 
+    Xoutliers_all : np.ndarray or DataFrame, optional
+        Matrix of all outlier values (e.g., z-scores).
+    use_Xoutliers_all_non_na_baseline : bool, default False
+        If True, use the number of non-NA values in Xs as the baseline for the binomial test.
+        If False, use the total number of positions in the contact map.
+    exclude_diagonals : bool, default True
+        If True, exclude diagonal elements from the contact map.
+    verbose : bool, default True
+        If True, print verbose output.
+    """
+    
+    Xoutliers_sig = Xoutliers_sig.copy()
+    # Get binary contact map (1 = contact, 0 = no contact) 
+    contact_mask = (contact_map_binary == 1)
+    if exclude_diagonals:
+        contact_mask = contact_mask & (np.eye(contact_mask.shape[0]) == 0)
+    num_contacts = np.sum(contact_mask)
+    total_positions = contact_mask.size
+
+    # Get mask of non-NA values in Xoutliers
+    if hasattr(Xoutliers_sig, "values"):
+        Xoutliers_sig = Xoutliers_sig.values 
+
+    # Get mask of non-NA values in Xoutliers_sig
+    non_na_mask = ~np.isnan(Xoutliers_sig)
+    if exclude_diagonals:
+        non_na_mask = non_na_mask & (np.eye(non_na_mask.shape[0]) == 0)
+    num_non_na = np.sum(non_na_mask)
+
+    # Overlap: non-NA Xoutliers that are also contacts
+    non_na_and_contact = non_na_mask & contact_mask
+    num_non_na_and_contact = np.sum(non_na_and_contact)
+
+    if num_non_na > 0:
+        # What proportion of the contacts are also non-NA Xoutliers?
+        # prop_non_na_overlap_contacts = num_non_na_and_contact / num_contacts
+        # print(f"Proportion of non-NA Xoutliers that overlap with contacts: {prop_non_na_overlap_contacts:.3f} ({num_non_na_and_contact}/{num_non_na})")
+
+        # What proportion of the non-NA Xoutliers_sig are also contacts?
+        prop_non_na_overlap_contacts = num_non_na_and_contact / num_non_na
+        if verbose:
+            print(f"Proportion of non-NA Xoutliers that overlap with contacts: {prop_non_na_overlap_contacts:.3f} ({num_non_na_and_contact}/{num_non_na})")
+    else:
+        if verbose:
+            print("No non-NA values in Xoutliers.")
+
+    if verbose:
+        print(f"Total number of non-NA Xoutliers: {num_non_na}")
+        print(f"Total number of contacts: {num_contacts}")
+
+    # Determine expected probability
+    if use_Xoutliers_all_non_na_baseline and Xoutliers_all is not None:
+        Xoutliers_all = Xoutliers_all.copy()
+        if hasattr(Xoutliers_all, "values"):
+            Xoutliers_all = Xoutliers_all.values 
+
+        num_non_na_all_and_contact = np.sum((~np.isnan(Xoutliers_all)) & contact_mask)
+        if verbose:
+            print(f"Using Xoutliers_all non-NA baseline: {num_non_na_all_and_contact} positions with contacts")
+
+        # What proportion of the total positions are also non-NA Xoutliers?
+        # expected_prob = num_non_na_all_and_contact / total_positions
+        # print(f"Baseline computation: {baseline_total} positions with contacts / {total_positions} total positions = {expected_prob:.3e}")
+
+        # What proportion of the non-NA Xoutliers_all are also contacts?
+        expected_prob = num_non_na_all_and_contact / np.sum(~np.isnan(Xoutliers_all))
+        if verbose:
+            print(f"Proportion of non-NA Xoutliers_all that overlap with contacts: {expected_prob:.3f} ({num_non_na_all_and_contact}/{num_non_na})")
+ 
+    else:
+         # What proportion of the total positions are also contacts?
+        expected_prob = num_contacts / total_positions
+        if verbose:
+            print(f"Using total positions baseline: {num_contacts} positions with contacts / {total_positions} total positions = {expected_prob:.3e}")
+
+   
+    binom_test = binomtest(k=num_non_na_and_contact, # The number of successes.
+                           n=num_non_na, # The number of trials.
+                           p=expected_prob, # The hypothesized probability of success.
+                           alternative='two-sided' 
+                           ) 
+
+    if verbose:
+        print(f"Expected overlap by chance: {expected_prob:.3e}")
+        print(f"Binomial test p-value: {binom_test.pvalue:.3e}")
+
+    # Enrichment statistic: fold enrichment of observed overlap vs. expected
+    # enrichment is >1, depletion is <1
+    enrichment = prop_non_na_overlap_contacts / expected_prob if expected_prob > 0 else np.nan
+    if verbose:
+        print(f"Fold enrichment of contact overlap among non-NA Xoutliers: {enrichment:.2f}x")
+
+    return {"observed_prob": prop_non_na_overlap_contacts,
+            "expected_prob": expected_prob,
+            "binom_test": binom_test,
+            "enrichment": enrichment}
+
+def compute_enrichment_vs_threshold(
+    outlier_df, 
+    contact_map_binary, 
+    full_length, 
+    num_thresholds=50, 
+    linear_sampling=True,
+    run_contact_enrichment_func=None,
+    utils_module=None,
+    max_percentage=0.95,
+    interaction_col="z_score_abs", 
+    x_id_col="wt_variant",
+    y_id_col="clinical_variant",
+    x_pos_col="wt_position",
+    y_pos_col="clinical_position",
+):
+    """
+    Compute enrichment statistics for a range of z_score_abs thresholds.
+
+    Parameters
+    ----------
+    outlier_df : pd.DataFrame
+        DataFrame containing outlier data with z_score column.
+    contact_map_binary : np.ndarray
+        Binary contact map.
+    full_length : int
+        Full length of the protein (for fill_coordinates).
+    num_thresholds : int, optional
+        Number of thresholds to sample, by default 50.
+    linear_sampling : bool, optional
+        If True, use linear sampling of thresholds; else geometric, by default True.
+    run_contact_enrichment_func : callable, optional
+        Function to compute enrichment, by default uses run_contact_enrichment.
+    utils_module : module, optional
+        Module containing fill_coordinates, by default uses utils.
+    z_score_col : str, optional
+        Name of the z-score column, by default "z_score".
+
+    Returns
+    -------
+    list of dict
+        List of enrichment results for each threshold.
+    """
+    if run_contact_enrichment_func is None:
+        run_contact_enrichment_func = run_contact_enrichment
+    if utils_module is None:
+        import utils
+        utils_module = utils
+
+    df = outlier_df.copy()
+    min_val = df[interaction_col].min()
+    max_val = df[interaction_col].max() * max_percentage
+
+    if linear_sampling: 
+        thresholds = np.linspace(min_val, max_val, num=num_thresholds)
+    else:
+        # Use a geometric progression for denser sampling at the beginning
+        if min_val <= 0:
+            shift = abs(min_val) + 1e-6
+            min_val_shifted = min_val + shift
+            max_val_shifted = max_val + shift
+            thresholds = np.geomspace(min_val_shifted, max_val_shifted, num=num_thresholds) - shift
+        else:
+            thresholds = np.geomspace(min_val, max_val, num=num_thresholds)
+
+    results = []
+    for threshold in tqdm(thresholds): 
+        df_thresh = df[df[interaction_col] > threshold]
+        Xoutliers_all = utils_module.fill_coordinates(
+            df_thresh, 
+            x_id_col=x_id_col,
+            y_id_col=y_id_col,
+            x_pos_col=x_pos_col,
+            y_pos_col=y_pos_col,
+            value_col=interaction_col,
+            full_length=full_length
+        )   
+
+        # Compute enrichment by setting the expected probability to:
+        # the proportion of residue-residue pairs that are contacts.
+        res_interaction = run_contact_enrichment_func(
+            contact_map_binary,  
+            Xoutliers_sig=Xoutliers_all,
+            use_Xoutliers_all_non_na_baseline=False,
+            verbose=False
+        )
+        res_interaction["interaction_threshold"] = threshold
+        res_interaction["n_interactions"] = df_thresh.shape[0]
+        results.append(res_interaction)
+    return pd.DataFrame(results)
+
+
+def plot_enrichment_vs_interactions(results, log_x_axis=False, show=True, ax=None):
+    """
+    Plot enrichment and number of interactions vs interaction threshold.
+
+    Parameters
+    ----------
+    results : pd.DataFrame or list of dict
+        DataFrame or list of dicts with columns:
+            - interaction_threshold
+            - enrichment
+            - n_interactions
+    log_x_axis : bool, default True
+        Whether to use log scale for x-axis.
+    show : bool, default True
+        Whether to call plt.show().
+    ax : matplotlib.axes.Axes or None
+        Optionally provide an axis to plot on. If None, a new figure is created.
+
+    Returns
+    -------
+    (fig, ax1, ax2)
+        The matplotlib Figure and Axes objects.
+    """
+
+    if not isinstance(results, pd.DataFrame):
+        results_df = pd.DataFrame(results)
+    else:
+        results_df = results
+
+    if ax is None:
+        fig, ax1 = plt.subplots()
+    else:
+        ax1 = ax
+        fig = ax1.figure
+
+    # Plot enrichment (left y-axis)
+    color = "tab:blue"
+    sns.lineplot(
+        data=results_df, 
+        x="interaction_threshold", y="enrichment", 
+        marker="o", ax=ax1, color=color
+    )
+    ax1.set_ylabel("Enrichment", color=color)
+    ax1.tick_params(axis='y', labelcolor=color)
+
+    if log_x_axis:
+        ax1.set_xscale("log")
+
+    # Add text labels for min and max enrichment next to the first and last dot
+    first_idx = 0
+    last_idx = len(results_df) - 1
+    first_lab_coords = results_df.iloc[first_idx]["interaction_threshold"], results_df.iloc[first_idx]["enrichment"]
+    last_lab_coords = results_df.iloc[last_idx]["interaction_threshold"], results_df.iloc[last_idx]["enrichment"]
+
+    ax1.text(first_lab_coords[0]+0.01, first_lab_coords[1], f"{first_lab_coords[1]:.2f}x", va='center', ha='left', fontsize=10, color='black')
+    ax1.text(last_lab_coords[0], last_lab_coords[1]-0.1, f"{last_lab_coords[1]:.2f}x", va='top', ha='left', fontsize=10, color='black')
+
+    # Plot number of interactions (right y-axis)
+    ax2 = ax1.twinx()
+    color2 = "tab:orange"
+    sns.lineplot(
+        data=results_df,
+        x="interaction_threshold", y="n_interactions",
+        marker="s", ax=ax2, color=color2
+    )
+    ax2.set_ylabel("Number of interactions", color=color2)
+    ax2.tick_params(axis='y', labelcolor=color2)
+
+    if log_x_axis:
+        ax2.set_xscale("log")
+
+    # Optionally, add text labels for min and max n_interactions
+    # Uncomment if desired
+    # first_nint_coords = results_df.iloc[first_idx]["interaction_threshold"], results_df.iloc[first_idx]["n_interactions"]
+    # last_nint_coords = results_df.iloc[last_idx]["interaction_threshold"], results_df.iloc[last_idx]["n_interactions"]
+    # ax2.text(first_nint_coords[0]+0.01, first_nint_coords[1], f"{int(first_nint_coords[1])}", va='center', ha='left', fontsize=10, color=color2)
+    # ax2.text(last_nint_coords[0], last_nint_coords[1]-0.1, f"{int(last_nint_coords[1])}", va='top', ha='left', fontsize=10, color=color2)
+
+    if show:
+        plt.show()
+
+    return fig, ax1, ax2

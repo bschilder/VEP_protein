@@ -420,6 +420,54 @@ def map_resources(df,
     return df
 
 
+def get_mapping_file(
+    version=PROTEINGYM_VERSION,
+    cache=PROTEINGYM_CACHE,
+    force=False,
+    verbose=True
+):
+    """
+    Retrieve the ProteinGym mapping file containing cross-references between various gene, transcript, and protein identifiers.
+
+    This function downloads and loads the ProteinGym mapping file, which provides mappings between Ensembl, UniProt, Entrez, RefSeq, and other relevant identifiers.
+    The mapping file is sourced from the ProteinGym resource, specifically the "dbNSFP/Ensembl VEP Annotations (raw)" dataset.
+
+    Args:
+        version (str): Version of the ProteinGym resource to use.
+        cache (str): Directory path to cache downloaded files.
+        force (bool): If True, force re-download of the mapping file even if it exists in the cache.
+        verbose (bool): If True, print progress and status messages.
+
+    Returns:
+        pd.DataFrame: DataFrame containing the mapping information with various identifier columns.
+
+    Example:
+        >>> mapping_df = get_mapping_file()
+        >>> mapping_df.head()
+    """
+    # Download the mapping file
+    resources_df = get_resources_df(
+        cache=cache,
+        version=version,
+        force=force > 1
+    )
+    resources_df = resources_df.loc[
+        resources_df['Data'] == 'dbNSFP/Ensembl VEP Annotations (raw)'
+    ]
+    pg_resources = download_resources(
+        resources_df=resources_df,
+        include_raw=True,
+        cache=cache,
+        version=version
+    )
+    pg_annot = pd.read_csv(
+        pg_resources['all_models_deduplicated_scores_clinvar_proteingym_20230611.GRCh38_filter_isoform_clean.csv'],
+        low_memory=False,
+        index_col=0
+    )
+    return pg_annot
+
+
 def map_proteingym_ids(df=None, 
                         input_col='protein',
                         select_cols = ['protein','Feature','genename','Gene',
@@ -474,17 +522,10 @@ def map_proteingym_ids(df=None,
         pg_annot = pd.read_csv(save_path, index_col=0)
     else:
         # Download the mapping file
-        resources_df = get_resources_df(cache=cache, 
-                                        version=version, 
-                                        force=force>1)
-        resources_df = resources_df.loc[resources_df['Data'] == 'dbNSFP/Ensembl VEP Annotations (raw)']
-        pg_resources = download_resources(resources_df = resources_df, 
-                                          include_raw=True,
-                                          cache=cache,
-                                          version=version) 
-        pg_annot = pd.read_csv(pg_resources['all_models_deduplicated_scores_clinvar_proteingym_20230611.GRCh38_filter_isoform_clean.csv'], 
-                               low_memory=False,
-                               index_col=0)
+        pg_annot = get_mapping_file(version=version,
+                                    cache=cache,
+                                    force=force,
+                                    verbose=verbose)
         pg_annot = pg_annot[select_cols].drop_duplicates()
 
         if 'genename' in pg_annot.columns:

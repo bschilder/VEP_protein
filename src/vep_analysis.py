@@ -1889,7 +1889,7 @@ def plot_population_vep_violin_weighted(df,
                 else:
                     ax.set_ylabel("VEP Score")
             if i == len(models) - 1:  # Only add x-label on bottom plots
-                ax.set_xlabel("Super Population")
+                ax.set_xlabel("superpopulation")
 
     plt.tight_layout()
     return fig
@@ -1933,7 +1933,7 @@ def plot_population_vep_violin_unweighted(df,
                     hue="Top Superpopulation",
                     palette=palette
                     )
-    g.set_axis_labels("Super Population", "VEP Score")
+    g.set_axis_labels("superpopulation", "VEP Score")
     g.set_titles(col_template="{col_name}")
 
     plt.tight_layout()
@@ -2218,7 +2218,7 @@ def plot_vep_by_superpop(
     # Determine color palettes for each hue
     if hue == "clinsig":
         cmap = utils.get_clinsig_palette()
-    elif hue == "Super Population":
+    elif hue == "superpopulation":
         cmap = utils.get_superpop_palette()
     elif hue == variant_col:
         cmap = mutant_palette
@@ -2227,7 +2227,7 @@ def plot_vep_by_superpop(
 
     if hue_top == "clinsig":
         cmap_top = utils.get_clinsig_palette()
-    elif hue_top == "Super Population":
+    elif hue_top == "superpopulation":
         cmap_top = utils.get_superpop_palette()
     elif hue_top == variant_col:
         cmap_top = mutant_palette
@@ -2236,7 +2236,7 @@ def plot_vep_by_superpop(
 
     if hue_bottom == "clinsig":
         cmap_bottom = utils.get_clinsig_palette()
-    elif hue_bottom == "Super Population":
+    elif hue_bottom == "superpopulation":
         cmap_bottom = utils.get_superpop_palette()
     elif hue_bottom == variant_col:
         cmap_bottom = mutant_palette
@@ -2249,14 +2249,14 @@ def plot_vep_by_superpop(
             return "Variant"
         elif hue == "clinsig":
             return "ClinSig"
-        elif hue == "Super Population":
+        elif hue == "superpopulation":
             return "Superpop"
         else:
             return hue
 
     # Prepare data for plotting: by unique haplotypes or by samples
     if unique_haplotypes:
-        plot_df["Super Population"] = plot_df["top_superpop"].str.split(":").str[-1]
+        plot_df["superpopulation"] = plot_df["top_superpop"].str.split(":").str[-1]
     else:
         if haps_to_samples is None:
             raise ValueError("haps_to_samples must be provided if unique_haplotypes is False")
@@ -2270,7 +2270,7 @@ def plot_vep_by_superpop(
     # Get unique super populations (excluding REF)
     super_pops = plot_df.loc[
         plot_df["is_ref"] == False
-    ].dropna(subset=["Super Population"])["Super Population"].unique()
+    ].dropna(subset=["superpopulation"])["superpopulation"].unique()
     n_pops = len(super_pops)
 
     # Create figure with subplots
@@ -2386,7 +2386,7 @@ def plot_vep_by_superpop(
     # Add summary histogram with all superpopulations, colored by mutant
     ax1 = fig.add_subplot(gs[1])
     sns.histplot(
-        plot_df.loc[plot_df["Super Population"] != "REF"],
+        plot_df.loc[plot_df["superpopulation"] != "REF"],
         x=vep_col,
         binwidth=binwidth * 4,
         hue=hue_top,
@@ -2403,12 +2403,12 @@ def plot_vep_by_superpop(
     for idx, pop in enumerate(sorted(super_pops)):
         ax = fig.add_subplot(gs[idx + 2])
         sns.histplot(
-            plot_df.loc[plot_df["Super Population"] == pop],
+            plot_df.loc[plot_df["superpopulation"] == pop],
             x=vep_col,
             binwidth=binwidth,
             hue=hue,
             palette=cmap,
-            legend=True if hue == "Super Population" else False,
+            legend=True if hue == "superpopulation" else False,
             ax=ax
         )
         if hue == variant_col:
@@ -2423,7 +2423,7 @@ def plot_vep_by_superpop(
     # Add summary histogram with all superpopulations (bottom panel)
     ax1 = fig.add_subplot(gs[-1])
     sns.histplot(
-        plot_df.loc[plot_df["Super Population"] != "REF"],
+        plot_df.loc[plot_df["superpopulation"] != "REF"],
         x=vep_col,
         binwidth=binwidth * 4,
         hue=hue_bottom,
@@ -2437,7 +2437,7 @@ def plot_vep_by_superpop(
         ax1.set_ylabel("Proportion\nby Variant")
     elif hue_bottom == "clinsig":
         ax1.set_ylabel("Proportion\nby ClinSig")
-    elif hue_bottom == "Super Population":
+    elif hue_bottom == "superpopulation":
         ax1.set_ylabel("Proportion\nby Superpop")
     else:
         ax1.set_ylabel(f"Proportion\nby {hue_bottom}")
@@ -2742,8 +2742,8 @@ def _get_wt_variant_mean_vep_scores(vep_prot,
                                     haps_to_samples):
     
     ## Mean per-variant VEP scores  
-    var_vep_agg = vep_prot.copy().merge(haps_to_samples, on=["haplotype"], how="left").groupby(["Super Population","variant"]).agg({"VEP":"mean"}).sort_values("VEP", ascending=False).reset_index()
-    var_vep_agg = var_vep_agg.loc[var_vep_agg["Super Population"] != "REF"].pivot(index="variant", columns="Super Population", values="VEP")
+    var_vep_agg = vep_prot.copy().merge(haps_to_samples, on=["haplotype"], how="left").groupby(["superpopulation","variant"]).agg({"VEP":"mean"}).sort_values("VEP", ascending=False).reset_index()
+    var_vep_agg = var_vep_agg.loc[var_vep_agg["superpopulation"] != "REF"].pivot(index="variant", columns="superpopulation", values="VEP")
 
     # var_vep_agg = var_vep_agg.fillna(0)
     # Normalize and invert the scale
@@ -2762,8 +2762,10 @@ def _get_wt_variant_mean_freqs(vep_prot,
     
     vep_prot = hs.add_haplotype_freqs(vep_prot, haplotypes=haplotypes)
 
-    superpops=og.get_pop()['Super Population'].dropna().unique().tolist()
+    superpops = og.get_sample_metadata()["superpopulation"].dropna().unique().tolist()
     freq_cols = ["freq_1000GENOMES:phase_3:ALL"] + [f"freq_1000GENOMES:phase_3:{pop}" for pop in superpops]
+    # Ensure columns are present in vep_prot
+    freq_cols = [col for col in freq_cols if col in vep_prot.columns]
 
     # Take the mean across individuals for each haplotype
     var_freqs_agg = vep_prot.groupby(["haplotype","variant"]).agg(dict(zip(freq_cols, ["mean"]*len(freq_cols))))
@@ -3208,30 +3210,23 @@ def sample_by_mutant_clustermap(vep_df,
     heatmap_data = np.log1p(heatmap_data)
 
     # Get super population info for each sample and create a numeric mapping
-    pop_data = haps_to_samples[['sample', 'Super Population']].drop_duplicates()
+    pop_data = haps_to_samples[['sample', "superpopulation", "sex"]].drop_duplicates()
     pop_data = pop_data.set_index('sample')
 
     # Reindex pop_data to match the row order of heatmap_data
     pop_data = pop_data.reindex(heatmap_data.index)
 
     # Create numeric mapping for populations
-    pop_mapping = {pop: i for i, pop in enumerate(pop_data['Super Population'].unique())}
-    pop_data['Superpop'] = pop_data['Super Population'].map(pop_mapping)
+    pop_mapping = {pop: i for i, pop in enumerate(pop_data["superpopulation"].unique())}
+    pop_data['Superpop'] = pop_data["superpopulation"].map(pop_mapping)
 
-    gender_data = haps_to_samples[['sample', 'Gender']].drop_duplicates()
-    gender_data = gender_data.set_index('sample')
-
-    gender_data = gender_data.reindex(heatmap_data.index)
-
-    gender_mapping = {gender: i for i, gender in enumerate(gender_data['Gender'].unique())}
-    gender_data['Gender'] = gender_data['Gender'].map(gender_mapping)
-
+   
     ###### Clustermap plotting ######
     # Create row colors dataframe with both Super Population and Gender
-    gender_palette = {0: 'lightblue', 1: 'mistyrose'}
+    sex_palette = {'male': 'lightblue', 'female': 'mistyrose'}
     row_colors = pd.DataFrame({
-        'Superpop': pop_data['Super Population'].map(utils.get_superpop_palette()),
-        'Sex': gender_data['Gender'].map(gender_palette)  # Map gender values to colors
+        'Superpop': pop_data["superpopulation"].map(utils.get_superpop_palette()),
+        'Sex': pop_data['sex'].map(sex_palette)  # Map gender values to colors
     })
 
     # Create clustermap but don't display it
@@ -3306,9 +3301,9 @@ def sample_by_mutant_clustermap(vep_df,
     plt.gca().add_artist(superpop_legend)
 
     # Gender legend
-    gender_handles = [plt.Rectangle((0,0),1,1, facecolor=color) for color in gender_palette.values()]
-    gender_labels = ['Male', 'Female']
-    plt.legend(gender_handles, gender_labels,
+    sex_handles = [plt.Rectangle((0,0),1,1, facecolor=color) for color in sex_palette.values()]
+    sex_labels = ['Male', 'Female']
+    plt.legend(sex_handles, sex_labels,
             title='Sex',
             bbox_to_anchor=(0.5, -2),
             loc='upper center',
@@ -3608,7 +3603,7 @@ def plot_dr_with_kde_topo(
         Column name for the x-axis (first DR dimension).
     y_col : str, default="dim2"
         Column name for the y-axis (second DR dimension).
-    hue_col : str, default="Super Population"
+    hue_col : str, default="superpopulation"
         Column name for coloring points by group.
     sort : str or bool, default=None
         Column name to sort by, or True to sort by hue_col.

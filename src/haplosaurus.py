@@ -1320,6 +1320,7 @@ def get_haplotype_protein_ids(haplotypes: Dict[str, Dict],
 
 def get_haplotype_ref(haplotypes: Union[List[Dict], Dict[str, Dict]],
                       key: str = 'protein_haplotypes',
+                      keep_structure: bool = False,
                       verbose: bool = True) -> Union[List[Dict], Dict[str, Dict]]:
     """Get the reference haplotype from a list of haplotypes.
 
@@ -1348,9 +1349,13 @@ def get_haplotype_ref(haplotypes: Union[List[Dict], Dict[str, Dict]],
                           desc="Processing transcripts",
                           disable=not verbose,
                           leave=False):
-            hap_ref[tx_id] = [x for x in haplotypes[tx_id][key] if ":REF" in x['name']]
-            if isinstance(hap_ref[tx_id], list) and len(hap_ref[tx_id])>0:
-                hap_ref[tx_id] = hap_ref[tx_id]
+            if keep_structure:
+                hap_ref[tx_id] = {}
+                hap_ref[tx_id][key] = [x for x in haplotypes[tx_id][key] if ":REF" in x['name'] ]
+            else:
+                hap_ref[tx_id] = [x for x in haplotypes[tx_id][key] if ":REF" in x['name']]
+                if isinstance(hap_ref[tx_id], list) and len(hap_ref[tx_id])>0:
+                    hap_ref[tx_id] = hap_ref[tx_id]
     else:
         raise ValueError(f"Invalid haplotype type: {type(haplotypes)}")
     return hap_ref
@@ -1993,6 +1998,7 @@ def haplotypes_to_fasta(haplotypes=None,
                         add_consensus=False,
                         save_dir=os.path.join(config.DATA_DIR,"1KG","fasta"),
                         strip='*',
+                        split_subdir="split",
                         merge=False,
                         force=False,
                         compress=True,
@@ -2018,6 +2024,9 @@ def haplotypes_to_fasta(haplotypes=None,
 
     if tx_ids is not None:
         tx_ids = utils.as_list(tx_ids)
+    if tx_ids is None and haplotypes is not None:
+        tx_ids = list(haplotypes.keys())
+    
 
     # Convert haplotype sequences to merged FASTA format
     if merge: 
@@ -2037,6 +2046,8 @@ def haplotypes_to_fasta(haplotypes=None,
             haplotypes = get_haplotypes(tx_ids=tx_ids,
                                         cache_only=True, 
                                         verbose=verbose)
+        else:
+            haplotypes = {tx_id:haplotypes[tx_id] for tx_id in tx_ids}
             
         # Get haplotype sequences
         hap_seqs = get_haplotype_seqs(haplotypes, 
@@ -2073,7 +2084,7 @@ def haplotypes_to_fasta(haplotypes=None,
 
     # Convert haplotype sequences to split FASTA format
     else:
-        os.makedirs(os.path.join(save_dir, "split"), exist_ok=True)
+        os.makedirs(os.path.join(save_dir, split_subdir), exist_ok=True)
         fasta_paths = {}
         if haplotypes is None:
             tx_ids = utils.intersect(tx_ids, 
@@ -2088,7 +2099,7 @@ def haplotypes_to_fasta(haplotypes=None,
                             disable=not verbose):
 
             # Define the path to the split FASTA file
-            fasta_path = os.path.join(save_dir, "split", f"{tx_id}.fasta")
+            fasta_path = os.path.join(save_dir, split_subdir, f"{tx_id}.fasta")
             if compress:
                 fasta_path = f"{fasta_path}.gz"
                 
@@ -2355,6 +2366,15 @@ def haplotypes_to_samples(haplotypes=None,
                     
                 if verbose:
                     print("Samples after adding REF haplotypes:", df['sample'].nunique())
+
+
+         # Some samples are missing metadata, so we add them manually
+        for sample, metadata in og.MISSING_SAMPLE_METADATA.items():
+            df.loc[df["sample"]==sample, "population"] = metadata["population"]
+            df.loc[df["sample"]==sample, "population_code"] = metadata["population_code"]
+            df.loc[df["sample"]==sample, "population_name"] = metadata["population_name"]
+            df.loc[df["sample"]==sample, "superpopulation"] = metadata["superpopulation"]
+            df.loc[df["sample"]==sample, "sex"] = metadata["sex"]
         
         # Ensure there's not any duplicates
         df.drop_duplicates(subset=["sample","haplotype","ploid"],inplace=True)

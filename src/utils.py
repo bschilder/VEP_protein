@@ -1445,10 +1445,31 @@ def variants_to_positions(df,
         if pos_match:
             return int(pos_match.group(1))
         # Try amino acid change format (e.g., 'P1150S')
-        aa_match = re.search(r'[A-Z](\d+)[A-Z]', variant)
+        aa_match = re.search(r'[A-Z](\d+)[A-Z*]', variant)
         if aa_match:
             return int(aa_match.group(1))
         return None
+
+    def extract_ref_alt_with_stop(variant):
+        if variant == 'REF':
+            return None, None
+
+        # Handle deletion format (e.g., "616delS")
+        del_match = re.search(r'(\d+)del([A-Z]+)', variant)
+        if del_match:
+            return del_match.group(2), ''  # REF is the deleted sequence, ALT is empty
+
+        # Handle standard substitution format (e.g., "123A>G")
+        sub_match = re.search(r'(\d+)([A-Z]+)>([A-Z*]+)', variant)
+        if sub_match:
+            return sub_match.group(2), sub_match.group(3)
+
+        # Handle amino acid change format (e.g., "P1150S" or "Q12*")
+        aa_match = re.search(r'([A-Z])(\d+)([A-Z*])', variant)
+        if aa_match:
+            return aa_match.group(1), aa_match.group(3)
+
+        return None, None
 
     # Extract positions for unique variants
     positions = {variant: extract_position(variant) 
@@ -1461,12 +1482,8 @@ def variants_to_positions(df,
     # Map positions to new column
     df[position_col] = pd.to_numeric(df[variant_col].map(positions), errors='coerce').astype('Int64')
 
-    # Add REF and ALT columns
-    # Handle different variant formats including deletions
-    
-    
-    # Extract REF and ALT for unique variants
-    ref_alt_dict = {variant: extract_ref_alt(variant) 
+    # Extract REF and ALT for unique variants, including stop-gain (e.g., "12Q>*")
+    ref_alt_dict = {variant: extract_ref_alt_with_stop(variant) 
                    for variant in df[variant_col].unique()}
     
     # Map to DataFrame columns
