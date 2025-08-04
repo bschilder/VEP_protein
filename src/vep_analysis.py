@@ -3082,12 +3082,9 @@ def pairwise_variant_sensitization_clustermap(vep_prot,
     print("Inverting scale")
     clinvar_vs_wt = -clinvar_vs_wt
 
-
     # Normalize the data
     clinvar_vs_wt = utils.minmax_normalize(clinvar_vs_wt, 
                                            procedure=normalize_procedure) 
-
-
 
     # Create column colors DataFrame with both position and mean VEP info
     print("Creating column colors")
@@ -3137,15 +3134,6 @@ def pairwise_variant_sensitization_clustermap(vep_prot,
         # Fill NaN values with 0 to avoid errors
         clinvar_vs_wt_clean = clinvar_vs_wt.fillna(0)
 
-       
-        
-        # Reset index and columns to ensure unique labels
-        # clinvar_vs_wt_clean = clinvar_vs_wt_clean.reset_index()
-        # clinvar_vs_wt_clean = clinvar_vs_wt_clean.set_index('variant') 
-
-        # Update col_colors and row_colors to match new labels
-        # col_colors = col_colors.reset_index()
-        # row_colors = row_colors.reset_index()
         print("Creating clustermap")
         # Apply power transformation here so we can return the original data
         g = sns.clustermap(clinvar_vs_wt_clean**pow,
@@ -3159,17 +3147,64 @@ def pairwise_variant_sensitization_clustermap(vep_prot,
         print(f"Error creating clustermap: {str(e)}")
         return [col_colors, row_colors], clinvar_vs_wt_clean
 
-    x_indices, y_indices, x_order, y_order = downsample_tick_labels(clinvar_vs_wt, g, n_labels_x, n_labels_y)
+    # --- Robust tick label downsampling to avoid ZeroDivisionError ---
+    def safe_downsample_tick_labels_middle(data, g, n_labels_x, n_labels_y):
+        # Get the reordered indices after clustering if dendrograms exist
+        x_order = g.dendrogram_col.reordered_ind if hasattr(g, 'dendrogram_col') and g.dendrogram_col is not None else np.arange(len(data.columns))
+        y_order = g.dendrogram_row.reordered_ind if hasattr(g, 'dendrogram_row') and g.dendrogram_row is not None else np.arange(len(data.index))
+
+        # X-axis: put ticks in the middle of each column
+        n_cols = len(x_order)
+        if not n_labels_x or n_labels_x <= 0:
+            g.ax_heatmap.set_xticks([])
+            g.ax_heatmap.set_xticklabels([])
+            x_indices = []
+        else:
+            # Calculate which columns to label (downsample if needed)
+            if n_labels_x >= n_cols:
+                label_cols = np.arange(n_cols)
+            else:
+                label_cols = np.linspace(0, n_cols-1, n_labels_x, dtype=int)
+            # Ticks at the center of each column: for imshow, columns are at integer positions, so center is at i+0.5
+            xticks = [i + 0.5 for i in label_cols]
+            xticklabels = [data.columns[x_order[i]] for i in label_cols]
+            g.ax_heatmap.set_xticks(xticks)
+            g.ax_heatmap.set_xticklabels(xticklabels, rotation=90)
+            x_indices = label_cols
+
+        # Y-axis: put ticks in the middle of each row
+        n_rows = len(y_order)
+        if not n_labels_y or n_labels_y <= 0:
+            g.ax_heatmap.set_yticks([])
+            g.ax_heatmap.set_yticklabels([])
+            y_indices = []
+        else:
+            if n_labels_y >= n_rows:
+                label_rows = np.arange(n_rows)
+            else:
+                label_rows = np.linspace(0, n_rows-1, n_labels_y, dtype=int)
+            yticks = [i + 0.5 for i in label_rows]
+            yticklabels = [data.index[y_order[i]] for i in label_rows]
+            g.ax_heatmap.set_yticks(yticks)
+            g.ax_heatmap.set_yticklabels(yticklabels, rotation=0)
+            y_indices = label_rows
+
+        return x_indices, y_indices, x_order, y_order
+
+    x_indices, y_indices, x_order, y_order = safe_downsample_tick_labels_middle(clinvar_vs_wt, g, n_labels_x, n_labels_y)
 
     # Add horizontal line for REF sample
     if ref_linewidth is not None:
-        ref_idx = np.where(np.array([x for x in clinvar_vs_wt.index[y_order]]) == 'REF')[0][0]
-        g.ax_heatmap.axhline(y=ref_idx, color='red', linestyle='--', alpha=1, linewidth=ref_linewidth)
+        try:
+            ref_idx = np.where(np.array([x for x in clinvar_vs_wt.index[y_order]]) == 'REF')[0][0]
+            g.ax_heatmap.axhline(y=ref_idx, color='red', linestyle='--', alpha=1, linewidth=ref_linewidth)
+        except Exception as e:
+            print(f"Could not add REF line: {e}")
 
     g.ax_heatmap.collections[0].colorbar.set_label("Mean VEP score", rotation=270, va="bottom")
     g.ax_heatmap.set_xlabel("Clinical variants")
     g.ax_heatmap.set_ylabel("WT variants", rotation=270, va="bottom")
-    g.ax_heatmap.set_title(f"Pairwise Variant Sensitization Analysis\nProtein: {vep_prot["GENEINFO"].unique()[0].split(':')[0]} ({vep_prot['protein'].unique()[0]})\nInjected clinical variants (n={clinvar_vs_wt.shape[1]} cols) x Natural WT variants (n={clinvar_vs_wt.shape[0]} rows)",
+    g.ax_heatmap.set_title(f"Pairwise Variant Sensitization Analysis\nProtein: {vep_prot['GENEINFO'].unique()[0].split(':')[0]} ({vep_prot['protein'].unique()[0]})\nInjected clinical variants (n={clinvar_vs_wt.shape[1]} cols) x Natural WT variants (n={clinvar_vs_wt.shape[0]} rows)",
                         ha="left", x=0.1, y=title_y)
     plt.show()
     return g, clinvar_vs_wt, row_colors, col_colors

@@ -927,7 +927,8 @@ def plot_enrichment_vs_interactions(results, log_x_axis=False, show=True, ax=Non
         x="interaction_threshold", y="enrichment", 
         marker="o", ax=ax1, color=color
     )
-    ax1.set_ylabel("Enrichment", color=color)
+    ax1.set_ylabel("Contact Enrichment", color=color)
+    ax1.set_xlabel("Interaction Threshold")
     ax1.tick_params(axis='y', labelcolor=color)
 
     if log_x_axis:
@@ -938,9 +939,10 @@ def plot_enrichment_vs_interactions(results, log_x_axis=False, show=True, ax=Non
     last_idx = len(results_df) - 1
     first_lab_coords = results_df.iloc[first_idx]["interaction_threshold"], results_df.iloc[first_idx]["enrichment"]
     last_lab_coords = results_df.iloc[last_idx]["interaction_threshold"], results_df.iloc[last_idx]["enrichment"]
+    offset = results_df["interaction_threshold"].max() * 0.01
 
-    ax1.text(first_lab_coords[0]+0.01, first_lab_coords[1], f"{first_lab_coords[1]:.2f}x", va='center', ha='left', fontsize=10, color='black')
-    ax1.text(last_lab_coords[0], last_lab_coords[1]-0.1, f"{last_lab_coords[1]:.2f}x", va='top', ha='left', fontsize=10, color='black')
+    ax1.text(first_lab_coords[0]+offset, first_lab_coords[1], f"{first_lab_coords[1]:.0f}x", va='top', ha='left', fontsize=10, color=color)
+    ax1.text(last_lab_coords[0]-offset, last_lab_coords[1], f"{last_lab_coords[1]:.0f}x", va='center', ha='right', fontsize=10, color=color)
 
     # Plot number of interactions (right y-axis)
     ax2 = ax1.twinx()

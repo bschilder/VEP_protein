@@ -59,13 +59,29 @@ import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 import seaborn as sns
-import io
-import matplotlib.pyplot as plt
+import io 
 from PIL import Image
 from tqdm import tqdm
 import os
+import glob
 
 AFDB_CACHE = pooch.os_cache("alphafold_db")
+
+def search_files(base_dir,
+                 tx_id,
+                 subdir = "af2_sameMSA",
+                 suffix = ".pdb",
+                 model_number = 1):
+    
+    pdb_files = glob.glob(os.path.join(base_dir,
+                                    tx_id,
+                                    "**",
+                                    #    "*_unrelaxed_rank_001_*.pdb"
+                                    f"{subdir}/*_unrelaxed_*_model_{model_number}_*{suffix}"
+                                    ),
+                        recursive=True)
+    print(len(pdb_files),"PDB files found") 
+    return pdb_files
 
 def import_pdb(pdb_path: str, 
                protein_name: str = "BRCA1") -> Structure:
@@ -393,7 +409,7 @@ def bin_matrix(X, bin_size=10, agg_func=np.nanmax):
         axis=(1,3)
     )
 
-def expand_matrix(X, target_size):
+def expand_matrix(X, target_size=None):
     """
     Expand a binned matrix back to original dimensions by repeating values.
     
@@ -405,7 +421,8 @@ def expand_matrix(X, target_size):
         np.ndarray: Expanded matrix with dimensions (target_size, target_size)
     """
     if target_size is None:
-        raise ValueError("target_size must be specified")
+        target_size = X.shape[0]
+        print(f"No target size specified, using input size {target_size}")
 
     if X.shape[0] == target_size and X.shape[1] == target_size:
         print(f"Matrix already has target size {target_size}x{target_size}")
@@ -783,6 +800,234 @@ def animate_contact_map_interpolation(map1,
             print(f"Linear interpolation animation saved to {save_path}")
         
         return frames
+    
+import matplotlib.pyplot as plt
+import matplotlib.animation as animation 
+import numpy as np
+from scipy.spatial.distance import pdist, squareform
+import os
+
+def find_nearest_neighbor_path(distance_matrix, start_idx=0):
+    """Find path through all points using nearest neighbor algorithm"""
+    n = len(distance_matrix)
+    unvisited = set(range(n))
+    path = [start_idx]
+    unvisited.remove(start_idx)
+    
+    current = start_idx
+    while unvisited:
+        # Find nearest unvisited neighbor
+        min_dist = float('inf')
+        nearest = None
+        
+        for neighbor in unvisited:
+            dist = distance_matrix[current, neighbor]
+            if dist < min_dist:
+                min_dist = dist
+                nearest = neighbor
+        
+        path.append(nearest)
+        unvisited.remove(nearest)
+        current = nearest
+    
+    return path
+
+def animate_contact_map_morphing(
+    contact_maps, 
+    pow=4,
+    n_frames_per_transition=15,
+    bin_size=1,
+    random_order=True,
+    gif_filename='results/plots/contact_map_interpolation.gif',
+    interval=50,
+    fps=10,
+    dpi=100,
+):
+    """
+    Create and save an animation morphing between contact maps.
+
+    Parameters:
+        contact_maps (dict): Dictionary of contact maps.
+        cf: Object with bin_matrix and get_ref_key methods.
+        pow (int): Power to raise contact maps before binning.
+        n_frames_per_transition (int): Frames per transition.
+        bin_size (int): Bin size for bin_matrix.
+        random_order (bool): If True, use random order; else, nearest neighbor path.
+        gif_filename (str): Output GIF filename.
+        interval (int): Interval between frames in milliseconds.
+        fps (int): Frames per second for GIF.
+        dpi (int): DPI for saved images.    
+
+    Example:
+        >>> # Suppose you have a dictionary of contact maps (numpy arrays) keyed by sample names:
+        >>> contact_maps = {
+        ...     "sample1": np.random.rand(50, 50),
+        ...     "sample2": np.random.rand(50, 50),
+        ...     "sample3": np.random.rand(50, 50),
+        ... }
+        >>> # And a cf object with a bin_matrix method:
+        >>> class DummyCF:
+        ...     def bin_matrix(self, X, bin_size):
+        ...         # Simple binning: just return X for demonstration
+        ...         return X
+        ...     def get_ref_key(self):
+        ...         return "sample1"
+        >>> cf = DummyCF()
+        >>> animate_contact_map_morphing(
+        ...     contact_maps,
+        ...     cf,
+        ...     pow=2,
+        ...     n_frames_per_transition=10,
+        ...     bin_size=1,
+        ...     random_order=True,
+        ...     gif_filename='contact_map_demo.gif',
+        ...     fps=5
+        ... )
+        # This will display the animation and save it as 'contact_map_demo.gif'
+    """ 
+    import matplotlib.animation as animation  
+    from scipy.spatial.distance import pdist, squareform 
+
+    # Bin and power contact maps
+    contact_maps_binned = {k: bin_matrix(X=v**pow, bin_size=bin_size) for k, v in contact_maps.items()}
+    sample_ids = list(contact_maps_binned.keys())
+    first_sample = sample_ids[0]
+    first_contact_map = contact_maps_binned[first_sample]**pow
+
+    # Prepare arrays for distance calculation
+    print("Computing similarity matrix between contact maps...")
+    contact_map_arrays = []
+    valid_samples = []
+    for sample in sample_ids:
+        cm = contact_maps_binned[sample]
+        if cm is not None:
+            contact_map_arrays.append(cm.flatten())
+            valid_samples.append(sample)
+    contact_map_arrays = np.array(contact_map_arrays)
+
+    # Compute pairwise distances
+    distances = pdist(contact_map_arrays, metric='euclidean')
+    distance_matrix = squareform(distances)
+
+    # Find the optimal path
+    if random_order:
+        np.random.seed(42)
+        optimal_path = np.random.permutation(len(valid_samples))
+    else:
+        optimal_path = find_nearest_neighbor_path(distance_matrix)
+
+    # Set up the animation figure
+    fig, ax = plt.subplots()
+    ax.set_title("Contact Map Morphing Animation", fontsize=16)
+
+    # Normalize all contact maps to same range for consistent visualization
+    all_maps = [contact_maps_binned[valid_samples[i]] for i in optimal_path]
+    vmin = min(np.min(cm) for cm in all_maps)
+    vmax = max(np.max(cm) for cm in all_maps)
+
+    # Create initial image
+    img = ax.imshow(first_contact_map, cmap='gnuplot2', vmin=vmin, vmax=vmax)
+    plt.colorbar(img, ax=ax, label='Contact Probability')
+
+    # Add text annotation
+    text_annotation = ax.text(
+        0.02, 0.98,
+        f'Sample: {os.path.basename(valid_samples[optimal_path[0]]).split(".")[0]}',
+        transform=ax.transAxes, fontsize=12,
+        verticalalignment='top',
+        bbox=dict(boxstyle='round', facecolor='white', alpha=0.8)
+    )
+
+    def animate(frame, n_frames_per_transition=n_frames_per_transition):
+        """Animate function for smooth morphing between contact maps"""
+        n_maps = len(optimal_path)
+        total_frames = (n_maps - 1) * n_frames_per_transition
+
+        if frame >= total_frames:
+            frame = total_frames - 1
+
+        map_idx = frame // n_frames_per_transition
+        transition_progress = (frame % n_frames_per_transition) / n_frames_per_transition
+
+        # Get the two maps to interpolate between
+        map1_idx = optimal_path[map_idx]
+        map2_idx = optimal_path[map_idx + 1]
+
+        map1 = contact_maps_binned[valid_samples[map1_idx]]
+        map2 = contact_maps_binned[valid_samples[map2_idx]]
+
+        # Linear interpolation between the two maps
+        interpolated_map = (1 - transition_progress) * map1 + transition_progress * map2
+
+        # Update the image
+        img.set_array(interpolated_map)
+
+        # Update the text annotation
+        def get_sample_name(sample):
+            # Try to extract a meaningful sample name
+            base = os.path.basename(sample)
+            if "_unrelaxed" in base:
+                base = base.split("_unrelaxed")[0]
+            parts = base.split("_")
+            if len(parts) > 1:
+                return parts[1]
+            return base.split(".")[0]
+
+        sample1_name = get_sample_name(valid_samples[map1_idx])
+        sample2_name = get_sample_name(valid_samples[map2_idx])
+        text_annotation.set_text(
+            f'Transition: {sample1_name} → {sample2_name}\nProgress: {map_idx}/{n_maps} ({transition_progress:.1%})'
+        )
+        text_annotation.set_position((0.98, 0.98))  # Position at top-right corner
+        text_annotation.set_horizontalalignment('right')  # Anchor text to the right
+
+        return [img, text_annotation]
+
+    # Create animation
+    n_maps = len(optimal_path)
+    total_frames = (n_maps - 1) * n_frames_per_transition
+
+    print(f"Creating animation with {total_frames} frames...")
+    print(f"Transitioning through {n_maps} contact maps")
+
+    anim = animation.FuncAnimation(
+        fig, animate, frames=total_frames,
+        interval=interval, blit=True, repeat=True
+    )
+
+    plt.tight_layout()
+    plt.show()
+
+    # Save the animation as GIF
+    print("Saving animation as GIF...")
+    os.makedirs(os.path.dirname(gif_filename), exist_ok=True)
+    anim.save(gif_filename, writer='pillow', fps=fps, dpi=dpi)
+    print(f"Animation saved as '{gif_filename}'")
+
+    # Display some statistics about the path
+    print(f"\nAnimation Statistics:")
+    print(f"Number of contact maps: {n_maps}")
+    print(f"Total animation frames: {total_frames}")
+    print(f"Frames per transition: {n_frames_per_transition}")
+    print(f"Animation duration: {total_frames * 0.1:.1f} seconds")
+    print(f"GIF saved with {fps} FPS")
+
+    # Show the path taken
+    print(f"\nPath taken through contact maps:")
+    for i, idx in enumerate(optimal_path):
+        sample_name = os.path.basename(valid_samples[idx]).split(".")[0]
+        print(f"{i+1:2d}. {sample_name}")
+    
+    return {
+        "anim": anim,
+        "path": optimal_path,
+        "valid_samples": valid_samples,
+        "contact_maps_binned": contact_maps_binned,
+        "contact_map_arrays": contact_map_arrays,
+        "distances": distances,
+        "distance_matrix": distance_matrix,
+    }
+
 
 def standardize_id(id, 
                     pattern=[" ", ">", ",", ":", "*", "{", "}", "(", ")"], 
@@ -1699,7 +1944,7 @@ def plot_contact_map_entropy(
     cmap="viridis",
     figsize=(8, 6),
     dpi=100,
-    agg_func=np.nanmax,
+    agg_func=np.nanmean,
     title="Contact Map Entropy",
 ):
     """
@@ -1986,3 +2231,385 @@ def plot_contact_map_diff_barplot(
     plt.show()
 
     return df
+
+
+def revert_haplotype_naming(names, sep="_"):
+    """
+    Revert haplotype naming from "871P_L_1645R_T" -> "871P>L,1645R>T".
+    Accepts a single string or an iterable of strings.
+    Returns a single string or a list of strings, matching the input type.
+    """
+    def revert_one(name):
+        parts = name.split(sep)
+        reverted = []
+        i = 0
+        while i < len(parts):
+            if i+1 < len(parts):
+                orig = f"{parts[i]}>{parts[i+1]}"
+                reverted.append(orig)
+                i += 2
+            else:
+                reverted.append(parts[i])
+                i += 1
+        return ",".join(reverted)
+    
+    if isinstance(names, str):
+        return revert_one(names)
+    else:
+        return [revert_one(name) for name in names]
+    
+
+def plot_most_different_contact_maps(
+    contact_maps,
+    max_subplots=6,
+    bin_size=10,
+    pow=4,
+    diff_mode="global",
+    conv_window=100,
+    cmap="gnuplot2",
+    show_diag=False,
+    square_size=4,
+    highlight_diff_regions=False,
+    highlight_min_size=100,
+    highlight_n_regions=2, 
+    highlight_palette="Set3",
+    highlight_color_fill=False,
+    highlight_alpha=1,
+    highlight_linewidth=2,
+    highlight_box_offset=None,
+    device=None,  # New argument to specify torch device, e.g., "cuda:2"
+    split_ref_haplotype=False,  # NEW: if True, split each subplot along diagonal (bottom=REF, top=haplotype)
+    split_divider_params={"linestyle": "solid", 
+                          "color": "white", 
+                          "width": 1, 
+                          "alpha": 1.0},
+    hspace=0.05, 
+    wspace=0.001,
+    axis_title_fontsize=10,  # NEW: controls x and y axis title text size
+    dpi=100,
+):
+    """
+    Plots a grid of the most different contact maps compared to the reference.
+
+    Args:
+        contact_maps (dict): Dictionary mapping keys to contact map numpy arrays.
+        max_subplots (int): Maximum number of subplots to show (including reference).
+        bin_size (int): Bin size for binning the contact map.
+        pow (int): Power to raise the contact map values before binning.
+        cmap (str): Colormap to use for imshow.
+        show_diag (bool): Whether to show the diagonal in the contact maps.
+        square_size (int): Size (in inches) of each subplot side.
+        highlight_diff_regions (bool): If True, highlight most different regions (non-REF only).
+        highlight_min_size (int): Minimum size (in residues) of highlighted region (rectangle side).
+        highlight_n_regions (int): Number of most different regions to highlight per map.
+        highlight_color (str): Color of the highlight rectangle.
+        highlight_palette (str): Palette to use for the highlight rectangle.
+        highlight_alpha (float): Alpha of the highlight rectangle.
+        highlight_linewidth (float): Line width of the highlight rectangle.
+        device (str or torch.device, optional): Device for torch operations, e.g., "cuda:2".
+        split_ref_haplotype (bool): If True, each subplot is split along the diagonal: bottom=REF, top=haplotype.
+        hspace (float): Vertical space between subplots.
+        wspace (float): Horizontal space between subplots.
+        axis_title_fontsize (int): Font size for x and y axis titles.
+    """
+
+    def get_most_different_contact_maps(
+        contact_maps, 
+        max_subplots=6,
+        diff_mode="global",  # "global" or "local"
+        conv_window=100      # int, only used if diff_mode=="local"
+    ):
+        """
+        Selects the most different contact maps compared to the reference.
+
+        Args:
+            contact_maps (dict): Dictionary mapping keys to contact map numpy arrays.
+            max_subplots (int): Maximum number of subplots to show (including reference).
+            diff_mode (str): "global" (sum of all differences) or "local" (max difference in a window).
+            conv_window (int or None): Window size for local difference (square side length).
+        Returns:
+            dict: Most different contact maps (excluding reference).
+        """
+        import numpy as np
+        from scipy.ndimage import uniform_filter
+
+        ref_key = get_ref_key(contact_maps)
+        ref_map = contact_maps[ref_key]
+        diff_scores = {}
+
+        for k, v in contact_maps.items():
+            # Ensure same shape and skip ref itself
+            if k == ref_key or v.shape != ref_map.shape:
+                continue
+            # Use nan_to_num to ignore NaNs in the difference
+            v_clean = np.nan_to_num(v)
+            ref_clean = np.nan_to_num(ref_map)
+            diff_abs = np.abs(v_clean - ref_clean)
+
+            if diff_mode == "global":
+                diff = np.nansum(diff_abs)
+            elif diff_mode == "local":
+                if conv_window is None or conv_window < 1:
+                    raise ValueError("conv_window must be set to a positive integer for local diff_mode")
+                # Use uniform_filter to compute local sums (moving window)
+                # The maximum sum in any window is the local difference score
+                # Use mode='constant', cval=0 to ignore out-of-bounds
+                local_sum = uniform_filter(diff_abs, size=conv_window, mode='constant', cval=0) * (conv_window**2)
+                diff = np.nanmax(local_sum)
+            else:
+                raise ValueError(f"Unknown diff_mode: {diff_mode}")
+
+            diff_scores[k] = diff
+
+        # Get the most different contact maps
+        most_diff_keys = sorted(diff_scores, key=diff_scores.get, reverse=True)[:max_subplots]
+        most_diff_contact_maps = {k: contact_maps[k] for k in most_diff_keys}
+        return most_diff_contact_maps
+
+    import matplotlib.patches as patches
+    import matplotlib as mpl
+    import torch    
+    import torch.nn.functional as F
+
+    nrows, ncols = 2, max_subplots // 2
+    fig, axes = plt.subplots(nrows, ncols, figsize=(ncols * square_size, nrows * square_size),
+                              dpi=dpi)
+    axes = axes.flatten()
+
+    if not split_ref_haplotype:
+        max_subplots -= 1
+
+    # Get the most different contact maps
+    most_diff_contact_maps = get_most_different_contact_maps(contact_maps=contact_maps, 
+                                                             max_subplots=max_subplots, 
+                                                             diff_mode=diff_mode, 
+                                                             conv_window=conv_window)
+    
+
+    # Add the reference as the first item, then the most different contact maps
+    ref_key = get_ref_key(contact_maps)
+    ref_map = contact_maps[ref_key]
+    if split_ref_haplotype:
+        items_to_plot = list(most_diff_contact_maps.items())
+        
+    else:
+        items_to_plot = [(ref_key, ref_map)] + list(most_diff_contact_maps.items())
+    items_to_plot = items_to_plot[:max_subplots] 
+    
+
+
+    highlight_boxes = []  # List of (color, [(x, y, w), ...])
+
+    for i, (name, contact_map) in enumerate(tqdm(items_to_plot)):
+        if not show_diag:
+            np.fill_diagonal(contact_map, np.nan)
+        # Prepare binned maps for both haplotype and REF
+        contact_map_binned = bin_matrix(X=contact_map**pow, bin_size=bin_size)
+        ref_map_binned = bin_matrix(X=ref_map**pow, bin_size=bin_size)
+        binned_shape = contact_map_binned.shape[0]
+
+        # Compose the split image if requested
+        if split_ref_haplotype:
+            # Create a new array for the split image
+            split_img = np.zeros_like(contact_map_binned)
+            # Fill upper triangle (excluding diagonal) with haplotype, lower triangle (including diagonal) with REF
+            triu_idx = np.triu_indices(binned_shape, k=1)
+            tril_idx = np.tril_indices(binned_shape, k=0)
+            split_img[triu_idx] = contact_map_binned[triu_idx]
+            split_img[tril_idx] = ref_map_binned[tril_idx]
+            im = axes[i].imshow(split_img, cmap=cmap, interpolation="nearest", aspect='equal')
+
+            # --- Split divider appearance controls ---
+            # These can be set as function arguments or module-level variables as needed:
+            # split_divider: None, "solid", "dashed", "dotted" (default: "dashed")
+            # split_divider_color: e.g. "black", "#FF0000" (default: "black")
+            # split_divider_width: float (default: 1.5)
+            # split_divider_alpha: float (default: 1.0)
+       
+            if split_divider_params is not None:
+                split_divider = split_divider_params.get("linestyle", "solid")
+                split_divider_color = split_divider_params.get("color", "white")
+                split_divider_width = split_divider_params.get("width", 1.5)
+                split_divider_alpha = split_divider_params.get("alpha", 1.0)
+
+                # Draw a diagonal line to indicate the split
+                # Map the diagonal to image coordinates
+                # imshow by default puts (0,0) at top-left, so diagonal is from (0,0) to (N-1,N-1)
+                # The axes limits are -0.5 to N-0.5 for imshow
+                N = binned_shape
+                divider_styles = {
+                    "solid": (0, ()),
+                    "dashed": (0, (5, 5)),
+                    "dotted": (0, (1, 3)),
+                }
+                linestyle = divider_styles.get(str(split_divider).lower(), (0, (5, 5)))
+                axes[i].plot(
+                    [-0.5, N-0.5],
+                    [-0.5, N-0.5],
+                    color=split_divider_color,
+                    linewidth=split_divider_width,
+                    alpha=split_divider_alpha,
+                    linestyle=linestyle
+                )
+            # Add "REF" as y-axis label for the leftmost subplots
+            # axes is a flat array, so leftmost subplots are those where i % ncols == 0
+            if i % ncols == 0:
+                # Place the "REF" label outside the plot, vertically centered
+                axes[i].annotate(
+                    "REF",
+                    xy=(0, 0.5),
+                    xycoords='axes fraction',
+                    fontsize=axis_title_fontsize,
+                    ha='right',
+                    va='center',
+                    rotation=90,
+                    # fontweight='bold'
+                )
+        else:
+            im = axes[i].imshow(contact_map_binned, cmap=cmap, interpolation="nearest", aspect='equal')
+
+        protein_id = os.path.basename(name).split("_unrelaxed")[0].split("_")[0]
+        haplotype_id = os.path.basename(name).split("_unrelaxed")[0].replace(protein_id + "_", "")
+        axes[i].set_title(f"{revert_haplotype_naming(haplotype_id)}", fontsize=axis_title_fontsize, pad=2)
+        axes[i].axis('off')
+        axes[i].set_aspect('equal')
+
+        # Highlight most different regions for non-REF subplots if requested
+        if 'highlight_box_offset' not in locals() and 'highlight_box_offset' not in globals():
+            highlight_box_offset = highlight_linewidth / 2.0  # Default: half the linewidth
+
+        if (
+            highlight_diff_regions
+            and name != ref_key
+            and contact_map.shape == ref_map.shape
+        ):
+            if split_ref_haplotype:
+                color = "white"
+            else:
+                color_idx = i - 1  # i=0 is REF, so subtract 1
+                better_cmap = mpl.cm.get_cmap(highlight_palette, max(1, len(items_to_plot)-1))
+                color = mpl.colors.to_hex(better_cmap(color_idx % better_cmap.N))
+
+            
+            diff_map_np = np.abs(np.nan_to_num(contact_map) - np.nan_to_num(ref_map))
+            L = diff_map_np.shape[0]
+            min_size = highlight_min_size 
+            coords = []
+            lw = highlight_linewidth
+            offset = highlight_box_offset
+            if L <= min_size:
+                rect = patches.Rectangle(
+                    (-offset, -offset),
+                    L + 2*offset,
+                    L + 2*offset,
+                    linewidth=lw,
+                    edgecolor=color,
+                    facecolor=color,
+                    alpha=highlight_alpha,
+                    fill=highlight_color_fill,
+                )
+                axes[i].add_patch(rect)
+                coords.append((0, 0, L))
+            else:
+                if device is None:
+                    torch_device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+                else:
+                    torch_device = torch.device(device) if isinstance(device, str) else device
+                diff_map = torch.from_numpy(diff_map_np).float().to(torch_device)
+                window = min_size
+                kernel = torch.ones((1, 1, window, window), dtype=torch.float32, device=torch_device)
+                diff_map_4d = diff_map.unsqueeze(0).unsqueeze(0)  # shape: (1,1,L,L)
+                
+                sums = F.conv2d(diff_map_4d, kernel, stride=1).squeeze().cpu().numpy()  # shape: (L-window+1, L-window+1)
+
+                sums_flat = sums.ravel()
+                idx_sorted = np.argpartition(-sums_flat, highlight_n_regions*2)[:highlight_n_regions*4]
+                idx_sorted = idx_sorted[np.argsort(-sums_flat[idx_sorted])]  # sort top indices
+
+                mask = np.zeros_like(sums, dtype=bool)
+                found = 0
+                for idx in idx_sorted:
+                    if found >= highlight_n_regions:
+                        break
+                    x = idx // sums.shape[1]
+                    y = idx % sums.shape[1]
+                    x_center = x + window // 2
+                    y_center = y + window // 2
+                    x0 = x_center - window // 2
+                    y0 = y_center - window // 2
+                    x0 = max(0, min(x0, L - window))
+                    y0 = max(0, min(y0, L - window))
+                    mask_x0 = x0
+                    mask_x1 = x0 + window
+                    mask_y0 = y0
+                    mask_y1 = y0 + window
+                    if not mask[mask_x0:mask_x1, mask_y0:mask_y1].any():
+                        coords.append((x0, y0, window))
+                        mask[mask_x0:mask_x1, mask_y0:mask_y1] = True
+                        found += 1
+
+                bin_scale = bin_size
+                for (x, y, w) in coords:
+                    x_binned = x / bin_scale
+                    y_binned = y / bin_scale
+                    w_binned = w / bin_scale
+                    rect = patches.Rectangle(
+                        (y_binned - offset, x_binned - offset),  # imshow: (col, row), offset outwards
+                        w_binned + 2*offset,
+                        w_binned + 2*offset,
+                        linewidth=lw,
+                        edgecolor=color,
+                        facecolor=color,
+                        alpha=highlight_alpha,
+                        fill=highlight_color_fill,
+                    )
+                    axes[i].add_patch(rect)
+                highlight_boxes.append((color, [(x / bin_scale, y / bin_scale, w / bin_scale) for (x, y, w) in coords]))
+
+    # Optionally include all highlight boxes in the REF plot afterwards, color-coded
+    if highlight_diff_regions and len(highlight_boxes) > 0 and not split_ref_haplotype:
+        # The REF plot is always axes[0]
+        lw = highlight_linewidth
+        offset = highlight_box_offset
+        for color, coords in highlight_boxes:
+            for (x, y, w) in coords:
+                rect = patches.Rectangle(
+                    (y - offset, x - offset),  # imshow: (col, row), offset outwards
+                    w + 2*offset,
+                    w + 2*offset,
+                    linewidth=lw,
+                    edgecolor=color,
+                    facecolor=color,
+                    alpha=highlight_alpha,
+                    fill=highlight_color_fill,
+                )
+                axes[0].add_patch(rect)
+
+    # --- Add a grey border around the entire first subplot (REF) ---
+    # Only if not using split_ref_haplotype, since there is no dedicated REF plot in split mode
+    if not split_ref_haplotype:
+        ref_binned_shape = bin_matrix(X=ref_map**pow, bin_size=bin_size).shape[0]
+        border_color = "#888888"
+        border_linewidth = 14  # You can adjust this for visibility
+        border_shift_up = -8  # You can adjust this value as needed
+        border_shift_left = -2  # You can adjust this value as needed
+        border_rect = patches.Rectangle(
+            (border_shift_left, border_shift_up),
+            ref_binned_shape,
+            ref_binned_shape,
+            linewidth=border_linewidth,
+            edgecolor=border_color,
+            facecolor='none',
+            zorder=-10,
+            clip_on=False  # Allow the border to extend outside the axes
+        )
+        axes[0].add_patch(border_rect)
+        axes[0].title.set_color('white')
+
+    plt.subplots_adjust(hspace=hspace, wspace=wspace)
+    plt.show()
+
+def get_ref_size(contact_maps):
+    ref_key = get_ref_key(contact_maps)
+    ref_map = contact_maps[ref_key]
+    return ref_map.shape[0]
