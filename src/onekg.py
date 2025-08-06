@@ -321,6 +321,27 @@ SUPERPOP_DICT = {
     "South Asian Ancestry": "SAS",
     "West Eurasia (SGDP)": "EUR",
 }
+
+SUPERPOP_NAMES_DICT = {
+    "AFR": "African",
+    "AMR": "Admixed American",
+    "CSA": "Central South Asian",
+    "EAS": "East Asian",
+    "EUR": "European",
+    "MID": "Middle Eastern",
+    "OCE": "Oceanian",
+    "SAS": "South Asian",
+    "REF": "Reference",
+    # Add self-mapping
+    "African":"African",
+    "American":"Admixed American",
+    "Central South Asian":"Central South Asian",
+    "East Asian":"East Asian",
+    "European":"European",
+    "Middle Eastern":"Middle Eastern",
+    "Oceanian":"Oceanian",
+    "South Asian":"South Asian",
+}
  
 MISSING_SAMPLE_METADATA = {
     'HGDP00927': {

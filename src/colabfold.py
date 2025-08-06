@@ -2613,3 +2613,200 @@ def get_ref_size(contact_maps):
     ref_key = get_ref_key(contact_maps)
     ref_map = contact_maps[ref_key]
     return ref_map.shape[0]
+
+import matplotlib.pyplot as plt
+import math
+
+def plot_stacked_contact_maps(
+    contact_maps, 
+    n_maps=6, 
+    cmap='gnuplot2', 
+    front_on_top=True, 
+    direction='ul2lr',
+    pow=4,
+    bin_size=1,
+    dpi=100,
+    alpha=1,
+    border_params={"linewidth": 10, "edgecolor": "white", "facecolor": "none", "alpha": 1},
+    max_per_stack=None,
+    stack_x_offset=None,  # horizontal offset between stacks
+    stack_y_offset=None,  # vertical offset between stacks
+    stack_x_inner_offset=None,  # NEW: horizontal offset within each stack
+    stack_y_inner_offset=None,  # NEW: vertical offset within each stack
+    ref_on_top=False      # ensure REF is the front-most plot if True
+):
+    """
+    Plot contact maps stacked diagonally, with partial overlap.
+    Optionally, split into multiple stacks if max_per_stack is set.
+
+    Args:
+        contact_maps (dict): Dictionary of {filename: contact_map_array}
+        n_maps (int): Number of contact maps to display (default 6)
+        cmap (str): Colormap for imshow
+        front_on_top (bool): If True, the last map is on top (default). 
+                             If False, the first map is on top.
+        direction (str): Diagonal stacking direction. 
+                         Options: 
+                            'ul2lr' (upper-left to lower-right, default),
+                            'ur2ll' (upper-right to lower-left),
+                            'll2ur' (lower-left to upper-right),
+                            'lr2ul' (lower-right to upper-left)
+        max_per_stack (int or None): If set, create a new stack for every max_per_stack maps.
+        stack_x_offset (int or None): Horizontal offset (in pixels) between stacks. 
+                                      If None, defaults to int(w * 0.25)
+        stack_y_offset (int or None): Vertical offset (in pixels) between stacks. 
+                                      If None, defaults to 0 (no vertical shift)
+        stack_x_inner_offset (int or None): Horizontal offset (in pixels) between maps within a stack.
+                                            If None, defaults to int(w * 0.15)
+        stack_y_inner_offset (int or None): Vertical offset (in pixels) between maps within a stack.
+                                            If None, defaults to int(h * 0.15)
+        ref_on_top (bool): If True, ensure the REF haplotype is the front-most plot.
+    """
+    # Select up to n_maps contact maps, but ensure REF is included if ref_on_top
+    all_keys = list(contact_maps.keys())
+    ref_key = get_ref_key(contact_maps=contact_maps)
+    keys = all_keys[:n_maps]
+
+    # If ref_on_top and REF is not in the first n_maps, add it (unless already present)
+    if ref_on_top and ref_key is not None and ref_key not in keys:
+        # Remove last key to keep total at n_maps, unless already less than n_maps
+        if len(keys) == n_maps:
+            keys = keys[:-1]
+        keys.append(ref_key)
+
+    maps = [contact_maps[k] for k in keys]
+    n = len(maps)
+    if n == 0:
+        print("No contact maps to display.")
+        return
+
+    # Find the index of the REF haplotype, if present
+    ref_idx = None
+    if ref_key is not None and ref_key in keys:
+        ref_idx = keys.index(ref_key)
+
+    # If ref_on_top is True and REF is present, move it to the end (for front_on_top=True) or start (for front_on_top=False)
+    if ref_on_top and ref_idx is not None:
+        ref_key_val = keys.pop(ref_idx)
+        ref_map = maps.pop(ref_idx)
+        if front_on_top:
+            keys.append(ref_key_val)
+            maps.append(ref_map)
+        else:
+            keys.insert(0, ref_key_val)
+            maps.insert(0, ref_map)
+
+    # Assume all maps are square and same shape
+    map_shape = maps[0].shape
+    h, w = map_shape
+
+    # Offset for each map within a stack (in pixels)
+    if stack_x_inner_offset is None:
+        x_offset = int(w * 0.15)
+    else:
+        x_offset = stack_x_inner_offset
+    if stack_y_inner_offset is None:
+        y_offset = int(h * 0.15)
+    else:
+        y_offset = stack_y_inner_offset
+
+    # Direction multipliers
+    dir_map = {
+        'ul2lr': (1, 1),
+        'ur2ll': (-1, 1),
+        'll2ur': (1, -1),
+        'lr2ul': (-1, -1)
+    }
+    if direction not in dir_map:
+        raise ValueError(f"Unknown direction '{direction}'. Choose from {list(dir_map.keys())}")
+    dx, dy = dir_map[direction]
+
+    # Determine stack splitting
+    if max_per_stack is not None and isinstance(max_per_stack, int) and max_per_stack > 0:
+        n_stacks = math.ceil(n / max_per_stack)
+        stack_indices = [
+            (i * max_per_stack, min((i + 1) * max_per_stack, n))
+            for i in range(n_stacks)
+        ]
+    else:
+        n_stacks = 1
+        stack_indices = [(0, n)]
+
+    # Set stack-to-stack offsets (between stacks, not within)
+    if stack_x_offset is None:
+        stack_x_offset = int(w * 0.25)
+    if stack_y_offset is None:
+        stack_y_offset = 0
+
+    # Calculate figure size for all stacks (arranged with partial overlap)
+    stack_fig_w = w + abs(x_offset) * (max_per_stack-1 if max_per_stack else n-1)
+    stack_fig_h = h + abs(y_offset) * (max_per_stack-1 if max_per_stack else n-1)
+    # For multiple stacks, arrange them with user-defined offset
+    total_fig_w = stack_fig_w + (n_stacks-1) * stack_x_offset
+    total_fig_h = stack_fig_h + (n_stacks-1) * abs(stack_y_offset)
+
+    fig, ax = plt.subplots(figsize=(total_fig_w/100, total_fig_h/100), dpi=dpi)
+    fig.patch.set_alpha(0.0)  # Make the figure background transparent
+
+    for stack_num, (start, end) in enumerate(stack_indices):
+        stack_keys = keys[start:end]
+        stack_maps = maps[start:end]
+        stack_n = len(stack_maps)
+        if stack_n == 0:
+            continue
+
+        # Determine plotting order within stack
+        if front_on_top:
+            plot_indices = range(stack_n)
+        else:
+            plot_indices = reversed(range(stack_n))
+
+        # Offset for this stack
+        stack_x_shift = stack_num * stack_x_offset
+        stack_y_shift = stack_num * stack_y_offset
+
+        for i in plot_indices:
+            name = stack_keys[i]
+            m = stack_maps[i]
+            # Calculate offset for this map within the stack
+            if front_on_top:
+                offset_idx = i
+            else:
+                offset_idx = stack_n-1-i
+            x0 = x_offset * offset_idx * dx if dx >= 0 else stack_fig_w - w + x_offset * offset_idx * dx
+            y0 = y_offset * offset_idx * dy if dy >= 0 else stack_fig_h - h + y_offset * offset_idx * dy
+
+            # Add stack shift
+            x0 += stack_x_shift
+            y0 += stack_y_shift
+
+            m = bin_matrix(m**pow, bin_size=bin_size)
+
+            # Prevent flipping: set origin='upper' so (0,0) is top-left, and do not swap y-limits
+            ax.imshow(
+                m,
+                extent=(x0, x0+w, y0, y0+h),
+                cmap=cmap,
+                alpha=alpha if (i != (stack_n-1 if front_on_top else 0)) else 1.0,
+                zorder=stack_num*100 + i,
+                origin='upper'
+            )
+            
+            # Add border to each map
+            rect = plt.Rectangle((x0, y0), w, h, **border_params, zorder=stack_num*100 + i)
+            ax.add_patch(rect)
+            
+            # Label each map in the upper left of the heatmap
+            protein_id = os.path.basename(name).split("_unrelaxed")[0].split("_")[0]
+            haplotype_id = os.path.basename(name).split("_unrelaxed")[0].replace(protein_id + "_", "")
+            ax.text(
+                x0 + 2, y0 + 2 + 8,  # 2 px padding from top/left, 8 for font height
+                f"{revert_haplotype_naming(haplotype_id)}",
+                color='white', fontsize=40, zorder=stack_num*100 + 20, alpha=1,
+                va='bottom', ha='left', fontweight='bold', bbox=dict(facecolor='black', alpha=0.9, pad=1, edgecolor='none')
+            )
+
+    ax.set_xlim(0, total_fig_w)
+    ax.set_ylim(0, total_fig_h)  # y increases downward, so (0,0) is top-left
+    ax.axis('off') 
+    plt.show()

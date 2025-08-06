@@ -9,6 +9,9 @@ from traitlets import default
 import ensembl_rest
 import glob
 
+import matplotlib.pyplot as plt
+import seaborn as sns 
+
 import src.utils as utils
 import src.config as config
 import src.biopython as bp
@@ -3022,3 +3025,543 @@ def merge_haplotype_datasets(haplotype_datasets,
         haplotype_names = get_haplotype_names(merged, key='protein_haplotypes', as_df=True)
         print(f"Merged {haplotype_names['haplotype'].nunique()} haplotypes across {len(merged)} tx_ids.")
     return merged
+
+
+
+def plot_haplotypes_summary(haplotypes,
+                                max_edits = 10,
+                                bin_size = 200,
+                                bins=50, 
+                                color=("grey","grey"),
+                                edgecolor=("black","black"),
+                                figsize=(13, 4),
+                                title=("Number of Haplotypes per Protein", "Number of Wildtype (WT) Variants per Haplotype"),
+                                xlabel=("Number of Haplotypes", "Number of WT Variants"),
+                                ylabel=("Number of Proteins", "Number of Haplotypes"),
+                                gridspec_kw={'width_ratios': [0.3, 1]},
+                                verbose = True):
+    """
+    Plot the number of haplotypes per protein (subplot1) and 
+    the number of WT variants per haplotype (subplot2).
+
+    Args:
+        haplotypes (dict): A dict of haplotype datasets (dicts keyed by tx_id).
+        max_edits (int): The maximum number of edits to include in the plot.
+        bin_size (int): The size of the bins for the WT variants.
+        verbose (bool): Whether to print verbose output. Defaults to True.
+    """
+    import matplotlib.pyplot as plt
+    import pandas as pd
+
+    hap_df = haplotypes_to_df(haplotypes).reset_index()
+    hap_df = utils.add_edits(hap_df)
+
+    #### Prepare data for both plots ####
+    def edits_label(edits, max_edits=10, bin_size=200):
+        if edits <= max_edits:
+            return str(int(edits))
+        else:
+            bin_start = max_edits + 1 + ((edits - (max_edits + 1)) // bin_size) * bin_size
+            bin_end = bin_start + bin_size - 1
+            return f"{int(bin_start)}-\n{int(bin_end)}"
+
+    # Sort hap_df by edits
+    hap_df.sort_values(by="edits", inplace=True)
+
+    hap_df["edits_binned"] = hap_df["edits"].apply(lambda x: edits_label(x, max_edits=max_edits, bin_size=bin_size))
+    # Make edits_binned a categorical with order preserved
+    hap_df["edits_binned"] = pd.Categorical(hap_df["edits_binned"], categories=pd.unique(hap_df["edits_binned"]), ordered=True)
+
+    # Efficiently count haplotypes per bin
+    counts = hap_df["edits_binned"].value_counts(sort=False)
+
+    # Relabel the max_edits bin as "{max_edits}+"
+    labels = []
+    for label in counts.index:
+        labels.append(label)
+    counts.index = labels
+
+    # Data for plot 2
+    counts_per_protein = hap_df.groupby("ENST")["haplotype"].nunique().reset_index().sort_values(by="haplotype", ascending=False)
+
+    #### Create subplots: 1 row, 2 columns, width ratio 0.3:1 ####
+    fig, axes = plt.subplots(1, 2, figsize=figsize, gridspec_kw=gridspec_kw)
+
+    # --- Plot 2: Number of Haplotypes per Protein (now on the left) ---
+    ax1 = axes[0]
+    ax1.hist(counts_per_protein["haplotype"], bins=bins, color=color[0], edgecolor=edgecolor[0])
+    ax1.set_ylabel(ylabel[0])
+    ax1.set_xlabel(xlabel[0])
+    ax1.set_title(title[0])
+
+    # --- Plot 1: Number of WT Variants per Haplotype (now on the right) ---
+    ax2 = axes[1]
+    bars = ax2.bar(counts.index, counts.values, color=color[1], edgecolor=edgecolor[1])
+    ax2.spines['top'].set_visible(False)
+    for bar in bars:
+        height = bar.get_height()
+        if height > 0:
+            ax2.annotate(f"{int(height):,}", xy=(bar.get_x() + bar.get_width() / 2, height),
+                        xytext=(0, 3), textcoords="offset points",
+                        ha='center', va='bottom', fontsize=9)
+    ax2.set_ylabel(ylabel[1])
+    ax2.set_xlabel(xlabel[1])
+    ax2.set_title(title[1])
+
+    plt.tight_layout()
+    plt.show()
+
+
+
+def plot_haplotypes_by_superpop_specificity(
+    freq_df, ax=None, show=True
+):
+    """
+    Plot the number of unique haplotypes by superpopulation specificity.
+
+    Args:
+        hap_df (pd.DataFrame): DataFrame with haplotype info, must include
+            'nonzero_superpopulation_freqs', 'specific_superpopulation', 'haplotype'.
+        utils (module): Module with get_superpop_palette().
+        ax (matplotlib.axes.Axes or None): Optional axis to plot on.
+        show (bool): Whether to call plt.show().
+    Returns:
+        matplotlib.axes.Axes: The axis with the plot.
+    """
+    df = freq_df.copy()
+
+    # For rows where nonzero_superpopulation_freqs == 1, use specific_superpopulation as the category
+    mask = df['superpopulation_count'] == 1
+    df.loc[df['superpopulation_count']==0,"superpopulation_count"] = pd.NA
+
+    df['category'] = None
+    # For masked rows, use specific_superpopulation as before, but treat 0s as 'Unknown'
+    df.loc[mask, 'category'] = df.loc[mask, 'specific_superpopulation'].fillna('Unknown').apply(
+        lambda x: x if (x == 'Unknown') else (x.split(":")[-1] + "-specific")
+    )
+
+    # For non-masked rows, use f"{int(n)} superpops"
+    def safe_superpop_label(n):
+        try:
+            if pd.isna(n):
+                return "Unknown"
+            return f"{int(n)} superpops"
+        except Exception:
+            return "Unknown"
+
+    df.loc[~mask, 'category'] = df.loc[~mask, 'superpopulation_count'].apply(safe_superpop_label)
+
+    # Count unique haplotypes per category
+    haplotype_counts = df.groupby('category')['haplotype'].nunique().reset_index()
+    haplotype_counts = haplotype_counts.sort_values('haplotype', ascending=False)
+
+    # Set color palette: highlight specific superpopulations if present
+    palette = None
+    if any(mask): 
+        import matplotlib as mpl
+        from matplotlib import cm
+        import re
+
+        # Get the superpop palette for "-specific" categories
+        specific_palette = {f"{k}-specific": v for k, v in utils.get_superpop_palette().items()}
+
+        # Identify categories that start with an integer (e.g., "2 superpops")
+        int_cat_pattern = re.compile(r"^(\d+)\s+superpops$")
+        int_cat_matches = [
+            (cat, int(int_cat_pattern.match(str(cat)).group(1)))
+            for cat in haplotype_counts['category']
+            if int_cat_pattern.match(str(cat))
+        ]
+        int_cats = [cat for cat, _ in int_cat_matches]
+        int_cat_values = [val for _, val in int_cat_matches]
+
+        # Create a continuous palette for integer categories, excluding white
+        if int_cats:
+            norm = mpl.colors.Normalize(vmin=min(int_cat_values), vmax=max(int_cat_values))
+            cmap = cm.get_cmap("Greys")
+            # Exclude white colors (hex #ffffff or close to it)
+            def not_white(hex_color):
+                c = mpl.colors.to_rgb(hex_color)
+                return not (all(x > 0.98 for x in c))  # exclude almost white
+            int_palette = {
+                cat: color for cat, val in zip(
+                    int_cats, int_cat_values
+                )
+                if not_white((color := mpl.colors.to_hex(cmap(norm(val)))))
+            }
+        else:
+            int_palette = {}
+
+        # Merge palettes, prioritizing specific_palette for "-specific" and int_palette for integer categories
+        palette = {
+            cat: specific_palette[cat] if cat in specific_palette
+            else int_palette[cat] if cat in int_palette
+            else "#cccccc"
+            for cat in haplotype_counts['category']
+        }
+
+    if ax is None:
+        fig, ax = plt.subplots(figsize=(10, 6))
+    # Add black outline to each bar using edgecolor and linewidth
+    sns.barplot(
+        data=haplotype_counts,
+        x='category',
+        y='haplotype',
+        palette=palette,
+        ax=ax,
+        edgecolor='black',
+        linewidth=1.2
+    )
+    ax.set_xlabel('Superpopulation Specificity')
+    ax.set_ylabel('Haplotypes')
+    ax.set_title('Haplotypes by Superpopulation Specificity', pad=20)
+    ax.set_xticklabels(ax.get_xticklabels(), rotation=45, ha='right')
+    if show and ax is None:
+        plt.tight_layout()
+        plt.show()
+    return ax
+
+def plot_superpopulation_bar(haplotypes,   ax=None, repulsion=False):
+    """
+    Plot a stacked bar of individuals per superpopulation with connected labels, using label repulsion to avoid overlap.
+
+    Args:
+        haplotypes: Haplotype data.
+        utils (module): Module with get_superpop_palette().
+        min_spacing (int): Minimum vertical spacing between labels.
+        ax (matplotlib.axes.Axes or None): Optional axis to plot on.
+        repulsion (bool): Whether to use label repulsion (adjustText) for superpopulation labels.
+    Returns:
+        superpop_counts (pd.DataFrame): DataFrame with superpopulation counts.
+    """
+    import src.onekg as og
+    if repulsion:
+        try:
+            from adjustText import adjust_text
+        except ImportError:
+            raise ImportError("The 'adjustText' package is required for label repulsion. Install it via pip: pip install adjustText")
+
+    samples = get_haplotype_samples(haplotypes, unnest=True, remove_prefix=True)
+
+    og_meta = og.get_sample_metadata()
+    samples_df = og_meta.loc[og_meta["sample"].isin(samples)]
+
+    # Count unique samples per superpopulation
+    samples_df['superpopulation_fullname'] = (
+        samples_df['superpopulation'].map(og.SUPERPOP_NAMES_DICT) +
+        " (" + samples_df['superpopulation'] + ")"
+    )
+    superpop_counts = (
+        samples_df[['superpopulation', 'superpopulation_fullname']]
+        .value_counts()
+        .reset_index()
+    )
+    superpop_counts.sort_values(by='count', ascending=False, inplace=True)
+
+    # Prepare data for stacked barplot (single bar, segments by superpopulation)
+    if ax is None:
+        fig, ax = plt.subplots(figsize=(2, 5))
+    bottom = 0
+    bar_centers = []
+    bar_heights = []
+    superpop_labels = []
+    palette = utils.get_superpop_palette()
+
+    # Draw the stacked bar and record the center of each sub-bar
+    for _, row in superpop_counts.iterrows():
+        ax.bar(
+            x=0,
+            height=row['count'],
+            bottom=bottom,
+            color=palette[row['superpopulation']],
+            edgecolor='black'
+        )
+        # Calculate the center y position of this sub-bar
+        center = bottom + row['count'] / 2
+        bar_centers.append(center)
+        bar_heights.append(row['count'])
+        superpop_labels.append(row['superpopulation_fullname'])
+        bottom += row['count']
+
+    # Put the total number of samples at the top of the bar
+    total_samples = sum(bar_heights)
+    ax.text(
+        -0.5,
+        bottom + 0.02 * total_samples,  # a little above the top
+        f"Total: {total_samples}",
+        ha='left', va='bottom', fontsize=12, 
+    )
+
+    ax.set_ylabel('Individuals')
+    # Add extra space between the title and the plot below
+    ax.set_title('Individuals per Superpopulation', pad=20)
+    ax.set_xticks([0])
+    ax.set_xticklabels([''])
+
+    # Remove the top and right plot outline (spines)
+    ax.spines['top'].set_visible(False)
+    ax.spines['right'].set_visible(False)
+
+    # Add labels for each superpopulation to the right, connected by lines, using label repulsion
+    x_bar = 0
+    x_text = 0.7  # position for text labels to the right of the bar
+
+    # Prepare label positions and colors
+    sorted_centers = []
+    sorted_labels = []
+    sorted_colors = []
+    sorted_superpops = []
+    for center, label, superpop in zip(bar_centers, superpop_labels, superpop_counts['superpopulation']):
+        sorted_centers.append(center)
+        sorted_labels.append(label)
+        sorted_colors.append(palette[superpop])
+        sorted_superpops.append(superpop)
+
+    # Place text objects for adjustText or static placement
+    from matplotlib.patheffects import withStroke
+
+    texts = []
+    for y_bar, label, color in zip(sorted_centers, sorted_labels, sorted_colors):
+        # Place initial text at the bar center with a shadow effect for better visibility
+        txt = ax.text(
+            x_text, y_bar, label,
+            va='center', ha='left', fontsize=10, color=color, fontweight='bold',
+            path_effects=[withStroke(linewidth=1, foreground='grey')]
+        )
+        texts.append(txt)
+
+    # Draw lines from bar to text (initially, will be updated after adjustText if repulsion is on)
+    connectors = []
+    for y_bar, txt, color in zip(sorted_centers, texts, sorted_colors):
+        # Draw a line from the center of the bar to the label
+        # We'll update the line after adjustText if needed
+        line, = ax.plot([x_bar, txt.get_position()[0]], [y_bar, txt.get_position()[1]], color=color, lw=1, zorder=0)
+        connectors.append(line)
+
+    if repulsion:
+        # Use adjustText to repel labels vertically
+        adjust_text(
+            texts,                                  # list of matplotlib.text.Text objects for superpopulation labels
+            # only_move={'points':'y', 'text':'y'},   # restrict movement to vertical (y) direction for both points and text
+            autoalign='y',                          # automatically align text vertically
+            expand_text=(1.2, 1.2),                 # expand repulsion area around text by this factor (x, y)
+            expand_points=(1.2, 1.2),               # expand repulsion area around points by this factor (x, y)
+            force_text=0.5,                         # strength of repulsion force for text
+            force_points=0.5,                       # strength of repulsion force for points
+            lim=100,                                # maximum number of iterations for adjustment
+            ax=ax                                   # matplotlib Axes object to apply adjustments on
+        )
+
+    # After adjustText (if used), update connector lines
+    for y_bar, txt, line in zip(sorted_centers, texts, connectors):
+        x_end, y_end = txt.get_position()           # x_end, y_end: new position of the label after adjustment
+        line.set_data([x_bar, x_end], [y_bar, y_end])  # update connector line from bar (x_bar, y_bar) to label (x_end, y_end)
+
+    ax.set_xlim(-0.5, 1.5)                          # set x-axis limits to provide space for labels
+    if ax is None:                                  # if no Axes object is provided, use tight layout and show plot
+        plt.tight_layout()
+        plt.show()
+    return superpop_counts                          # return DataFrame with superpopulation counts
+
+ 
+def plot_haplotypes_and_superpop_bar(
+    hap_df, haplotypes, width_ratios=(2, 1), figsize=(12, 5),  show=True
+):
+    """
+    Plot the superpopulation bar and the haplotypes by superpopulation specificity as subplots, with the superpopulation bar on the left and haplotypes on the right.
+
+    Args:
+        hap_df (pd.DataFrame): DataFrame with haplotype info.
+        haplotypes: Haplotype data.
+        utils (module): Module with get_superpop_palette().
+        width_ratios (tuple): Width ratios for the two subplots (superpop bar, haplotype).
+        figsize (tuple): Figure size.
+        min_spacing (int): Minimum vertical spacing between labels in superpop bar.
+        show (bool): Whether to call plt.show().
+    Returns:
+        (fig, axes, superpop_counts): Figure, axes array, and superpop_counts DataFrame.
+    """
+    fig, axes = plt.subplots(
+        1, 2, figsize=figsize, gridspec_kw={'width_ratios': width_ratios}
+    )
+
+    # Left: superpopulation bar
+    superpop_counts = plot_superpopulation_bar(
+        haplotypes,  ax=axes[0]
+    )
+
+    # Right: haplotypes by superpop specificity
+    plot_haplotypes_by_superpop_specificity(
+        hap_df, ax=axes[1], show=False
+    )
+
+    plt.tight_layout()
+    if show:
+        plt.show()
+    return fig, axes, superpop_counts
+
+
+
+def add_top_superpopulation_columns(
+    df,
+    superpopulation_col="superpopulation"
+):
+    """
+    Adds columns for the top superpopulation and its frequency for each row.
+
+    Args:
+        df (pd.DataFrame): DataFrame with frequency columns (e.g., 'AFR_freq', etc.).
+        superpopulation_col (str): Name of the superpopulation column.
+
+    Returns:
+        pd.DataFrame: DataFrame with added top superpopulation columns.
+    """
+    import pandas as pd
+
+    freq_cols = [col for col in df.columns if col.endswith('_freq') and not col.startswith('top_')]
+    # Add the top superpopulation column
+    df[f'top_{superpopulation_col}'] = (
+        df[freq_cols].idxmax(axis=1).str.strip('_freq')
+    )
+    # Add the top superpopulation frequency column
+    df[f'top_{superpopulation_col}_freq'] = (
+        df[freq_cols].max(axis=1)
+    )
+    return df
+
+def add_specificity_columns(
+    df,
+    superpopulation_col="superpopulation",
+    haplotype_col="haplotype", 
+    verbose=False,
+):
+    """
+    Adds group-specificity columns to a haplotype frequency dataframe.
+
+    Args:
+        df (pd.DataFrame): DataFrame with frequency columns (e.g., 'AFR_freq', etc.).
+        superpopulation_col (str): Name of the superpopulation column.
+        haplotype_col (str): Name of the haplotype column.
+        og (module, optional): Module with get_sample_metadata() for group names.
+        verbose (bool): Print summary statistics.
+
+    Returns:
+        pd.DataFrame: DataFrame with added specificity columns.
+    """
+    import pandas as pd
+
+    specific_col = f'specific_{superpopulation_col}'
+    count_col = f'{superpopulation_col}_count' 
+
+    # Try to get group names from og if provided, else infer from columns
+    if og is not None:
+        groups = og.get_sample_metadata()[superpopulation_col].dropna().unique()
+        freq_cols = [col for col in df.columns if col.endswith('_freq') and col.replace('_freq', '') in groups]
+    else:
+        # Infer group names from columns ending with _freq
+        freq_cols = [col for col in df.columns if col.endswith('_freq') and not col.startswith('top_')]
+        groups = [col.replace('_freq', '') for col in freq_cols]
+
+    if len(freq_cols) == 0:
+        raise ValueError("No frequency columns found in dataframe")
+
+    # Add a column indicating how many frequency columns are non-zero and non-nan for each row
+    df[count_col] = df[freq_cols].apply(
+        lambda row: (row.notna() & (row > 0)).sum(), axis=1
+    )
+
+    # For rows where only one frequency column is non-zero, identify which group it is
+    def get_nonzero_group(row):
+        if row[count_col] == 1:
+            for col in freq_cols:
+                if pd.notna(row[col]) and row[col] > 0:
+                    return col.replace('_freq', '')
+        return None
+
+    # Add a column indicating which group has the non-zero frequency (for group-specific variants)
+    df[specific_col] = df.apply(get_nonzero_group, axis=1)
+
+    # Count how many variants are specific to each group
+    if verbose:
+        print(f"\nNumber of variants specific to each {superpopulation_col}:")
+        print(df[df[count_col] == 1][specific_col].value_counts())
+        # Calculate the percentage of variants that are group-specific
+        n_specific = df.loc[df[count_col] == 1][haplotype_col].nunique()
+        n_total = df[haplotype_col].nunique()
+        print(f"\nPercentage of {superpopulation_col}-specific haplotypes: {n_specific/n_total:.2%}")
+
+    return df
+
+def calculate_haplotype_frequency_per_superpop(
+    haps_to_samples,
+    haplotype_col="haplotype",
+    superpopulation_col="superpopulation",
+    cast_frequencies=False,
+    fillna=0, 
+    verbose=False,
+    add_specificity_cols=True,
+):
+    """
+    Calculate the frequency (portion of rows) of each haplotype per superpopulation,
+    and optionally add columns for group-specificity as in file_context_0.
+
+    Args:
+        haps_to_samples (pd.DataFrame): DataFrame with at least 'haplotype' and 'superpopulation' columns.
+        cast_frequencies (bool): If True, returns wide format with frequency columns per superpopulation.
+        fillna (scalar): Value to fill missing frequencies with.
+        og (module, optional): Module with get_sample_metadata() for group names.
+        verbose (bool): Print summary statistics.
+        add_specificity_cols (bool): If True, add group-specificity columns as in file_context_0.
+
+    Returns:
+        pd.DataFrame: DataFrame with frequency columns and optionally specificity columns.
+    """ 
+
+    # Calculate the count of each haplotype per superpopulation
+    hap_freq_per_superpop = (
+        haps_to_samples
+        .groupby([haplotype_col, superpopulation_col])
+        .size()
+        .reset_index(name='count')
+    )
+    # Get total counts per superpopulation
+    superpop_totals = (
+        haps_to_samples
+        .groupby(superpopulation_col)
+        .size()
+        .reset_index(name='total')
+    )
+    # Merge and calculate frequency
+    hap_freq_per_superpop = hap_freq_per_superpop.merge(superpop_totals, on=superpopulation_col)
+    hap_freq_per_superpop['frequency'] = hap_freq_per_superpop['count'] / hap_freq_per_superpop['total']
+
+    if cast_frequencies:
+        hap_freq_per_superpop = hap_freq_per_superpop.pivot_table(
+            index=haplotype_col,
+            columns=superpopulation_col,
+            values="frequency"
+        ).add_suffix("_freq")
+
+        # Fill missing values with the fillna value
+        if fillna is not None:
+            hap_freq_per_superpop = hap_freq_per_superpop.fillna(fillna)
+
+        # Add the top superpopulation columns using the new subfunction
+        hap_freq_per_superpop = add_top_superpopulation_columns(
+            hap_freq_per_superpop,
+            superpopulation_col=superpopulation_col
+        )
+
+        # Reset the index to get the haplotype column back
+        hap_freq_per_superpop.reset_index(inplace=True)
+
+        # Add group-specificity columns as in file_context_0
+        if add_specificity_cols:
+            hap_freq_per_superpop = add_specificity_columns(
+                hap_freq_per_superpop,
+                superpopulation_col=superpopulation_col,
+                haplotype_col=haplotype_col, 
+                verbose=verbose,
+            )
+
+    return hap_freq_per_superpop

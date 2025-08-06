@@ -928,8 +928,9 @@ def get_clinsig_palette(values=['path', 'likely_path', 'likely_benign', 'benign'
     return make_palette(values, palette) 
 
 
-def get_superpop_palette(values=['AFR', 'AMR', 'EAS', 'EUR', 'SAS'],
-                        palette='Set2'):
+def get_superpop_palette(values=['AFR', 'AMR', 'EAS', 'EUR', 
+                                 'SAS', "CSA", "MID", "OCE"],
+                        palette='Set3'):
     cmap = make_palette(values, palette)
     cmap["REF"] = "grey"
     return cmap
