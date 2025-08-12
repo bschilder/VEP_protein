@@ -1614,6 +1614,20 @@ def minmax_normalize(X, procedure=["rows", "cols"], verbose=True):
     return X
 
 
+def minmax_normalize_numpy(X):
+    """
+    Min-max normalize a matrix by columns and/or rows in a specified order.
+    Args:
+        X: Matrix to normalize (pd.DataFrame or np.ndarray)
+    Returns:
+        Normalized matrix
+    """
+    X_min = np.nanmin(X, axis=1, keepdims=True)
+    X_max = np.nanmax(X, axis=1, keepdims=True)
+    X = (X - X_min) / (X_max - X_min + 1e-8)
+    return X
+
+
 def fill_coordinates(df, 
                      full_length,
                      x_id_col='variant',

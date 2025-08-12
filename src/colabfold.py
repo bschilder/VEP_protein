@@ -64,6 +64,9 @@ from PIL import Image
 from tqdm import tqdm
 import os
 import glob
+import math
+
+import src.utils as utils
 
 AFDB_CACHE = pooch.os_cache("alphafold_db")
 
@@ -237,6 +240,49 @@ def get_contact_map(structure,
             
     return contact_map
 
+def import_contact_maps(
+    pdb_files,
+    return_distance_map=True,
+    continuous=True,
+    verbose=True,
+    **kwargs
+):
+    """
+    Import contact maps from a list of PDB files.
+
+    This function processes each PDB file in the provided list, extracts the structure,
+    and computes the contact map using the specified parameters. Empty files are skipped.
+
+    Args:
+        pdb_files (list of str): List of paths to PDB files.
+        return_distance_map (bool, optional): If True, return the normalized distance map instead of a contact map. Default is True.
+        continuous (bool, optional): If True, use continuous scoring for contact map; otherwise, use binary scoring. Default is True.
+        verbose (bool, optional): If True, print progress and information. Default is True.
+        **kwargs: Additional keyword arguments passed to get_contact_map.
+
+    Returns:
+        dict: A dictionary mapping each PDB file path to its corresponding contact map (numpy.ndarray).
+
+    Example:
+        >>> pdb_files = ["protein1.pdb", "protein2.pdb"]
+        >>> contact_maps = import_contact_maps(pdb_files, continuous=False)
+        >>> print(contact_maps["protein1.pdb"].shape)
+    """
+    contact_maps = {}
+    for pdb_file in tqdm(pdb_files):
+        if os.path.getsize(pdb_file) == 0:
+            print(f"Skipping {pdb_file} because it is empty")
+            continue
+        structure = import_pdb(pdb_file)
+        contact_maps[pdb_file] = get_contact_map(
+            structure,
+            return_distance_map=return_distance_map,
+            continuous=continuous,
+            verbose=verbose,
+            **kwargs
+        )
+    return contact_maps
+
 def get_plddt(structure,
               verbose: bool = False) -> pd.DataFrame:
     """Extract pLDDT scores from a protein structure and categorize them by confidence level.
@@ -409,23 +455,27 @@ def bin_matrix(X, bin_size=10, agg_func=np.nanmax):
         axis=(1,3)
     )
 
-def expand_matrix(X, target_size=None):
+def expand_matrix(X, target_size=None,
+                  verbose=False):
     """
     Expand a binned matrix back to original dimensions by repeating values.
     
     Args:
         X (np.ndarray): Input binned matrix
         target_size (int): Target size for the expanded matrix (default: 1863)
+        verbose (bool): Whether to print verbose output (default: True).
         
     Returns:
         np.ndarray: Expanded matrix with dimensions (target_size, target_size)
     """
     if target_size is None:
         target_size = X.shape[0]
-        print(f"No target size specified, using input size {target_size}")
+        if verbose:
+            print(f"No target size specified, using input size {target_size}")
 
     if X.shape[0] == target_size and X.shape[1] == target_size:
-        print(f"Matrix already has target size {target_size}x{target_size}")
+        if verbose:
+            print(f"Matrix already has target size {target_size}x{target_size}")
         return X
     
     # Calculate expansion factor based on input and target sizes
@@ -440,8 +490,9 @@ def expand_matrix(X, target_size=None):
 
     if current_size < target_size:
         # Pad with zeros if too small
-        print(f"Expanding x-axis by {target_size - current_size}")
-        print(f"Expanding y-axis by {target_size - current_size}")
+        if verbose:
+            print(f"Expanding x-axis by {target_size - current_size}")
+            print(f"Expanding y-axis by {target_size - current_size}")
         expanded_matrix = np.pad(expanded_matrix, 
                                ((0, target_size - current_size), 
                                 (0, target_size - current_size)), 
@@ -551,6 +602,28 @@ def plot_contact_map(contact_map,
 
     return contact_map, contact_map_binned
 
+
+
+def pad_matrices_to_max_shape(matrices,
+                              pad_value=np.nan):
+    """
+    Pad all matrices in the list to the maximum shape among them using np.nan.
+    """
+    max_shape = np.array([m.shape for m in matrices]).max(axis=0)
+    padded_matrices = []
+    for m in matrices:
+        pad_height = max_shape[0] - m.shape[0]
+        pad_width = max_shape[1] - m.shape[1]
+        if pad_height > 0 or pad_width > 0:
+            pad_widths = ((0, pad_height), (0, pad_width))
+            m_padded = np.pad(m, pad_widths, 
+                                mode='constant', 
+                                constant_values=pad_value)
+            padded_matrices.append(m_padded)
+        else:
+            padded_matrices.append(m)
+    return padded_matrices
+
 def average_matrices(matrices, 
                      weights=None, 
                      scale_multipliers=None,
@@ -579,6 +652,14 @@ def average_matrices(matrices,
     numpy.ndarray
         Weighted average of the input matrices
     """
+
+    if isinstance(matrices, dict):
+        matrices = list(matrices.values()) 
+
+    # Subset to matrices that are the same size as the REF
+    # If matrices are not all the same size, pad the smaller matrices to match the size of the largest
+    matrices = pad_matrices_to_max_shape(matrices)
+
     if weights is None:
         weights = [1] * len(matrices)
 
@@ -639,6 +720,43 @@ def normalize_rows(X: np.ndarray,
         
     return X
 
+
+def get_haplotype_ids(names, revert_naming=True, as_dict=False):
+    """
+    Extracts the haplotype ID from a given filename.
+
+    The function assumes the filename is of the form:
+    "<protein_id>_<haplotype_id>_unrelaxed..." or "<protein_id>_<haplotype_id>..."
+
+    Parameters
+    ----------
+    name : str
+        The filename or path from which to extract the haplotype ID.
+    revert_naming : bool, default=True
+        If True, revert the haplotype naming to the original format.
+
+    Returns
+    -------
+    str
+        The haplotype ID extracted from the filename.
+    """
+    names = utils.as_list(names)
+
+    def get_haplotype_id(name, revert_naming=True):
+        protein_id = os.path.basename(name).split("_unrelaxed")[0].split("_")[0]
+        haplotype_id = os.path.basename(name).split("_unrelaxed")[0].replace(protein_id + "_", "")
+        if revert_naming:
+            haplotype_id = revert_haplotype_naming(haplotype_id)
+        return haplotype_id
+    
+    haplotype_ids = [get_haplotype_id(name, revert_naming=revert_naming) for name in names]
+    if as_dict is True:
+        return {name: haplotype_id for name, haplotype_id in zip(names, haplotype_ids)}
+    elif as_dict == -1:
+        return {haplotype_id: name for name, haplotype_id in zip(names, haplotype_ids)}
+    else:
+        return haplotype_ids
+
 def animate_contact_maps_variation(contact_maps, 
                                  n_frames=None,
                                  bin_size=10,
@@ -695,8 +813,7 @@ def animate_contact_maps_variation(contact_maps,
                         cmap=cmap, 
                         interpolation="nearest")
         
-        protein_id = os.path.basename(name).split("_unrelaxed")[0].split("_")[0]
-        haplotype_id = os.path.basename(name).split("_unrelaxed")[0].replace(protein_id+"_","")
+        haplotype_id = get_haplotype_ids(name)[0]
         
         # Set haplotype ID left justified
         ax.set_title(f"{haplotype_id}", fontsize=12, loc='left', pad=10)
@@ -1911,7 +2028,7 @@ def create_bokeh_interactive_umap(af2_meta, contact_maps,
     return layout
 
 
-def get_ref_key(contact_maps, pattern="REF"):
+def get_ref_key(contact_maps, pattern="REF", error=True):
     """
     Find and return the key from contact_maps whose filename contains the given pattern
     in the second underscore-separated field.
@@ -1924,7 +2041,7 @@ def get_ref_key(contact_maps, pattern="REF"):
         str: The first key matching the pattern.
 
     Raises:
-        IndexError: If no key matches the pattern.
+        ValueError: If no key matches the pattern.
         ValueError: If the filename does not have at least two underscore-separated fields.
 
     Example:
@@ -1935,7 +2052,29 @@ def get_ref_key(contact_maps, pattern="REF"):
         >>> get_ref_key(contact_maps)
         '/path/to/sample_REF_001.npy'
     """
-    return [x for x in contact_maps.keys() if pattern in os.path.basename(x).split("_")[1]][0]
+    import os
+    matches = []
+    for x in contact_maps.keys():
+        base = os.path.basename(x)
+        fields = base.split("_")
+        if len(fields) < 2:
+            if error:
+                raise ValueError(f"Filename '{base}' does not have at least two underscore-separated fields.")
+            else:
+                continue
+        if pattern in fields[1]:
+            matches.append(x)
+    if not matches:
+        if error:
+            raise ValueError(f"No key found in contact_maps with pattern '{pattern}' in the second underscore-separated field.")
+        else:
+            return None
+    if len(matches) > 1:
+        if error:
+            raise ValueError(f"Multiple keys found in contact_maps with pattern '{pattern}' in the second underscore-separated field.")
+        else:
+            return None
+    return matches[0]
 
 
 def plot_contact_map_entropy(
@@ -2053,12 +2192,16 @@ def nonzero_mean(arr, axis=None):
 
 def plot_contact_map_diff(
     contact_maps,
+    ref_key=None,
     bin_size=20,
     cmap="seismic_r",
     figsize=(8, 6),
     dpi=100,
     agg_func=nonzero_mean,
     title="Gain/Loss of Contact Relative to REF",
+    show_plot=True,
+    verbose=True,
+    weights=None,
 ):
     """
     Plot the difference in contact probability between reference and non-reference contact maps.
@@ -2076,7 +2219,10 @@ def plot_contact_map_diff(
         dpi (int): Dots per inch for the figure.
         agg_func (callable): Aggregation function to use when binning (default: nonzero_mean).
         title (str): Title for the plot.
-
+        show_plot (bool): Whether to show the plot (default: True).
+        verbose (bool): Whether to print verbose output (default: True).
+        ref_key (str): Key of the reference contact map (default: None).
+        weights (dict or list or np.ndarray, optional): Weights for each non-ref contact map. If dict, keys must match non-ref keys.
     Returns:
         np.ndarray: The difference map (not binned/expanded).
 
@@ -2091,7 +2237,8 @@ def plot_contact_map_diff(
     import matplotlib.pyplot as plt
 
     # Determine the reference contact map (assume first in dict is ref)
-    ref_key = get_ref_key(contact_maps)
+    if ref_key is None:
+        ref_key = get_ref_key(contact_maps)
     ref_map = contact_maps[ref_key]
     ref_n_res = ref_map.shape[0]
 
@@ -2116,52 +2263,69 @@ def plot_contact_map_diff(
     # Stack all non-REF binarized contact maps into a 3D array (n_nonref, n_res, n_res)
     nonref_bin_maps = np.stack([binarize_map(filtered_contact_maps[k]) for k in non_ref_keys])
 
-    # Compute, for each (i,j), the proportion of non-REF maps that differ from REF
-    # But also distinguish between loss and gain of contact:
-    #   - If REF has contact (1) and most non-REF lose it (0), value will be negative
-    #   - If REF has no contact (0) and most non-REF gain it (1), value will be positive
-    #   - If no change, value is 0
-
-    # For each (i,j), count how many non-REFs have a contact (1)
-    nonref_contact_sum = nonref_bin_maps.sum(axis=0)  # shape: (n_res, n_res)
+    # Handle weights
     n_nonref = nonref_bin_maps.shape[0]
+    if weights is not None:
+        # Accept dict, list, or np.ndarray
+        if isinstance(weights, dict):
+            # Map non_ref_keys to weights
+            weights_arr = np.array([weights[k] for k in non_ref_keys], dtype=float)
+        else:
+            weights_arr = np.array(weights, dtype=float)
+            if weights_arr.shape[0] != n_nonref:
+                raise ValueError(f"weights must have length {n_nonref} (number of non-ref contact maps)")
+        # Normalize weights to sum to 1 (for proportions)
+        weights_arr = weights_arr / np.sum(weights_arr)
+        # Compute weighted sum for each (i,j)
+        # shape: (n_nonref, n_res, n_res) * (n_nonref, 1, 1) -> (n_res, n_res)
+        weighted_sum = np.tensordot(weights_arr, nonref_bin_maps, axes=([0], [0]))
+        fraction_nonref_contact = weighted_sum  # already weighted average
+    else:
+        # For each (i,j), count how many non-REFs have a contact (1)
+        nonref_contact_sum = nonref_bin_maps.sum(axis=0)  # shape: (n_res, n_res)
+        fraction_nonref_contact = nonref_contact_sum / n_nonref
 
     # For each (i,j), compute the difference in contact probability relative to REF
     # If REF has contact (1): (fraction of non-REFs with contact) - 1  (so negative if most lose)
     # If REF has no contact (0): (fraction of non-REFs with contact) - 0 (so positive if most gain)
-    fraction_nonref_contact = nonref_contact_sum / n_nonref
     diff_vs_ref = fraction_nonref_contact - ref_bin  # shape: (n_res, n_res)
     # Range: -1 (all lost contact), 0 (no change), +1 (all gained contact)
 
-    print("Difference-vs-REF map shape:", diff_vs_ref.shape)
-    diff_vs_ref_binned = bin_matrix(diff_vs_ref, bin_size=bin_size, agg_func=agg_func)
-    diff_vs_ref_binned = expand_matrix(diff_vs_ref_binned, target_size=ref_map.shape[0])
+    if verbose:
+        print("Difference-vs-REF map shape:", diff_vs_ref.shape)
 
-    plt.figure(figsize=figsize, dpi=dpi)
-    im = plt.imshow(
+    diff_vs_ref_binned = bin_matrix(diff_vs_ref, bin_size=bin_size, agg_func=agg_func)
+    diff_vs_ref_binned = expand_matrix(diff_vs_ref_binned, target_size=ref_map.shape[0],
+                                       verbose=verbose)
+
+    fig, ax = plt.subplots(figsize=figsize, dpi=dpi)
+    im = ax.imshow(
         diff_vs_ref_binned,
         cmap=cmap,
         interpolation='nearest',
         vmin=-1, vmax=1
     )
-    plt.title(title)
-    plt.xlabel("Residue index")
-    plt.ylabel("Residue index")
-    cbar = plt.colorbar(im, label="Contact change vs REF")
+    ax.set_title(title)
+    ax.set_xlabel("Residue position")
+    ax.set_ylabel("Residue position")
+    cbar = plt.colorbar(im, ax=ax, label="Contact change vs REF")
     cbar.set_ticks([-1, -0.5, 0, 0.5, 1])
     cbar.set_ticklabels(['Lost in all', '-0.5', 'No change', '+0.5', 'Gained in all'])
     plt.tight_layout()
-    plt.show()
+    if show_plot:
+        plt.show()
+    else:
+        plt.close(fig)
 
-    return diff_vs_ref
-
+    return fig, diff_vs_ref
 
 def plot_contact_map_diff_barplot(
     diff_map, 
     title="Contact Points Gained vs Lost", 
     figsize=(4, 5), 
     cmap="seismic_r",
-    percent_precision=2
+    percent_precision=2,
+    ax=None
 ):
     """
     Plot a barplot of the number of contact points gained and lost,
@@ -2173,6 +2337,11 @@ def plot_contact_map_diff_barplot(
         figsize: Figure size for the plot.
         cmap: Colormap for the bars.
         percent_precision: Number of decimal places to show for percent values.
+        ax: Optional matplotlib Axes to plot on. If None, a new figure and axes are created.
+
+    Example:
+        >>> diff_map = plot_contact_map_diff(contact_maps, bin_size=10)
+        >>> plot_contact_map_diff_barplot(diff_map)
     """
     import matplotlib.pyplot as plt
     import numpy as np
@@ -2202,15 +2371,19 @@ def plot_contact_map_diff_barplot(
     # Plot as barplot
     import matplotlib as mpl
     cmap_obj = mpl.colormaps.get_cmap(cmap)
-    # For "Gained" (positive), use the high end; for "Lost" (negative), use the low end
-    gained_color = cmap_obj(1.0)
-    lost_color = cmap_obj(0.0)
-    colors = [gained_color, lost_color]
+    # For "Gained" (positive), use the high end; for "Lost" (negative), use the low end 
+    colors = [cmap_obj(1.0),  cmap_obj(0.0)]
 
     labels = df['Type']
     values = df['Count']
 
-    fig, ax = plt.subplots(figsize=figsize)
+    created_fig = False
+    if ax is None:
+        fig, ax = plt.subplots(figsize=figsize)
+        created_fig = True
+    else:
+        fig = ax.figure
+
     bars = ax.bar(labels, values, color=colors)
     ax.set_ylabel('Number of contact points')
     ax.set_title(title)
@@ -2218,7 +2391,7 @@ def plot_contact_map_diff_barplot(
         height = bar.get_height()
         percent = df['Percent'].iloc[i]
         percent_fmt = f"{{:.{percent_precision}f}}"
-        ax.annotate(f'{int(height)} ({percent_fmt.format(percent)}%)',
+        ax.annotate(f'{int(height)}\n({percent_fmt.format(percent)}%)',
                     xy=(bar.get_x() + bar.get_width() / 2, height),
                     xytext=(0, 3),  # 3 points vertical offset
                     textcoords="offset points",
@@ -2228,9 +2401,10 @@ def plot_contact_map_diff_barplot(
     ymin, ymax = ax.get_ylim()
     ax.set_ylim(ymin, ymax + max(values)*0.08 + 10)
 
-    plt.show()
+    if created_fig:
+        plt.show()
 
-    return df
+    return fig, df
 
 
 def revert_haplotype_naming(names, sep="_"):
@@ -2254,10 +2428,696 @@ def revert_haplotype_naming(names, sep="_"):
         return ",".join(reverted)
     
     if isinstance(names, str):
-        return revert_one(names)
+        return revert_one(os.path.basename(names))
     else:
         return [revert_one(name) for name in names]
     
+
+
+def compute_highlight_scores(
+    mat1,
+    mat2,
+    highlight_min_size,
+    highlight_n_regions,
+    torch_device,
+    zero_thresh=0.001,
+    use_zero_fraction=False,
+    diff_mode="diff",  # "diff" (default, subtraction/abs diff), or "cosine"
+    stride=1
+):
+    """
+    Compute highlight region scores for two matrices to identify the most different regions.
+
+    This function slides a square window of size `highlight_min_size` over both input matrices,
+    and computes, for each window position, a score that reflects how different the two matrices
+    are in that region. The scoring can either emphasize regions where one matrix is mostly zero
+    and the other is not (if use_zero_fraction=True), or simply use the absolute difference
+    between the two matrices in each window (if use_zero_fraction=False and diff_mode="diff"),
+    or use cosine distance (if diff_mode="cosine").
+
+    The function uses PyTorch for efficient convolution operations.
+
+    Args:
+        mat1 (np.ndarray): First input matrix (e.g., haplotype contact map), shape (L, L).
+        mat2 (np.ndarray): Second input matrix (e.g., reference contact map), shape (L, L).
+        highlight_min_size (int): Side length of the square window to scan for differences.
+        highlight_n_regions (int): Number of top regions to return (more indices are returned to avoid overlap).
+        torch_device (torch.device): PyTorch device to use for computation (e.g., "cpu" or "cuda").
+        use_zero_fraction (bool): If True, score is high when one matrix is mostly zero and the other is not.
+                                  If False, score is the sum of absolute differences in the window (if diff_mode="diff").
+        diff_mode (str): "diff" (default, subtraction/abs diff) or "cosine" (cosine distance in window).
+        stride (int): Stride for the sliding window (default: 1).
+
+    Returns:
+        score (np.ndarray): 2D array of scores for each window position, shape depends on stride.
+        idx_sorted (np.ndarray): 1D array of flat indices of the top-scoring regions, sorted in descending order.
+
+    Notes:
+        - The function returns more indices than `highlight_n_regions` to allow for post-filtering of overlapping regions.
+        - The threshold for "close to zero" is set to 0.05, but can be adjusted in the code.
+    """
+    import torch
+    import torch.nn.functional as F
+    import numpy as np
+
+    # Convert to torch tensors
+    mat1_t = torch.from_numpy(mat1).float().to(torch_device)
+    mat2_t = torch.from_numpy(mat2).float().to(torch_device)
+
+    # Convolution kernel for windowed sum
+    kernel = torch.ones((1, 1, highlight_min_size, highlight_min_size), dtype=torch.float32, device=torch_device)
+    mat1_4d = mat1_t.unsqueeze(0).unsqueeze(0)  # (1,1,L,L)
+    mat2_4d = mat2_t.unsqueeze(0).unsqueeze(0)  # (1,1,L,L)
+
+    if diff_mode == "cosine":
+        # Compute cosine distance in each window in a memory-efficient way (avoid storing all windows at once)
+        L = mat1.shape[0]
+        out_size = (L - highlight_min_size) // stride + 1
+        score = np.empty((out_size, out_size), dtype=np.float32)
+
+        # Precompute denominator for normalization for each window in mat1 and mat2
+        # We'll use torch.nn.functional.unfold, but process in small batches to save memory
+        unfold = torch.nn.Unfold(kernel_size=(highlight_min_size, highlight_min_size), stride=stride)
+        # Get number of windows
+        num_windows = out_size * out_size
+        batch_size = 1024  # Tune this for your memory constraints
+
+        # Unfold mat1 and mat2, but process in batches
+        # We'll process by rows to minimize memory
+        mat1_windows = unfold(mat1_4d).squeeze(0).T  # (num_windows, window*window)
+        mat2_windows = unfold(mat2_4d).squeeze(0).T  # (num_windows, window*window)
+
+        # Compute cosine distance for each window pair in batches
+        for start in range(0, num_windows, batch_size):
+            end = min(start + batch_size, num_windows)
+            m1 = mat1_windows[start:end]  # (batch, window*window)
+            m2 = mat2_windows[start:end]  # (batch, window*window)
+            # Normalize
+            m1_norm = m1 / (m1.norm(dim=1, keepdim=True) + 1e-8)
+            m2_norm = m2 / (m2.norm(dim=1, keepdim=True) + 1e-8)
+            # Cosine similarity
+            cos_sim = (m1_norm * m2_norm).sum(dim=1)
+            cos_dist = 1.0 - cos_sim
+            # Place in score array
+            score_flat_idx = np.arange(start, end)
+            score.ravel()[score_flat_idx] = cos_dist.cpu().numpy()
+    elif use_zero_fraction:
+        # Compute the fraction of values close to zero in each window for both matrices
+
+        mat1_zero = (mat1_t < zero_thresh).float().unsqueeze(0).unsqueeze(0)
+        mat2_zero = (mat2_t < zero_thresh).float().unsqueeze(0).unsqueeze(0)
+        frac1_zero = F.conv2d(mat1_zero, kernel, stride=stride).squeeze().cpu().numpy() / (highlight_min_size**2)
+        frac2_zero = F.conv2d(mat2_zero, kernel, stride=stride).squeeze().cpu().numpy() / (highlight_min_size**2)
+
+        # Score: highlight where one is mostly zero and the other is not
+        # For each window, score = max(frac1_zero * (1-frac2_zero), frac2_zero * (1-frac1_zero))
+        # This is high when one is mostly zero and the other is not
+        score = np.maximum(
+            frac1_zero * (1 - frac2_zero),
+            frac2_zero * (1 - frac1_zero)
+        )
+    elif diff_mode == "sum":
+        # Score: absolute difference of sums in the window (not sum of differences)
+        mat1_sum = F.conv2d(mat1_t.unsqueeze(0).unsqueeze(0), kernel, stride=stride).squeeze()
+        mat2_sum = F.conv2d(mat2_t.unsqueeze(0).unsqueeze(0), kernel, stride=stride).squeeze()
+        score = torch.abs(mat1_sum - mat2_sum).cpu().numpy()
+    else:
+        # Score: sum of absolute differences in the window
+        abs_diff = torch.abs(mat1_t - mat2_t).unsqueeze(0).unsqueeze(0)
+        score = F.conv2d(abs_diff, kernel, stride=stride).squeeze().cpu().numpy()
+
+    score_flat = score.ravel()
+    # Get more indices than needed to avoid overlap, then filter below
+    idx_sorted = np.argpartition(-score_flat, highlight_n_regions*8)[:highlight_n_regions*8]
+    idx_sorted = idx_sorted[np.argsort(-score_flat[idx_sorted])]  # sort top indices
+
+    return score, idx_sorted
+
+
+def plot_contact_map_subplots(
+    axes=None,
+    contact_maps=None,
+    most_diff_contact_maps=None,
+    max_subplots=6,
+    split_ref_haplotype=False,
+    show_diag=False,
+    bin_matrix=None,
+    pow=4,
+    bin_size=10,
+    cmap="gnuplot2",
+    split_divider_params={"linestyle": "solid", "color": "white", "width": 1, "alpha": 1.0},
+    ncols=3,
+    axis_title_fontsize=10,
+    highlight_diff_regions=False,
+    highlight_linewidth=2,
+    highlight_palette="Set3",
+    highlight_min_size=100,
+    highlight_n_regions=2,
+    highlight_alpha=1,
+    highlight_color_fill=False,
+    highlight_color="white",
+    highlight_postprocessed=False,
+    device=None,
+    hspace=0.05,
+    wspace=0.001,
+    agg_func=np.nanmax,
+    ref_key=None,
+    normalize=True,
+    show_zoom_in=True,  # Option to show zoom-in of highlighted regions
+    zoom_in_params=None,  # Dictionary of zoom-in options (see below)
+):
+    """
+    Plot contact maps (reference and most different) as subplots.
+
+    This function visualizes a set of contact maps (including a reference and the most different maps)
+    as a grid of subplots. It supports optional features such as splitting each subplot along the diagonal
+    (showing reference in the lower triangle and haplotype in the upper), highlighting the most different
+    regions, and adding a border to the reference plot.
+
+    Args:
+        axes: Array of matplotlib axes to plot into.
+        contact_maps (dict): Dictionary mapping keys to contact map numpy arrays.
+        most_diff_contact_maps (dict): Dictionary of the most different contact maps to plot.
+        max_subplots (int): Maximum number of subplots to display.
+        split_ref_haplotype (bool): If True, each subplot is split along the diagonal (bottom=REF, top=haplotype).
+        show_diag (bool): Whether to display the diagonal in the contact maps.
+        bin_matrix (callable): Function to bin the contact map.
+        pow (int or float): Power to raise the contact map values before binning.
+        bin_size (int): Bin size for binning the contact map.
+        cmap (str or Colormap): Colormap to use for imshow.
+        split_divider_params (dict): Parameters for the split diagonal divider (linestyle, color, width, alpha).
+        ncols (int): Number of columns in the subplot grid.
+        axis_title_fontsize (int): Font size for subplot titles and axis labels. 
+        highlight_diff_regions (bool): If True, highlight the most different regions in each map.
+        highlight_linewidth (float): Line width for highlight rectangles.
+        highlight_palette (str): Colormap or palette name for highlight colors.
+        highlight_min_size (int): Minimum size (in residues) of highlighted region (rectangle side).
+        highlight_n_regions (int): Number of most different regions to highlight per map.
+        highlight_alpha (float): Alpha (opacity) for highlight rectangles.
+        highlight_color_fill (bool): Whether to fill the highlight rectangles.
+        highlight_postprocessed (bool): Whether to use the postprocessed diff map for highlighting.
+        device (str or torch.device): Device for torch operations (e.g., "cuda", "cpu"). 
+        hspace (float): Height space between subplots.
+        wspace (float): Width space between subplots.   
+        agg_func (function): Function to aggregate the contact map values.
+        normalize (bool): Whether to normalize the contact map values to [0, 1] range.
+        show_zoom_in (bool): If True, show a zoom-in of the highlighted region in each subplot.
+        zoom_in_params (dict): Dictionary of zoom-in options. Supported keys:
+            - "size" (float): Fraction of the main axis width/height for the zoom-in square (default: 0.33)
+            - "border_color" (str): Color for the border of the zoom-in inset (default: "lime")
+            - "border_width" (float): Line width for the border of the zoom-in inset (default: 1.5)
+            - "cmap" (str or Colormap): Colormap for the zoom-in (defaults to main cmap)
+
+    Returns:
+        None. The function modifies the provided axes and displays the plot.
+
+    Notes:
+        - If split_ref_haplotype is True, each subplot shows the haplotype in the upper triangle and the reference in the lower triangle.
+        - If highlight_diff_regions is True, the most different regions between each map and the reference are highlighted.
+        - A border is added to the reference subplot unless split_ref_haplotype is True.
+        - If show_zoom_in is True, a zoom-in of the highlighted region is shown in the upper right of each subplot.
+    """
+    import matplotlib.patches as patches
+    import matplotlib as mpl
+    import torch     
+    import math
+
+    from matplotlib.transforms import Bbox
+
+    # --- Set up zoom-in parameters ---
+    _default_zoom_in_params = {
+        "size": 0.33,
+        "border_color": "lime",
+        "border_width": 1.5,
+        "cmap": None,
+    }
+    if zoom_in_params is None:
+        zoom_in_params = {}
+    zoom_in_cfg = {**_default_zoom_in_params, **zoom_in_params}
+
+    # --- Calculate grid shape robustly ---
+    n_plots = max_subplots
+    if ncols is None or ncols < 1:
+        ncols = 3
+    nrows = math.ceil(n_plots / ncols)
+
+    if axes is None:
+        fig, axes = plt.subplots(
+            nrows=nrows,
+            ncols=ncols,
+            figsize=(ncols * 4, nrows * 4)
+        )
+        # axes could be 2D or 1D depending on nrows/ncols
+        axes = np.array(axes).reshape(-1)
+    else:
+        axes = np.array(axes).reshape(-1)
+
+    if ref_key is None:
+        ref_key = get_ref_key(contact_maps, error=False)
+    ref_map = contact_maps[ref_key] if ref_key is not None else None
+
+    # If no reference map, disable features that require it, but still plot
+    if ref_map is None:
+        split_ref_haplotype = False
+        highlight_diff_regions = False
+        show_zoom_in = False
+
+    # Determine items to plot
+    if split_ref_haplotype and ref_map is not None:
+        items_to_plot = list(most_diff_contact_maps.items())
+    elif ref_map is not None:
+        items_to_plot = [(ref_key, ref_map)] + list(most_diff_contact_maps.items())
+    else:
+        # No reference: plot all available maps (from most_diff_contact_maps or contact_maps)
+        if most_diff_contact_maps is not None and len(most_diff_contact_maps) > 0:
+            items_to_plot = list(most_diff_contact_maps.items())
+        elif contact_maps is not None and len(contact_maps) > 0:
+            items_to_plot = list(contact_maps.items())
+        else:
+            items_to_plot = []
+    items_to_plot = items_to_plot[:max_subplots]
+
+    highlight_boxes = []  # List of (color, [(x, y, w), ...])
+
+    # For zoom-in: store the highlight region coordinates for each subplot
+    # We will store the *first* highlight region for each subplot, matching the highlight box
+    zoom_in_regions = [None] * len(items_to_plot)
+
+    for i, (name, contact_map) in enumerate(tqdm(items_to_plot)):
+        if i >= len(axes):
+            break  # Prevent IndexError if more items than axes
+        if not show_diag:
+            np.fill_diagonal(contact_map, np.nan)
+        # Prepare binned maps for both haplotype and REF
+        contact_map_binned = bin_matrix(X=contact_map**pow, bin_size=bin_size, agg_func=agg_func)
+        if ref_map is not None:
+            ref_map_binned = bin_matrix(X=ref_map**pow, bin_size=bin_size, agg_func=agg_func)
+        if normalize:
+            contact_map_binned = utils.minmax_normalize_numpy(contact_map_binned)
+            if ref_map is not None:
+                ref_map_binned = utils.minmax_normalize_numpy(ref_map_binned)
+        binned_shape = contact_map_binned.shape[0]
+
+        # Compose the split image if requested and possible
+        if split_ref_haplotype and ref_map is not None:
+            # Create a new array for the split image
+            split_img = np.zeros_like(contact_map_binned)
+            # Fill upper triangle (excluding diagonal) with haplotype, lower triangle (including diagonal) with REF
+            triu_idx = np.triu_indices(binned_shape, k=1)
+            tril_idx = np.tril_indices(binned_shape, k=0)
+            split_img[triu_idx] = contact_map_binned[triu_idx]
+            split_img[tril_idx] = ref_map_binned[tril_idx]
+            im = axes[i].imshow(split_img, cmap=cmap, interpolation="nearest", aspect='equal')
+
+            # --- Split divider appearance controls ---
+            if split_divider_params is not None:
+                split_divider = split_divider_params.get("linestyle", "solid")
+                split_divider_color = split_divider_params.get("color", "white")
+                split_divider_width = split_divider_params.get("width", 1.5)
+                split_divider_alpha = split_divider_params.get("alpha", 1.0)
+
+                N = binned_shape
+                divider_styles = {
+                    "solid": (0, ()),
+                    "dashed": (0, (5, 5)),
+                    "dotted": (0, (1, 3)),
+                }
+                linestyle = divider_styles.get(str(split_divider).lower(), (0, (5, 5)))
+                axes[i].plot(
+                    [-0.5, N-0.5],
+                    [-0.5, N-0.5],
+                    color=split_divider_color,
+                    linewidth=split_divider_width,
+                    alpha=split_divider_alpha,
+                    linestyle=linestyle
+                )
+            # Add "REF" as y-axis label for the leftmost subplots
+            if i % ncols == 0:
+                axes[i].annotate(
+                    "REF",
+                    xy=(0, 0.5),
+                    xycoords='axes fraction',
+                    fontsize=axis_title_fontsize,
+                    ha='right',
+                    va='center',
+                    rotation=90,
+                )
+        else:
+            im = axes[i].imshow(contact_map_binned, cmap=cmap, interpolation="nearest", aspect='equal')
+
+        try:
+            map_name = get_haplotype_ids(name)[0]
+        except:
+            map_name = name
+        axes[i].set_title(f"{map_name}", fontsize=axis_title_fontsize, pad=2)
+        axes[i].axis('off')
+        axes[i].set_aspect('equal')
+
+        # Highlight most different regions for non-REF subplots if requested
+        if 'highlight_box_offset' not in locals() and 'highlight_box_offset' not in globals():
+            highlight_box_offset = highlight_linewidth / 2.0  # Default: half the linewidth
+
+        # For zoom-in: store the region for this subplot
+        zoom_in_this = None
+
+        if (
+            highlight_diff_regions
+            and ref_map is not None
+            and name != ref_key
+            and contact_map.shape == ref_map.shape
+        ):
+            if split_ref_haplotype:
+                color = highlight_color
+            else:
+                color_idx = i - 1  # i=0 is REF, so subtract 1
+                better_cmap = mpl.cm.get_cmap(highlight_palette, max(1, len(items_to_plot)-1))
+                color = mpl.colors.to_hex(better_cmap(color_idx % better_cmap.N))
+
+            # Prepare the two matrices to compare
+            if highlight_postprocessed:
+                mat1 = np.nan_to_num(expand_matrix(contact_map_binned, target_size=contact_map.shape[0]))
+                mat2 = np.nan_to_num(expand_matrix(ref_map_binned, target_size=ref_map.shape[0]))
+            else:
+                mat1 = np.nan_to_num(contact_map)
+                mat2 = np.nan_to_num(ref_map)
+            L = mat1.shape[0]
+            coords = []
+            lw = highlight_linewidth
+            offset = highlight_box_offset
+
+            if L <= highlight_min_size:
+                print("small map")
+                # For small maps, highlight the whole map, but draw both the original and symmetric rectangles
+                for region_idx in range(highlight_n_regions):
+                    # Rectangle 1: top-left to bottom-right
+                    rect1 = patches.Rectangle(
+                        (-offset, -offset),
+                        L + 2*offset,
+                        L + 2*offset,
+                        linewidth=lw,
+                        edgecolor=color,
+                        facecolor=color,
+                        alpha=highlight_alpha,
+                        fill=highlight_color_fill,
+                    )
+                    axes[i].add_patch(rect1)
+                    coords.append((0, 0, L))
+                    # Rectangle 2: symmetric (bottom-left to top-right)
+                    rect2 = patches.Rectangle(
+                        (-offset, -offset),
+                        L + 2*offset,
+                        L + 2*offset,
+                        linewidth=lw,
+                        edgecolor=color,
+                        facecolor=color,
+                        alpha=highlight_alpha,
+                        fill=highlight_color_fill,
+                        transform=axes[i].transData + mpl.transforms.Affine2D().rotate_deg_around(L/2, L/2, 90)
+                    )
+                    axes[i].add_patch(rect2)
+                    coords.append(("symmetric", 0, 0, L))
+                # For zoom-in, just use the first region (the whole map)
+                zoom_in_this = (0, 0, L)
+            else:
+                if device is None:
+                    torch_device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+                else:
+                    torch_device = torch.device(device) if isinstance(device, str) else device
+
+                # Use the new function
+                score, idx_sorted = compute_highlight_scores(
+                    mat1, mat2, highlight_min_size, highlight_n_regions, torch_device
+                )
+
+                mask = np.zeros_like(score, dtype=bool)
+                found = 0
+                for idx in idx_sorted:
+                    if found >= highlight_n_regions:
+                        break
+                    x = idx // score.shape[1]
+                    y = idx % score.shape[1]
+                    x_center = x + highlight_min_size // 2
+                    y_center = y + highlight_min_size // 2
+                    x0 = x_center - highlight_min_size // 2
+                    y0 = y_center - highlight_min_size // 2
+                    x0 = max(0, min(x0, L - highlight_min_size))
+                    y0 = max(0, min(y0, L - highlight_min_size))
+                    mask_x0 = x0
+                    mask_x1 = x0 + highlight_min_size
+                    mask_y0 = y0
+                    mask_y1 = y0 + highlight_min_size
+                    if not mask[mask_x0:mask_x1, mask_y0:mask_y1].any():
+                        coords.append((x0, y0, highlight_min_size))
+                        mask[mask_x0:mask_x1, mask_y0:mask_y1] = True
+                        found += 1
+
+                bin_scale = bin_size
+                for (x, y, w) in coords:
+                    # The offset should increase the size of the box, not just shift its position.
+                    # So, we expand the box by 2*offset in both width and height, and shift the origin accordingly.
+                    x_binned = x / bin_scale
+                    y_binned = y / bin_scale
+                    w_binned = w / bin_scale
+                    # Rectangle 1: (y_binned, x_binned)
+                    rect1 = patches.Rectangle(
+                        (y_binned - offset, x_binned - offset),  # imshow: (col, row), offset outwards
+                        w_binned + 2*offset,
+                        w_binned + 2*offset,
+                        linewidth=lw,
+                        edgecolor=color,
+                        facecolor=color,
+                        alpha=highlight_alpha,
+                        fill=highlight_color_fill,
+                    )
+                    axes[i].add_patch(rect1)
+                    # Rectangle 2: symmetric across the diagonal
+                    # For a square at (x, y, w), the symmetric is at (y, x, w)
+                    rect2 = patches.Rectangle(
+                        (x_binned - offset, y_binned - offset),
+                        w_binned + 2*offset,
+                        w_binned + 2*offset,
+                        linewidth=lw,
+                        edgecolor=color,
+                        facecolor=color,
+                        alpha=highlight_alpha,
+                        fill=highlight_color_fill,
+                    )
+                    axes[i].add_patch(rect2)
+                # Store both rectangles' coordinates for REF overlay
+                highlight_boxes.append((color, [
+                    (y / bin_scale - offset, x / bin_scale - offset, w / bin_scale + 2*offset) for (x, y, w) in coords
+                ] + [
+                    (x / bin_scale - offset, y / bin_scale - offset, w / bin_scale + 2*offset) for (x, y, w) in coords
+                ]))
+                # For zoom-in, use the first region (x, y, w) in coords
+                if coords:
+                    zoom_in_this = coords[0]
+
+        # Store the zoom-in region for this subplot
+        zoom_in_regions[i] = zoom_in_this
+
+    # Optionally include all highlight boxes in the REF plot afterwards, color-coded
+    if highlight_diff_regions and len(highlight_boxes) > 0 and not split_ref_haplotype and ref_map is not None:
+        lw = highlight_linewidth
+        offset = highlight_box_offset
+        for color, coords in highlight_boxes:
+            for (x, y, w) in coords:
+                rect = patches.Rectangle(
+                    (y, x),  # imshow: (col, row), already offset in coords
+                    w,
+                    w,
+                    linewidth=lw,
+                    edgecolor=color,
+                    facecolor=color,
+                    alpha=highlight_alpha,
+                    fill=highlight_color_fill,
+                )
+                axes[0].add_patch(rect)
+
+    # --- Add a grey border around the entire first subplot (REF) ---
+    # Only if not using split_ref_haplotype, since there is no dedicated REF plot in split mode
+    if not split_ref_haplotype and ref_map is not None:
+        ref_binned_shape = bin_matrix(X=ref_map**pow, bin_size=bin_size, agg_func=agg_func).shape[0]
+        border_color = "#888888"
+        border_linewidth = 14  # You can adjust this for visibility
+        border_shift_up = -8  # You can adjust this value as needed
+        border_shift_left = -2  # You can adjust this value as needed
+        border_rect = patches.Rectangle(
+            (border_shift_left, border_shift_up),
+            ref_binned_shape,
+            ref_binned_shape,
+            linewidth=border_linewidth,
+            edgecolor=border_color,
+            facecolor='none',
+            zorder=-10,
+            clip_on=False  # Allow the border to extend outside the axes
+        )
+        axes[0].add_patch(border_rect)
+        axes[0].title.set_color('white')
+
+    # --- ZOOM-IN INSET: for each subplot, if requested and region available ---
+    if show_zoom_in and ref_map is not None:
+        import matplotlib.colors as mcolors
+        for i, (name, contact_map) in enumerate(items_to_plot):
+            region = zoom_in_regions[i]
+            if region is None:
+                continue
+            # region: (x, y, w) in original (unbinned) coordinates
+            x, y, w = region
+            bin_scale = bin_size
+
+            # Expand the region by X% on all sides
+            expand_frac = 0.33
+            expand_amt = w * expand_frac
+            x_exp = x - expand_amt
+            y_exp = y - expand_amt
+            w_exp = w + 2 * expand_amt
+
+            # Convert to binned coordinates
+            x_binned = int(np.floor(x_exp / bin_scale))
+            y_binned = int(np.floor(y_exp / bin_scale))
+            w_binned = int(np.ceil(w_exp / bin_scale))
+
+            # Clamp to map size
+            if split_ref_haplotype and ref_map is not None:
+                contact_map_binned = bin_matrix(X=contact_maps[name]**pow, bin_size=bin_size, agg_func=agg_func)
+                ref_map_binned = bin_matrix(X=ref_map**pow, bin_size=bin_size, agg_func=agg_func)
+                if normalize:
+                    contact_map_binned = utils.minmax_normalize_numpy(contact_map_binned)
+                    ref_map_binned = utils.minmax_normalize_numpy(ref_map_binned)
+                binned_shape = contact_map_binned.shape[0]
+                x_binned = max(0, x_binned)
+                y_binned = max(0, y_binned)
+                w_binned = min(binned_shape - max(x_binned, y_binned), w_binned)
+                region_slice = (slice(x_binned, x_binned + w_binned), slice(y_binned, y_binned + w_binned))
+                haplo_region = contact_map_binned[region_slice]
+                ref_region = ref_map_binned[region_slice]
+                # Compose the zoom-in image: upper right triangle from haplo_region, lower left from ref_region
+                zoom_img = np.zeros_like(haplo_region)
+                N = zoom_img.shape[0]
+                # Upper right triangle (including diagonal) from haplo_region
+                triu_idx = np.triu_indices(N, k=0)
+                # Lower left triangle (excluding diagonal) from ref_region
+                tril_idx = np.tril_indices(N, k=-1)
+                zoom_img[triu_idx] = haplo_region[triu_idx]
+                zoom_img[tril_idx] = ref_region[tril_idx]
+                zoom_cmap = zoom_in_cfg["cmap"] if zoom_in_cfg["cmap"] is not None else cmap
+            else:
+                contact_map_binned = bin_matrix(X=contact_map**pow, bin_size=bin_size, agg_func=agg_func)
+                if normalize:
+                    contact_map_binned = utils.minmax_normalize_numpy(contact_map_binned)
+                binned_shape = contact_map_binned.shape[0]
+                x_binned = max(0, x_binned)
+                y_binned = max(0, y_binned)
+                w_binned = min(binned_shape - max(x_binned, y_binned), w_binned)
+                region_slice = (slice(x_binned, x_binned + w_binned), slice(y_binned, y_binned + w_binned))
+                zoom_img = contact_map_binned[region_slice]
+                zoom_cmap = zoom_in_cfg["cmap"] if zoom_in_cfg["cmap"] is not None else cmap
+
+            # Place the zoom-in as an inset in the upper right of the main axis
+            ax = axes[i]
+            bbox = ax.get_position()
+            inset_size = zoom_in_cfg["size"]
+            inset_left = 1 - inset_size
+            inset_bottom = 1 - inset_size
+            inset_ax = ax.inset_axes([inset_left, inset_bottom, inset_size, inset_size], 
+                                     transform=ax.transAxes, zorder=10)
+            im_zoom = inset_ax.imshow(zoom_img, cmap=zoom_cmap, interpolation="nearest", aspect='equal')
+            inset_ax.set_xticks([])
+            inset_ax.set_yticks([])
+            inset_ax.set_xticklabels([])
+            inset_ax.set_yticklabels([])
+            inset_ax.set_aspect('equal')
+            for spine in inset_ax.spines.values():
+                spine.set_edgecolor(zoom_in_cfg["border_color"])
+                spine.set_linewidth(zoom_in_cfg["border_width"])
+            if split_ref_haplotype and ref_map is not None:
+                N = zoom_img.shape[0]
+                inset_ax.plot(
+                    [-0.5, N-0.5],
+                    [-0.5, N-0.5],
+                    color=zoom_in_cfg["border_color"],
+                    linewidth=zoom_in_cfg["border_width"] / 2,
+                    zorder=15,
+                )
+
+            # --- Draw connections from highlight rectangle to zoom-in inset if requested ---
+            if zoom_in_cfg.get("draw_connections", False):
+                # Main rectangle coordinates in binned space
+                main_rect_x = y_binned
+                main_rect_y = x_binned
+                main_rect_w = w_binned
+
+                # Four corners of the rectangle in data coordinates (main axis)
+                main_corners = [
+                    (main_rect_x, main_rect_y),  # top-left
+                    (main_rect_x + main_rect_w, main_rect_y),  # top-right
+                    (main_rect_x + main_rect_w, main_rect_y + main_rect_w),  # bottom-right
+                    (main_rect_x, main_rect_y + main_rect_w),  # bottom-left
+                ]
+
+                # Four corners of the zoom-in rectangle in data coordinates (inset axis)
+                N_zoom = zoom_img.shape[0]
+                zoom_corners = [
+                    (0, 0),  # top-left
+                    (N_zoom, 0),  # top-right
+                    (N_zoom, N_zoom),  # bottom-right
+                    (0, N_zoom),  # bottom-left
+                ]
+
+                # Transform main axis data coords to display coords
+                main_disp = [ax.transData.transform((x, y)) for (x, y) in main_corners]
+                # Transform inset axis data coords to display coords
+                inset_disp = [inset_ax.transData.transform((x, y)) for (x, y) in zoom_corners]
+
+                # Now, draw lines from each main corner to corresponding zoom-in corner
+                import matplotlib.lines as mlines
+                for (p1, p2) in zip(main_disp, inset_disp):
+                    # Create a line in figure coordinates
+                    line = mlines.Line2D(
+                        [p1[0], p2[0]],
+                        [p1[1], p2[1]],
+                        transform=None,  # display coordinates
+                        color=zoom_in_cfg.get("border_color", "lime"),
+                        linewidth=1.2,
+                        linestyle="dashed",
+                        zorder=20,
+                        alpha=0.8,
+                    )
+                    ax.figure.add_artist(line)
+
+                # Optionally, draw the rectangle on the main axis if not already present
+                rect = patches.Rectangle(
+                    (main_rect_x, main_rect_y),
+                    main_rect_w,
+                    main_rect_w,
+                    linewidth=1.5,
+                    edgecolor=zoom_in_cfg.get("border_color", "lime"),
+                    facecolor='none',
+                    linestyle="dashed",
+                    zorder=15,
+                )
+                ax.add_patch(rect)
+
+                # Optionally, draw a rectangle on the inset axis (should already be the border, but for clarity)
+                rect_inset = patches.Rectangle(
+                    (0, 0),
+                    N_zoom,
+                    N_zoom,
+                    linewidth=1.2,
+                    edgecolor=zoom_in_cfg.get("border_color", "lime"),
+                    facecolor='none',
+                    linestyle="dashed",
+                    zorder=16,
+                )
+                inset_ax.add_patch(rect_inset)
+ 
+    # Hide any unused axes (if there are more axes than items_to_plot)
+    for j in range(len(items_to_plot), len(axes)):
+        axes[j].set_visible(False)
+
+    plt.subplots_adjust(hspace=hspace, wspace=wspace)
+    plt.show()
 
 def plot_most_different_contact_maps(
     contact_maps,
@@ -2270,13 +3130,15 @@ def plot_most_different_contact_maps(
     show_diag=False,
     square_size=4,
     highlight_diff_regions=False,
-    highlight_min_size=100,
-    highlight_n_regions=2, 
+    highlight_min_size=None,
+    highlight_n_regions=1, 
     highlight_palette="Set3",
     highlight_color_fill=False,
     highlight_alpha=1,
     highlight_linewidth=2,
     highlight_box_offset=None,
+    highlight_color="white",
+    highlight_postprocessed=False,
     device=None,  # New argument to specify torch device, e.g., "cuda:2"
     split_ref_haplotype=False,  # NEW: if True, split each subplot along diagonal (bottom=REF, top=haplotype)
     split_divider_params={"linestyle": "solid", 
@@ -2287,6 +3149,12 @@ def plot_most_different_contact_maps(
     wspace=0.001,
     axis_title_fontsize=10,  # NEW: controls x and y axis title text size
     dpi=100,
+    max_per_mutation=None,
+    max_mutations=None,
+    agg_func=np.nanmax,
+    normalize=True,
+    show_zoom_in=False,
+    zoom_in_params=None,
 ):
     """
     Plots a grid of the most different contact maps compared to the reference.
@@ -2306,18 +3174,37 @@ def plot_most_different_contact_maps(
         highlight_palette (str): Palette to use for the highlight rectangle.
         highlight_alpha (float): Alpha of the highlight rectangle.
         highlight_linewidth (float): Line width of the highlight rectangle.
+        highlight_postprocessed (bool): Whether to use the postprocessed diff map for highlighting.
         device (str or torch.device, optional): Device for torch operations, e.g., "cuda:2".
         split_ref_haplotype (bool): If True, each subplot is split along the diagonal: bottom=REF, top=haplotype.
         hspace (float): Vertical space between subplots.
         wspace (float): Horizontal space between subplots.
         axis_title_fontsize (int): Font size for x and y axis titles.
+        max_per_mutation (int): Maximum number of times a mutations can appear before moving onto the next haplotype. 
+            This helps avoid plotting the same mutation driving a change in the contact map multiple times.
+        max_mutations (int): Maximum number of mutations per haplotype.
+        agg_func (function): Function to aggregate the contact map values.
+        normalize (bool): Whether to normalize the contact map values to [0, 1] range.
+        show_zoom_in (bool): Whether to show a zoom-in of the highlighted region in each subplot.
+        zoom_in_params (dict): Dictionary of zoom-in options. Supported keys:
+            - "size" (float): Fraction of the main axis width/height for the zoom-in square (default: 0.33)
+            - "border_color" (str): Color for the border of the zoom-in inset (default: "lime")
+            - "border_width" (float): Line width for the border of the zoom-in inset (default: 1.5)
+            - "cmap" (str or Colormap): Colormap for the zoom-in (defaults to main cmap)
     """
 
     def get_most_different_contact_maps(
         contact_maps, 
         max_subplots=6,
         diff_mode="global",  # "global" or "local"
-        conv_window=100      # int, only used if diff_mode=="local"
+        conv_window=100,      # int, only used if diff_mode=="local"
+        pow=4,
+        bin_size=1,
+        max_per_mutation=None,
+        max_mutations=None,
+        highlight_postprocessed=False,
+        agg_func=np.nanmax,
+        normalize=True
     ):
         """
         Selects the most different contact maps compared to the reference.
@@ -2327,35 +3214,87 @@ def plot_most_different_contact_maps(
             max_subplots (int): Maximum number of subplots to show (including reference).
             diff_mode (str): "global" (sum of all differences) or "local" (max difference in a window).
             conv_window (int or None): Window size for local difference (square side length).
+            pow (int): Power to raise the contact map values before binning.
+            bin_size (int): Bin size for binning the contact map.
+            max_per_mutation (int): Maximum number of times a mutations can appear before moving onto the next haplotype. 
+                This helps avoid plotting the same mutation driving a change in the contact map multiple times.
+            highlight_postprocessed (bool): Whether to use the postprocessed diff map for highlighting.
+            normalize (bool): Whether to normalize the contact map values to [0, 1] range.
+
         Returns:
             dict: Most different contact maps (excluding reference).
         """
         import numpy as np
-        from scipy.ndimage import uniform_filter
+        import torch 
 
         ref_key = get_ref_key(contact_maps)
         ref_map = contact_maps[ref_key]
         diff_scores = {}
+        mutation_counter = {}
+ 
+        # Prepare binned and normalized reference map if needed
+        ref_key = get_ref_key(contact_maps)
+        ref_map = contact_maps[ref_key]
 
-        for k, v in contact_maps.items():
-            # Ensure same shape and skip ref itself
-            if k == ref_key or v.shape != ref_map.shape:
+        # Filter out maps that are not the same shape as the reference or are the reference itself
+        filtered_maps = {
+            k: v for k, v in contact_maps.items()
+            if k != ref_key and v.shape == ref_map.shape
+        }
+
+        # Apply mutation count filtering
+        mutation_counter = {}
+        selected_maps = {}
+        for k, v in filtered_maps.items():
+            haplotype_id = get_haplotype_ids(k, revert_naming=True)[0]
+            mutations = haplotype_id.split(",")
+            if max_mutations is not None and len(mutations) > max_mutations:
                 continue
-            # Use nan_to_num to ignore NaNs in the difference
+            skip = False
+            for mutation in mutations:
+                if mutation not in mutation_counter:
+                    mutation_counter[mutation] = 0
+                mutation_counter[mutation] += 1
+                if max_per_mutation is not None and mutation_counter[mutation] > max_per_mutation:
+                    skip = True
+                    break
+            if skip:
+                continue
+            selected_maps[k] = v
+
+        # Compute difference scores using compute_highlight_scores
+        diff_scores = {}
+        for k, v in selected_maps.items():
             v_clean = np.nan_to_num(v)
             ref_clean = np.nan_to_num(ref_map)
-            diff_abs = np.abs(v_clean - ref_clean)
 
+            # Bin the maps if requested
+            if highlight_postprocessed:
+                v_clean = bin_matrix(X=v_clean**pow, bin_size=bin_size, agg_func=agg_func)
+                ref_clean = bin_matrix(X=ref_clean**pow, bin_size=bin_size, agg_func=agg_func)
+
+            if normalize:
+                v_clean = utils.minmax_normalize_numpy(v_clean)
+                ref_clean = utils.minmax_normalize_numpy(ref_clean)
+
+            # Use compute_highlight_scores to get a difference score
+            # Use highlight_min_size and highlight_n_regions for window/region parameters
+            # Use torch.device("cuda" if torch.cuda.is_available() else "cpu") as default device
+            if 'device' in locals() and device is not None:
+                torch_device = torch.device(device) if isinstance(device, str) else device
+            else: 
+                torch_device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+            score, idx_sorted = compute_highlight_scores(
+                v_clean, ref_clean, conv_window if diff_mode == "local" else min(v_clean.shape[0], v_clean.shape[1]),  # window size
+                1,  # just need the top region for scoring
+                torch_device
+            )
+            # For "global", use the sum of the score matrix; for "local", use the max
             if diff_mode == "global":
-                diff = np.nansum(diff_abs)
+                diff = np.nansum(np.abs(v_clean - ref_clean))
             elif diff_mode == "local":
-                if conv_window is None or conv_window < 1:
-                    raise ValueError("conv_window must be set to a positive integer for local diff_mode")
-                # Use uniform_filter to compute local sums (moving window)
-                # The maximum sum in any window is the local difference score
-                # Use mode='constant', cval=0 to ignore out-of-bounds
-                local_sum = uniform_filter(diff_abs, size=conv_window, mode='constant', cval=0) * (conv_window**2)
-                diff = np.nanmax(local_sum)
+                diff = np.nanmax(score)
             else:
                 raise ValueError(f"Unknown diff_mode: {diff_mode}")
 
@@ -2366,10 +3305,8 @@ def plot_most_different_contact_maps(
         most_diff_contact_maps = {k: contact_maps[k] for k in most_diff_keys}
         return most_diff_contact_maps
 
-    import matplotlib.patches as patches
-    import matplotlib as mpl
-    import torch    
-    import torch.nn.functional as F
+    if highlight_min_size is None:
+        highlight_min_size = conv_window
 
     nrows, ncols = 2, max_subplots // 2
     fig, axes = plt.subplots(nrows, ncols, figsize=(ncols * square_size, nrows * square_size),
@@ -2383,231 +3320,47 @@ def plot_most_different_contact_maps(
     most_diff_contact_maps = get_most_different_contact_maps(contact_maps=contact_maps, 
                                                              max_subplots=max_subplots, 
                                                              diff_mode=diff_mode, 
-                                                             conv_window=conv_window)
-    
+                                                             conv_window=conv_window,
+                                                             pow=pow,
+                                                             bin_size=bin_size,
+                                                             max_per_mutation=max_per_mutation,
+                                                             max_mutations=max_mutations,
+                                                             highlight_postprocessed=highlight_postprocessed,
+                                                             agg_func=agg_func,
+                                                             normalize=normalize) 
 
-    # Add the reference as the first item, then the most different contact maps
-    ref_key = get_ref_key(contact_maps)
-    ref_map = contact_maps[ref_key]
-    if split_ref_haplotype:
-        items_to_plot = list(most_diff_contact_maps.items())
-        
-    else:
-        items_to_plot = [(ref_key, ref_map)] + list(most_diff_contact_maps.items())
-    items_to_plot = items_to_plot[:max_subplots] 
-    
-
-
-    highlight_boxes = []  # List of (color, [(x, y, w), ...])
-
-    for i, (name, contact_map) in enumerate(tqdm(items_to_plot)):
-        if not show_diag:
-            np.fill_diagonal(contact_map, np.nan)
-        # Prepare binned maps for both haplotype and REF
-        contact_map_binned = bin_matrix(X=contact_map**pow, bin_size=bin_size)
-        ref_map_binned = bin_matrix(X=ref_map**pow, bin_size=bin_size)
-        binned_shape = contact_map_binned.shape[0]
-
-        # Compose the split image if requested
-        if split_ref_haplotype:
-            # Create a new array for the split image
-            split_img = np.zeros_like(contact_map_binned)
-            # Fill upper triangle (excluding diagonal) with haplotype, lower triangle (including diagonal) with REF
-            triu_idx = np.triu_indices(binned_shape, k=1)
-            tril_idx = np.tril_indices(binned_shape, k=0)
-            split_img[triu_idx] = contact_map_binned[triu_idx]
-            split_img[tril_idx] = ref_map_binned[tril_idx]
-            im = axes[i].imshow(split_img, cmap=cmap, interpolation="nearest", aspect='equal')
-
-            # --- Split divider appearance controls ---
-            # These can be set as function arguments or module-level variables as needed:
-            # split_divider: None, "solid", "dashed", "dotted" (default: "dashed")
-            # split_divider_color: e.g. "black", "#FF0000" (default: "black")
-            # split_divider_width: float (default: 1.5)
-            # split_divider_alpha: float (default: 1.0)
-       
-            if split_divider_params is not None:
-                split_divider = split_divider_params.get("linestyle", "solid")
-                split_divider_color = split_divider_params.get("color", "white")
-                split_divider_width = split_divider_params.get("width", 1.5)
-                split_divider_alpha = split_divider_params.get("alpha", 1.0)
-
-                # Draw a diagonal line to indicate the split
-                # Map the diagonal to image coordinates
-                # imshow by default puts (0,0) at top-left, so diagonal is from (0,0) to (N-1,N-1)
-                # The axes limits are -0.5 to N-0.5 for imshow
-                N = binned_shape
-                divider_styles = {
-                    "solid": (0, ()),
-                    "dashed": (0, (5, 5)),
-                    "dotted": (0, (1, 3)),
-                }
-                linestyle = divider_styles.get(str(split_divider).lower(), (0, (5, 5)))
-                axes[i].plot(
-                    [-0.5, N-0.5],
-                    [-0.5, N-0.5],
-                    color=split_divider_color,
-                    linewidth=split_divider_width,
-                    alpha=split_divider_alpha,
-                    linestyle=linestyle
-                )
-            # Add "REF" as y-axis label for the leftmost subplots
-            # axes is a flat array, so leftmost subplots are those where i % ncols == 0
-            if i % ncols == 0:
-                # Place the "REF" label outside the plot, vertically centered
-                axes[i].annotate(
-                    "REF",
-                    xy=(0, 0.5),
-                    xycoords='axes fraction',
-                    fontsize=axis_title_fontsize,
-                    ha='right',
-                    va='center',
-                    rotation=90,
-                    # fontweight='bold'
-                )
-        else:
-            im = axes[i].imshow(contact_map_binned, cmap=cmap, interpolation="nearest", aspect='equal')
-
-        protein_id = os.path.basename(name).split("_unrelaxed")[0].split("_")[0]
-        haplotype_id = os.path.basename(name).split("_unrelaxed")[0].replace(protein_id + "_", "")
-        axes[i].set_title(f"{revert_haplotype_naming(haplotype_id)}", fontsize=axis_title_fontsize, pad=2)
-        axes[i].axis('off')
-        axes[i].set_aspect('equal')
-
-        # Highlight most different regions for non-REF subplots if requested
-        if 'highlight_box_offset' not in locals() and 'highlight_box_offset' not in globals():
-            highlight_box_offset = highlight_linewidth / 2.0  # Default: half the linewidth
-
-        if (
-            highlight_diff_regions
-            and name != ref_key
-            and contact_map.shape == ref_map.shape
-        ):
-            if split_ref_haplotype:
-                color = "white"
-            else:
-                color_idx = i - 1  # i=0 is REF, so subtract 1
-                better_cmap = mpl.cm.get_cmap(highlight_palette, max(1, len(items_to_plot)-1))
-                color = mpl.colors.to_hex(better_cmap(color_idx % better_cmap.N))
-
-            
-            diff_map_np = np.abs(np.nan_to_num(contact_map) - np.nan_to_num(ref_map))
-            L = diff_map_np.shape[0]
-            min_size = highlight_min_size 
-            coords = []
-            lw = highlight_linewidth
-            offset = highlight_box_offset
-            if L <= min_size:
-                rect = patches.Rectangle(
-                    (-offset, -offset),
-                    L + 2*offset,
-                    L + 2*offset,
-                    linewidth=lw,
-                    edgecolor=color,
-                    facecolor=color,
-                    alpha=highlight_alpha,
-                    fill=highlight_color_fill,
-                )
-                axes[i].add_patch(rect)
-                coords.append((0, 0, L))
-            else:
-                if device is None:
-                    torch_device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-                else:
-                    torch_device = torch.device(device) if isinstance(device, str) else device
-                diff_map = torch.from_numpy(diff_map_np).float().to(torch_device)
-                window = min_size
-                kernel = torch.ones((1, 1, window, window), dtype=torch.float32, device=torch_device)
-                diff_map_4d = diff_map.unsqueeze(0).unsqueeze(0)  # shape: (1,1,L,L)
-                
-                sums = F.conv2d(diff_map_4d, kernel, stride=1).squeeze().cpu().numpy()  # shape: (L-window+1, L-window+1)
-
-                sums_flat = sums.ravel()
-                idx_sorted = np.argpartition(-sums_flat, highlight_n_regions*2)[:highlight_n_regions*4]
-                idx_sorted = idx_sorted[np.argsort(-sums_flat[idx_sorted])]  # sort top indices
-
-                mask = np.zeros_like(sums, dtype=bool)
-                found = 0
-                for idx in idx_sorted:
-                    if found >= highlight_n_regions:
-                        break
-                    x = idx // sums.shape[1]
-                    y = idx % sums.shape[1]
-                    x_center = x + window // 2
-                    y_center = y + window // 2
-                    x0 = x_center - window // 2
-                    y0 = y_center - window // 2
-                    x0 = max(0, min(x0, L - window))
-                    y0 = max(0, min(y0, L - window))
-                    mask_x0 = x0
-                    mask_x1 = x0 + window
-                    mask_y0 = y0
-                    mask_y1 = y0 + window
-                    if not mask[mask_x0:mask_x1, mask_y0:mask_y1].any():
-                        coords.append((x0, y0, window))
-                        mask[mask_x0:mask_x1, mask_y0:mask_y1] = True
-                        found += 1
-
-                bin_scale = bin_size
-                for (x, y, w) in coords:
-                    x_binned = x / bin_scale
-                    y_binned = y / bin_scale
-                    w_binned = w / bin_scale
-                    rect = patches.Rectangle(
-                        (y_binned - offset, x_binned - offset),  # imshow: (col, row), offset outwards
-                        w_binned + 2*offset,
-                        w_binned + 2*offset,
-                        linewidth=lw,
-                        edgecolor=color,
-                        facecolor=color,
-                        alpha=highlight_alpha,
-                        fill=highlight_color_fill,
-                    )
-                    axes[i].add_patch(rect)
-                highlight_boxes.append((color, [(x / bin_scale, y / bin_scale, w / bin_scale) for (x, y, w) in coords]))
-
-    # Optionally include all highlight boxes in the REF plot afterwards, color-coded
-    if highlight_diff_regions and len(highlight_boxes) > 0 and not split_ref_haplotype:
-        # The REF plot is always axes[0]
-        lw = highlight_linewidth
-        offset = highlight_box_offset
-        for color, coords in highlight_boxes:
-            for (x, y, w) in coords:
-                rect = patches.Rectangle(
-                    (y - offset, x - offset),  # imshow: (col, row), offset outwards
-                    w + 2*offset,
-                    w + 2*offset,
-                    linewidth=lw,
-                    edgecolor=color,
-                    facecolor=color,
-                    alpha=highlight_alpha,
-                    fill=highlight_color_fill,
-                )
-                axes[0].add_patch(rect)
-
-    # --- Add a grey border around the entire first subplot (REF) ---
-    # Only if not using split_ref_haplotype, since there is no dedicated REF plot in split mode
-    if not split_ref_haplotype:
-        ref_binned_shape = bin_matrix(X=ref_map**pow, bin_size=bin_size).shape[0]
-        border_color = "#888888"
-        border_linewidth = 14  # You can adjust this for visibility
-        border_shift_up = -8  # You can adjust this value as needed
-        border_shift_left = -2  # You can adjust this value as needed
-        border_rect = patches.Rectangle(
-            (border_shift_left, border_shift_up),
-            ref_binned_shape,
-            ref_binned_shape,
-            linewidth=border_linewidth,
-            edgecolor=border_color,
-            facecolor='none',
-            zorder=-10,
-            clip_on=False  # Allow the border to extend outside the axes
-        )
-        axes[0].add_patch(border_rect)
-        axes[0].title.set_color('white')
-
-    plt.subplots_adjust(hspace=hspace, wspace=wspace)
-    plt.show()
+    # Call the new function in place of the old code
+    plot_contact_map_subplots(
+        axes=axes,
+        contact_maps=contact_maps,
+        most_diff_contact_maps=most_diff_contact_maps,
+        max_subplots=max_subplots,
+        split_ref_haplotype=split_ref_haplotype,
+        show_diag=show_diag,
+        bin_matrix=bin_matrix,
+        pow=pow,
+        bin_size=bin_size,
+        cmap=cmap,
+        split_divider_params=split_divider_params,
+        ncols=ncols,
+        axis_title_fontsize=axis_title_fontsize, 
+        highlight_diff_regions=highlight_diff_regions,
+        highlight_linewidth=highlight_linewidth,
+        highlight_palette=highlight_palette,
+        highlight_min_size=highlight_min_size,
+        highlight_n_regions=highlight_n_regions,
+        highlight_alpha=highlight_alpha,
+        highlight_color_fill=highlight_color_fill,
+        highlight_color=highlight_color,
+        highlight_postprocessed=highlight_postprocessed,
+        device=device, 
+        hspace=hspace,
+        wspace=wspace,
+        agg_func=agg_func,
+        normalize=normalize,
+        show_zoom_in=show_zoom_in,
+        zoom_in_params=zoom_in_params
+    )
 
 def get_ref_size(contact_maps):
     ref_key = get_ref_key(contact_maps)
@@ -2809,4 +3562,293 @@ def plot_stacked_contact_maps(
     ax.set_xlim(0, total_fig_w)
     ax.set_ylim(0, total_fig_h)  # y increases downward, so (0,0) is top-left
     ax.axis('off') 
+    plt.show()
+
+
+def pad_contact_map_to_msa_fast(contact_map, non_gap_positions, L_msa, pad_value=np.nan):
+    """
+    Pad a contact map to the full MSA length, inserting pad_value at gap positions.
+
+    This function efficiently inserts a smaller contact map (corresponding to non-gap positions)
+    into a larger square matrix of size (L_msa, L_msa), filling all other positions with pad_value.
+    It uses advanced numpy indexing for speed.
+
+    Parameters
+    ----------
+    contact_map : np.ndarray
+        The contact map array of shape (L_seq, L_seq), where L_seq is the number of non-gap positions.
+    non_gap_positions : array-like of int
+        Indices of non-gap positions in the MSA (length L_seq).
+    L_msa : int
+        Length of the MSA (number of columns/rows in the padded matrix).
+    pad_value : scalar, optional
+        Value to use for padding at gap positions (default: np.nan).
+
+    Returns
+    -------
+    np.ndarray
+        A (L_msa, L_msa) array with the contact map values at non-gap positions and pad_value elsewhere.
+
+    Raises
+    ------
+    ValueError
+        If the shape of contact_map does not match the number of non-gap positions.
+    """
+    L_seq = len(non_gap_positions)
+    if contact_map.shape[0] != L_seq or contact_map.shape[1] != L_seq:
+        raise ValueError(f"Contact map shape {contact_map.shape} does not match non-gap positions {L_seq}")
+    padded_map = np.full((L_msa, L_msa), pad_value, dtype=contact_map.dtype)
+    idx = np.ix_(non_gap_positions, non_gap_positions)
+    padded_map[idx] = contact_map
+    return padded_map
+
+def pad_all_contact_maps_to_msa(contact_maps, msa, pad_value=np.nan):
+    """
+    Pad all contact maps in a dictionary to the MSA length, inserting pad_value at gap positions.
+
+    For each contact map, this function determines the non-gap positions in the corresponding
+    MSA sequence and pads the contact map to the full MSA length using pad_value for gaps.
+
+    Parameters
+    ----------
+    contact_maps : dict
+        Dictionary mapping contact map IDs (e.g., filenames or haplotype IDs) to contact map arrays.
+    msa : Bio.Align.MultipleSeqAlignment
+        Multiple sequence alignment object.
+    pad_value : scalar, optional
+        Value to use for padding at gap positions (default: np.nan).
+
+    Returns
+    -------
+    dict
+        Dictionary mapping contact map IDs to padded contact map arrays of shape (L_msa, L_msa).
+
+    Notes
+    -----
+    - Only contact maps with a corresponding sequence in the MSA are processed.
+    - The mapping between contact map IDs and MSA sequence names is determined using
+      `cf.get_haplotype_ids` and the sequence name format in the MSA.
+    - Non-gap positions are those not equal to '-' or '.' in the MSA sequence.
+
+    Example
+    -------
+    >>> padded_maps = pad_all_contact_maps_to_msa(contact_maps, msa)
+    >>> padded_maps['haplotype1'].shape
+    (L_msa, L_msa)
+    """
+    # Precompute all non-gap positions for each sequence in the MSA
+    L_msa = msa.get_alignment_length()
+    msa_seq_strs = [str(rec.seq) for rec in msa]
+    msa_non_gap_positions = [
+        np.fromiter((i for i, aa in enumerate(seq) if aa != '-' and aa != '.'), dtype=int)
+        for seq in msa_seq_strs
+    ]
+
+    # Build a mapping from sequence name to MSA index for fast lookup
+    msa_name_to_index = {rec.name.split(":")[1]: i for i, rec in enumerate(msa)}
+
+    # Prepare contact_map_dict as before
+    contact_map_dict = get_haplotype_ids(contact_maps.keys(), as_dict=-1)
+
+    # Only process those in both contact_maps and MSA, and vectorize as much as possible
+    padded_contact_maps = {}
+    for seq_id, cmap_id in tqdm(contact_map_dict.items(),
+                                total=len(contact_map_dict),
+                                desc="Padding contact maps to MSA"):
+        msa_idx = msa_name_to_index.get(seq_id)
+        if msa_idx is not None:
+            non_gap_positions = msa_non_gap_positions[msa_idx]
+            padded_contact_maps[cmap_id] = pad_contact_map_to_msa_fast(
+                contact_maps[cmap_id], non_gap_positions, L_msa, pad_value=pad_value
+            )
+    return padded_contact_maps
+
+
+
+def plot_superpopulation_contact_diff(
+    specific_binary_diff_figs,
+    specific_binary_diff_maps, 
+    pairs_per_colset=4,
+    use_common_heatmap_scale=True,
+    set_common_barplot_ylim=True,
+    suptitle="Gained/Lost Contacts by Superpopulation\n(Relative to REF)",
+    width_ratios=[1, 0.2],
+    figsize=(8, 4.5),
+    wspace=0.05, 
+    hspace=0.3,
+    show=True,
+    return_fig=False,
+):
+    """
+    Plot heatmaps and barplots of gained/lost contacts by superpopulation.
+
+    Parameters
+    ----------
+    specific_binary_diff_figs : dict
+        Dictionary mapping population name to matplotlib Figure (heatmap).
+    specific_binary_diff_maps : dict
+        Dictionary mapping population name to binary diff map (numpy array).
+    cf : module or object
+        Must provide plot_contact_map_diff_barplot(diff_map, ax=...).
+    pairs_per_colset : int, optional
+        Number of (heatmap+barplot) pairs per "row block" before starting a new set of columns.
+    use_common_heatmap_scale : bool, optional
+        Whether all heatmaps use the same color scale.
+    set_common_barplot_ylim : bool, optional
+        Whether to set a common y-axis max for all barplots.
+    suptitle : str, optional
+        Figure supertitle.
+    show : bool, optional
+        Whether to call plt.show().
+    return_fig : bool, optional
+        If True, return the matplotlib Figure object.
+    width_ratios : list, optional
+        Width ratios for the columns.
+    figsize : tuple, optional
+        Figure size.
+    wspace : float, optional
+        Width of the space between columns.
+    hspace : float, optional
+        Height of the space between rows.
+
+    Returns
+    -------
+    fig : matplotlib.figure.Figure, optional
+        The figure, if return_fig is True.
+    """
+    populations = list(specific_binary_diff_figs.keys())
+    n_pops = len(populations)
+
+    # For this application, we know the min/max for the binary diff maps are -1 and 1 (proportion units)
+    if use_common_heatmap_scale:
+        global_vmin, global_vmax = -1, 1
+    else:
+        global_vmin, global_vmax = None, None
+
+    # If using a common y-lim for barplots, determine the max value across all barplots
+    if set_common_barplot_ylim:
+        barplot_max = 0
+        for pop in populations:
+            diff_map = specific_binary_diff_maps[pop]
+            triu_mask = np.triu(np.ones(diff_map.shape, dtype=bool), k=1)
+            contacts_gained = np.sum((diff_map > 0) & triu_mask)
+            contacts_lost = np.sum((diff_map < 0) & triu_mask)
+            this_max = max(contacts_gained, contacts_lost)
+            if this_max > barplot_max:
+                barplot_max = this_max
+        # Add a little headroom for labels
+        barplot_ylim = (0, barplot_max * 1.15 if barplot_max > 0 else 1)
+    else:
+        barplot_ylim = None
+
+    # Calculate how many column sets we need
+    n_colsets = int(np.ceil(n_pops / pairs_per_colset))
+    nrows = min(pairs_per_colset, n_pops)
+    ncols = n_colsets * 2  # 2 columns per colset (heatmap, barplot)
+
+    fig, axes = plt.subplots(
+        nrows=nrows, ncols=ncols,
+        figsize=(figsize[0] * n_colsets, figsize[1] * nrows),
+        width_ratios=width_ratios * n_colsets
+    )
+    if nrows == 1:
+        axes = np.expand_dims(axes, axis=0)  # ensure 2D array for consistent indexing
+
+    # Reduce whitespace between columns (without changing width_ratios)
+    plt.subplots_adjust(wspace=wspace, hspace=hspace)  # wspace controls width between columns
+
+    bar_figs = []
+    bar_dfs = []
+
+    for idx, pop in enumerate(populations):
+        colset = idx // pairs_per_colset
+        row = idx % pairs_per_colset
+        col_heat = colset * 2
+        col_bar = colset * 2 + 1
+
+        # Left: heatmap
+        ax_heat = axes[row, col_heat] if nrows > 1 else axes[0, col_heat]
+        orig_fig = specific_binary_diff_figs[pop]
+        orig_axes = orig_fig.get_axes()
+        if len(orig_axes) > 0:
+            orig_ax = orig_axes[0]
+            for im in orig_ax.get_images():
+                arr = im.get_array()
+                if hasattr(arr, "data"):
+                    arr = arr.data
+                cmap = im.get_cmap()
+                vmin = global_vmin if use_common_heatmap_scale else im.get_clim()[0]
+                vmax = global_vmax if use_common_heatmap_scale else im.get_clim()[1]
+                ax_heat.imshow(arr,
+                               cmap=cmap,
+                               interpolation='nearest',
+                               vmin=vmin, vmax=vmax)
+            ax_heat.set_title(f"{pop}")
+            ax_heat.set_xlabel(orig_ax.get_xlabel())
+            ax_heat.set_ylabel(orig_ax.get_ylabel())
+        else:
+            ax_heat.set_title(pop)
+            ax_heat.axis('off')
+
+        # Right: barplot
+        ax_bar = axes[row, col_bar] if nrows > 1 else axes[0, col_bar]
+        bar_fig, bar_df = plot_contact_map_diff_barplot(specific_binary_diff_maps[pop], ax=ax_bar)
+        bar_df["superpopulation"] = pop
+        ax_bar.set_title(f"{pop}")
+        if barplot_ylim is not None:
+            ax_bar.set_ylim(barplot_ylim)
+        bar_figs.append(bar_fig)
+        bar_dfs.append(bar_df)
+
+    bar_dfs = pd.concat(bar_dfs, axis=0)
+    # Hide any unused subplots
+    for idx in range(n_pops, nrows * n_colsets):
+        colset = idx // pairs_per_colset
+        row = idx % pairs_per_colset
+        col_heat = colset * 2
+        col_bar = colset * 2 + 1
+        axes[row, col_heat].axis('off')
+        axes[row, col_bar].axis('off')
+
+    fig.suptitle(suptitle, fontsize=18, y=1.01)
+    plt.tight_layout()
+    if show:
+        plt.show() 
+    return fig, bar_dfs
+
+
+def plot_superpopulation_maps(contact_maps, pow=1, nrows=2, cmap='viridis', bin_size=10):
+    """
+    Plot each superpopulation map as a subplot across 2 rows.
+
+    Parameters
+    ----------
+    avg_maps : dict
+        Dictionary of superpopulation names to contact maps (numpy arrays).
+    pow : int or float, optional
+        Power to which each map is raised before plotting.
+    nrows : int, optional
+        Number of rows in the subplot grid.
+    cmap : str, optional
+        Colormap to use for imshow.
+    """
+    n_maps = len(contact_maps)
+    ncols = math.ceil(n_maps / nrows)
+    fig, axes = plt.subplots(nrows=nrows, ncols=ncols, 
+                             figsize=(3 * ncols, 6 * nrows // 2), 
+                             squeeze=False)
+
+    axes_flat = axes.flatten()
+    for ax, (pop, m) in zip(axes_flat, contact_maps.items()):
+        m_binned = bin_matrix(m, bin_size=bin_size)
+        im = ax.imshow(m_binned**pow, cmap=cmap)
+        ax.set_title(pop)
+        ax.axis('off')
+        # fig.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
+
+    # Hide any unused subplots
+    for ax in axes_flat[len(contact_maps):]:
+        ax.axis('off')
+
+    plt.tight_layout()
     plt.show()

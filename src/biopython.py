@@ -155,18 +155,25 @@ def as_msa(seqs: list[str],
     assert isinstance(seqs, list), "seqs must be a list"
     # Check if seqs contains at least 2 sequences
     assert len(seqs) >= 2, "seqs must contain at least 2 sequences"
-    
+
+    # Handle if seqs is a list of (name, seq) tuples
+    if len(seqs) > 0 and isinstance(seqs[0], tuple) and len(seqs[0]) == 2:
+        seq_names, seq_strs = zip(*seqs)
+    else:
+        seq_names = names
+        seq_strs = seqs
+
     # Check if each sequence has the same length after alignment
-    for i, seq in enumerate(seqs):
+    for i, seq in enumerate(seq_strs):
         # Remove insertions and truncate at stop codon
-        original_len = len(preprocess_sequence(seqs[i]))
+        original_len = len(preprocess_sequence(seq_strs[i]))
         msa_len = len(preprocess_sequence(seq))
         assert msa_len == original_len, f"Sequence {i} has length {msa_len} but should have length {original_len}"
-    
-    # Convert to Seq objects
-    seqs = [as_seqrecord(seq, name=names[i]) for i,seq in enumerate(seqs)]
+
+    # Convert to SeqRecord objects, using provided names if available
+    seqs_records = [as_seqrecord(seq, name=seq_names[i] if i < len(seq_names) else f"seq{i}") for i, seq in enumerate(seq_strs)]
     # Create MSA
-    return MultipleSeqAlignment(seqs, **kwargs)
+    return MultipleSeqAlignment(seqs_records, **kwargs)
  
 
 def query_msa(msa: MultipleSeqAlignment,
@@ -252,18 +259,48 @@ def remove_insertions(sequence: str) -> str:
     return sequence.translate(translation)
 
 
-def read_msa(filename: str, nseq: int) -> List[Tuple[str, str]]:
-    """ Reads the first nseq sequences from an MSA file, automatically removes insertions.
-    
-    The input file must be in a3m format (although we use the SeqIO fasta parser)
-    for remove_insertions to work properly."""
+def read_msa(
+    filename: str, 
+    nseq: int = None,
+    to_msa: bool = False
+) -> Union[List[Tuple[str, str]], MultipleSeqAlignment]:
+    """
+    Read the first `nseq` sequences from a multiple sequence alignment (MSA) file, 
+    automatically removing insertions.
+
+    The input file must be in a3m format (although the Biopython SeqIO fasta parser is used).
+    Insertions are removed using the `remove_insertions` function.
+
+    Args:
+        filename (str): Path to the MSA file (should be in a3m format).
+        nseq (int, optional): Number of sequences to read from the file. If None, all sequences are read.
+        to_msa (bool, optional): If True, return a MultipleSeqAlignment object. 
+                                 If False, return a list of (description, sequence) tuples.
+
+    Returns:
+        Union[List[Tuple[str, str]], MultipleSeqAlignment]: 
+            - If `to_msa` is False: a list of tuples, each containing the sequence description and the processed sequence.
+            - If `to_msa` is True: a MultipleSeqAlignment object containing the processed sequences.
+
+    Raises:
+        FileNotFoundError: If the specified MSA file does not exist.
+
+    Example:
+        >>> read_msa("example.a3m", nseq=10)
+        [('seq1', 'MKT...'), ('seq2', 'MKT...'), ...]
+        >>> read_msa("example.a3m", to_msa=True)
+        MultipleSeqAlignment object with 10 records of length ...
+    """
     if not os.path.exists(filename):
         raise FileNotFoundError(f"MSA file not found: {filename}")
-    msa = [
+    msa_seqs = [
         (record.description, remove_insertions(str(record.seq)))
         for record in itertools.islice(SeqIO.parse(filename, "fasta"), nseq)
     ]
-    return msa
+    if to_msa:
+        return as_msa(msa_seqs)
+    else:
+        return msa_seqs
 
 def get_preprocessed_index(sequence: str,
                             idx: int,

@@ -694,7 +694,7 @@ def get_haplotype_seqs(haplotypes: Union[Dict[str, Dict], Dict[str, List[Dict]]]
         key (str, optional): The key to use to get the haplotype sequences. 
         Options include: 'protein_haplotypes' or 'cds_haplotypes'.
             Defaults to 'protein_haplotypes'.
-            aligned (int, optional): The alignment type. Defaults to 1.
+        aligned (int, optional): The alignment type. Defaults to 1.
             If 0, will return the unaligned sequence of the haplotype (without gaps).
             If 1, will return the aligned sequence of just the haplotype (with gaps).
             If 2, will return the aligned sequence of the reference and the haplotype (with gaps).
@@ -2012,6 +2012,9 @@ def haplotypes_to_fasta(haplotypes=None,
         haplotypes (Dict[str, Dict]): The haplotypes to convert to FASTA format.
         key (str, optional): The key to use to get the haplotype sequences. Defaults to "protein_haplotypes".
         aligned (int, optional): The alignment type. Defaults to 1.
+            If 0, will return the unaligned sequence of the haplotype (without gaps).
+            If 1, will return the aligned sequence of just the haplotype (with gaps).
+            If 2, will return the aligned sequence of the reference and the haplotype (with gaps).
         add_haplotype_names (int, optional): The type of haplotype names to add. Defaults to 2.
         add_missing_ref (bool, optional): Whether to automatically add in the reference sequence when it is missing from the data.
             Defaults to True.
@@ -3219,9 +3222,12 @@ def plot_haplotypes_by_superpop_specificity(
     if show and ax is None:
         plt.tight_layout()
         plt.show()
-    return ax
+    return ax, haplotype_counts
 
-def plot_superpopulation_bar(haplotypes,   ax=None, repulsion=False):
+def plot_superpopulation_bar(haplotypes,
+                             ax=None, 
+                             repulsion=False,
+                             dpi=300):
     """
     Plot a stacked bar of individuals per superpopulation with connected labels, using label repulsion to avoid overlap.
 
@@ -3260,7 +3266,15 @@ def plot_superpopulation_bar(haplotypes,   ax=None, repulsion=False):
 
     # Prepare data for stacked barplot (single bar, segments by superpopulation)
     if ax is None:
-        fig, ax = plt.subplots(figsize=(2, 5))
+        fig, ax = plt.subplots(figsize=(2, 5), dpi=dpi, facecolor='none')
+        fig.patch.set_alpha(0.0)  # Make figure background transparent
+    else:
+        # Make the axis background transparent
+        ax.patch.set_alpha(0.0)
+        # Also make the figure background transparent if we have access to it
+        if hasattr(ax, 'figure'):
+            ax.figure.patch.set_alpha(0.0)
+            ax.figure.patch.set_facecolor('none')
     bottom = 0
     bar_centers = []
     bar_heights = []
@@ -3274,7 +3288,8 @@ def plot_superpopulation_bar(haplotypes,   ax=None, repulsion=False):
             height=row['count'],
             bottom=bottom,
             color=palette[row['superpopulation']],
-            edgecolor='black'
+            edgecolor='black',
+            alpha=0.7  # Add transparency
         )
         # Calculate the center y position of this sub-bar
         center = bottom + row['count'] / 2
@@ -3297,6 +3312,7 @@ def plot_superpopulation_bar(haplotypes,   ax=None, repulsion=False):
     ax.set_title('Individuals per Superpopulation', pad=20)
     ax.set_xticks([0])
     ax.set_xticklabels([''])
+    ax.patch.set_alpha(0.0)
 
     # Remove the top and right plot outline (spines)
     ax.spines['top'].set_visible(False)
@@ -3361,44 +3377,98 @@ def plot_superpopulation_bar(haplotypes,   ax=None, repulsion=False):
     if ax is None:                                  # if no Axes object is provided, use tight layout and show plot
         plt.tight_layout()
         plt.show()
-    return superpop_counts                          # return DataFrame with superpopulation counts
+    return ax, superpop_counts                          # return DataFrame with superpopulation counts
 
  
 def plot_haplotypes_and_superpop_bar(
-    hap_df, haplotypes, width_ratios=(2, 1), figsize=(12, 5),  show=True
+    freq_df, 
+    haplotypes, 
+    width_ratios=(2, 1), 
+    figsize=(12, 5),  
+    use_upset=True,
+    upset_kwargs={},
+    show=True
 ):
     """
-    Plot the superpopulation bar and the haplotypes by superpopulation specificity as subplots, with the superpopulation bar on the left and haplotypes on the right.
+    Plot the superpopulation bar and the haplotypes by superpopulation specificity side by side.
 
     Args:
-        hap_df (pd.DataFrame): DataFrame with haplotype info.
+        freq_df (pd.DataFrame): DataFrame with haplotype info.
         haplotypes: Haplotype data.
         utils (module): Module with get_superpop_palette().
-        width_ratios (tuple): Width ratios for the two subplots (superpop bar, haplotype).
+        width_ratios (tuple): Width ratios for the two plots (superpop bar, haplotype).
         figsize (tuple): Figure size.
         min_spacing (int): Minimum vertical spacing between labels in superpop bar.
         show (bool): Whether to call plt.show().
     Returns:
-        (fig, axes, superpop_counts): Figure, axes array, and superpop_counts DataFrame.
+        dict: Dictionary containing plot objects and data.
     """
-    fig, axes = plt.subplots(
-        1, 2, figsize=figsize, gridspec_kw={'width_ratios': width_ratios}
-    )
+    freq_df = freq_df.copy()
 
-    # Left: superpopulation bar
-    superpop_counts = plot_superpopulation_bar(
-        haplotypes,  ax=axes[0]
-    )
+    outputs = {}
+    
+    if use_upset:
+        # Create a single figure for the left plot
+        fig, ax1 = plt.subplots(1, 1, figsize=(figsize[0] * width_ratios[0] / sum(width_ratios), figsize[1]), facecolor='none')
+        
+        # Left: superpopulation bar
+        ax, haplotype_counts = plot_superpopulation_bar(
+            haplotypes, ax=ax1
+        )
+        outputs["subplot1"] = ax
+        outputs["subplot1_data"] = haplotype_counts
+        
+        # Right: UpSet plot - create it separately
+        upset, counts_df = plot_superpop_upset(
+            freq_df,  
+            ax=None,  # Let UpSet create its own figure
+            **upset_kwargs
+        )
+        outputs["subplot2"] = upset
+        outputs["subplot2_data"] = counts_df
+        
+        # Try to get the UpSet figure and adjust its size
+        try:
+            # Get the current figure (should be the UpSet figure)
+            upset_fig = plt.gcf()
+            if upset_fig != fig:  # If it's a different figure
+                upset_fig.set_size_inches(figsize[0] * width_ratios[1] / sum(width_ratios), figsize[1])
+        except:
+            # If we can't control the UpSet figure, just let it display naturally
+            pass
+        
+    else:
+        # Create figure with proper spacing for regular subplots
+        fig, axes = plt.subplots(
+            1, 2, figsize=figsize, gridspec_kw={'width_ratios': width_ratios}
+        )
+        outputs["fig"] = fig
+        outputs["axes"] = axes
 
-    # Right: haplotypes by superpop specificity
-    plot_haplotypes_by_superpop_specificity(
-        hap_df, ax=axes[1], show=False
-    )
+        # Left: superpopulation bar
+        ax, haplotype_counts = plot_superpopulation_bar(
+            haplotypes, ax=axes[0]
+        )
+        outputs["subplot1"] = ax
+        outputs["subplot1_data"] = haplotype_counts
 
-    plt.tight_layout()
+        # Right: haplotypes by superpop specificity
+        ax, haplotype_counts = plot_haplotypes_by_superpop_specificity(
+            freq_df, 
+            ax=axes[1], 
+            show=False
+        )
+        outputs["subplot2"] = ax
+        outputs["subplot2_data"] = haplotype_counts
+
+        # Adjust layout to prevent overlap
+        plt.subplots_adjust(wspace=0.3)  # Add space between subplots
+    
+    outputs["fig"] = fig
+    
     if show:
         plt.show()
-    return fig, axes, superpop_counts
+    return outputs
 
 
 
@@ -3433,6 +3503,7 @@ def add_specificity_columns(
     df,
     superpopulation_col="superpopulation",
     haplotype_col="haplotype", 
+    sample_col="sample",
     verbose=False,
 ):
     """
@@ -3453,15 +3524,9 @@ def add_specificity_columns(
     specific_col = f'specific_{superpopulation_col}'
     count_col = f'{superpopulation_col}_count' 
 
-    # Try to get group names from og if provided, else infer from columns
-    if og is not None:
-        groups = og.get_sample_metadata()[superpopulation_col].dropna().unique()
-        freq_cols = [col for col in df.columns if col.endswith('_freq') and col.replace('_freq', '') in groups]
-    else:
-        # Infer group names from columns ending with _freq
-        freq_cols = [col for col in df.columns if col.endswith('_freq') and not col.startswith('top_')]
-        groups = [col.replace('_freq', '') for col in freq_cols]
-
+    # Try to get group names from og if provided, else infer from columns 
+    groups = og.get_sample_metadata()[superpopulation_col].dropna().unique()
+    freq_cols = [col for col in df.columns if col.endswith('_freq') and col.replace('_freq', '') in groups]
     if len(freq_cols) == 0:
         raise ValueError("No frequency columns found in dataframe")
 
@@ -3481,6 +3546,13 @@ def add_specificity_columns(
     # Add a column indicating which group has the non-zero frequency (for group-specific variants)
     df[specific_col] = df.apply(get_nonzero_group, axis=1)
 
+    # Add a column indicating how many samples within that superpopulation have the haplotype
+    def get_specific_samples(row):
+        if row[specific_col] is not None:
+            return row[f'{row[specific_col]}_samples']
+        return None
+    df[f'{specific_col}_samples'] = df.apply(get_specific_samples, axis=1)
+ 
     # Count how many variants are specific to each group
     if verbose:
         print(f"\nNumber of variants specific to each {superpopulation_col}:")
@@ -3496,7 +3568,7 @@ def calculate_haplotype_frequency_per_superpop(
     haps_to_samples,
     haplotype_col="haplotype",
     superpopulation_col="superpopulation",
-    cast_frequencies=False,
+    cast=False,
     fillna=0, 
     verbose=False,
     add_specificity_cols=True,
@@ -3507,7 +3579,8 @@ def calculate_haplotype_frequency_per_superpop(
 
     Args:
         haps_to_samples (pd.DataFrame): DataFrame with at least 'haplotype' and 'superpopulation' columns.
-        cast_frequencies (bool): If True, returns wide format with frequency columns per superpopulation.
+        cast (bool): If True, returns wide format with frequency ("_freq") 
+            and sample count ("_samples") columns per superpopulation.
         fillna (scalar): Value to fill missing frequencies with.
         og (module, optional): Module with get_sample_metadata() for group names.
         verbose (bool): Print summary statistics.
@@ -3522,7 +3595,7 @@ def calculate_haplotype_frequency_per_superpop(
         haps_to_samples
         .groupby([haplotype_col, superpopulation_col])
         .size()
-        .reset_index(name='count')
+        .reset_index(name='samples')
     )
     # Get total counts per superpopulation
     superpop_totals = (
@@ -3533,35 +3606,152 @@ def calculate_haplotype_frequency_per_superpop(
     )
     # Merge and calculate frequency
     hap_freq_per_superpop = hap_freq_per_superpop.merge(superpop_totals, on=superpopulation_col)
-    hap_freq_per_superpop['frequency'] = hap_freq_per_superpop['count'] / hap_freq_per_superpop['total']
+    hap_freq_per_superpop['freq'] = hap_freq_per_superpop['samples'] / hap_freq_per_superpop['total']
 
-    if cast_frequencies:
-        hap_freq_per_superpop = hap_freq_per_superpop.pivot_table(
+    if cast:
+        # Pivot both frequency and count columns at the same time
+        freq_df = hap_freq_per_superpop.pivot_table(
             index=haplotype_col,
             columns=superpopulation_col,
-            values="frequency"
-        ).add_suffix("_freq")
+            values=["freq", "samples"]
+        )
+        freq_df = freq_df.astype({"freq": float, "samples": int})
+
+        # Flatten columns by combining group and variable name
+        freq_df.columns = [f"{col[1]}_{col[0]}" for col in freq_df.columns]
+ 
 
         # Fill missing values with the fillna value
         if fillna is not None:
-            hap_freq_per_superpop = hap_freq_per_superpop.fillna(fillna)
+            freq_df = freq_df.fillna(fillna)
 
         # Add the top superpopulation columns using the new subfunction
-        hap_freq_per_superpop = add_top_superpopulation_columns(
-            hap_freq_per_superpop,
+        freq_df = add_top_superpopulation_columns(
+            freq_df,
             superpopulation_col=superpopulation_col
         )
 
         # Reset the index to get the haplotype column back
-        hap_freq_per_superpop.reset_index(inplace=True)
+        freq_df.reset_index(inplace=True)
 
         # Add group-specificity columns as in file_context_0
         if add_specificity_cols:
-            hap_freq_per_superpop = add_specificity_columns(
-                hap_freq_per_superpop,
+            freq_df = add_specificity_columns(
+                freq_df,
                 superpopulation_col=superpopulation_col,
                 haplotype_col=haplotype_col, 
                 verbose=verbose,
             )
+        return freq_df
 
     return hap_freq_per_superpop
+
+
+def plot_superpop_upset(
+    freq_df, 
+    palette=utils.get_superpop_palette(),
+    sort_by="cardinality",
+    min_subset_size=500, 
+    show_percentages=True,
+    figsize=(13, 5),
+    title="Haplotype Overlap per Superpopulation",
+    ax=None,
+    **kwargs
+):
+    """
+    Generate an UpSet plot for superpopulation haplotype sample counts.
+
+    Parameters
+    ----------
+    freq_df : pd.DataFrame
+        DataFrame containing haplotype frequency information per superpopulation.
+    utils : module
+        Module containing the get_superpop_palette() function.
+    min_subset_size : int, optional
+        Minimum subset size to display in the UpSet plot.
+    figsize : tuple, optional
+        Figure size for the plot.
+    ax : matplotlib.axes.Axes, optional
+        Optional axis to plot on. If None, a new figure and axis will be created.
+    kwargs : dict, optional
+        Additional keyword arguments to pass to the UpSet plot.
+
+    Returns
+    -------
+    upset : upsetplot.UpSet
+        The UpSet object for further customization if needed.
+    counts_df : pd.DataFrame
+        The DataFrame used for the UpSet plot.
+
+    Examples:
+    >>> upset, counts_df = plot_superpop_upset(freq_df) 
+    """
+    from upsetplot import UpSet
+    from matplotlib import pyplot as plt
+    import warnings
+
+    freq_df = freq_df.copy()
+
+    # Prepare counts data    
+    count_cols = [col for col in freq_df.columns if col.endswith("_samples") and col != "specific_superpopulation_samples"]
+    counts_df = pd.concat([
+        freq_df[count_cols] > 0,
+        freq_df[count_cols].sum(axis=1).rename("count")
+    ], axis=1)
+    # Remove the "_samples" suffix from the columns in counts_df except for "count"
+    counts_df = counts_df.rename(columns={col: col.replace("_samples", "") for col in counts_df.columns if col.endswith("_samples")})
+    counts_df = counts_df.set_index([col for col in counts_df.columns if col != "count"])
+    counts_df["index_sum"] = counts_df.index.to_frame().sum(axis=1)
+
+    # Suppress the specific FutureWarning from upsetplot/plotting.py
+    with warnings.catch_warnings():
+        warnings.filterwarnings(
+            "ignore",
+            message="A value is trying to be set on a copy of a DataFrame or Series through chained assignment using an inplace method.",
+            category=FutureWarning,
+            module="upsetplot.plotting"
+        )
+        
+        # Create the UpSet object
+        upset = UpSet(
+            counts_df,
+            min_subset_size=min_subset_size,
+            sort_by=sort_by,
+            show_percentages=show_percentages,
+            element_size=None,  # critical for changing plot size
+            **kwargs
+        )
+        
+        # Convert hex color codes to RGB tuples for matplotlib compatibility
+        for i, key in enumerate(list(palette.keys())[0:-1]):
+            upset.style_categories(
+                categories=key,
+                bar_facecolor=palette[key]
+            )
+        
+        # If ax is provided, use it for the main plot
+        if ax is not None:
+            # Clear the axis first
+            ax.clear()
+            # For UpSet plots, we need to use the figure that contains the axis
+            fig = ax.figure
+            # Plot on the provided axis by passing the figure
+            upset.plot(fig=fig)
+            if title is not None:
+                ax.set_title(title)
+        else:
+            # Create a new figure if no axis provided
+            fig, ax = plt.subplots(figsize=figsize)
+            # Remove all spines (border lines) and ticks from the axes
+            ax.set_xticks([])
+            ax.set_yticks([])
+            for spine in ax.spines.values():
+                spine.set_visible(False)
+            upset.plot(fig=fig)
+            if title is not None:
+                ax.set_title(title)
+            # plt.tight_layout()
+            # Return the UpSet object so we can access its axes
+            return upset, counts_df
+
+    return upset, counts_df
