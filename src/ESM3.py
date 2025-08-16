@@ -7,15 +7,178 @@ import torch
 from tqdm.auto import tqdm
 from pathlib import Path
 from typing import Optional
+
+import src.biopython as bp
 # %%
 from huggingface_hub import login
 from esm.models.esm3 import ESM3
+from esm.models.esmc import ESMC
 from esm.sdk.api import ESM3InferenceClient, ESMProtein, GenerationConfig
 
 # %%
-import src.haplosaurus as hs
 import src.utils as utils
+import src.haplosaurus as hs
 import src.config as config
+
+
+def list_models(local_only=True):
+    local_models = ["esm3_sm_open_v1", # 1.4B
+                    "esmc_300m", # 300M
+                    "esmc_600m"] # 600M
+    
+    api_models =[
+        # Model	Model Size	Number of Layers	Release Date
+        "esmc-6b-2024-12",	# 6B	80	2024-12
+        "esmc-600m-2024-12",	# 600M	36	2024-12
+        "esmc-300m-2024-12"	# 300M	30	2024-12
+    ]
+    if local_only:
+        return local_models
+    else:
+        return local_models + api_models
+
+AMINO_ACIDS = set("ACDEFGHIKLMNPQRSTVWY")
+
+def list_scoring_strategies(model: Optional[str] = None,
+                            options: list = ["masked-marginals"]):
+    if model is None:
+        models = list_models(return_list=True)
+    else:
+        models = utils.as_list(model)
+    scoring_strategies = {} 
+    for m in models:
+        if model is None or m == model:
+            scoring_strategies[m] = options
+    return scoring_strategies
+
+
+def load_model(model_loc,
+               model_name=None,
+               verbose=True):
+    
+    alphabet = Alphabet()
+    # Check if the model_loc is passed as a string ( model name)
+    if isinstance(model_loc, str): 
+        if model_name is None:
+            model_name = model_loc
+
+        # Load the model
+        if model_name.lower().startswith("esm3"):
+            model = ESM3.from_pretrained(model_name).to("cuda")
+        elif model_name.lower().startswith("esmc"):
+            model = ESMC.from_pretrained(model_name).to("cuda")
+        else:
+            raise ValueError(f"Model {model_name} is not supported") 
+    
+    elif isinstance(model_loc, tuple) and len(model_loc) == 2:
+        model, alphabet = model_loc[0], model_loc[1]
+    else:
+        raise ValueError(f"Model {model_loc} is not supported")
+  
+    # Set the model name
+    if isinstance(model_name, str):
+        model.__class__.__name__ = model_name
+
+    # Return the model and alphabet
+    return model, alphabet 
+
+
+def tokenize_sequence(model, 
+                      sequence,
+                      unsqueeze=True):
+    from esm.sdk.api import ESMProtein
+
+    protein = ESMProtein(sequence=sequence)
+    protein_tensor = model.encode(protein)
+    sequence_tokens = protein_tensor.sequence
+    # Unsqueeze the sequence tokens to match ESM2 format
+    if unsqueeze:
+        sequence_tokens = sequence_tokens.unsqueeze(0)
+    return sequence_tokens, protein_tensor
+
+
+def get_sequence_tokenizer():
+    """
+    Get the sequence tokenizer for the ESM3 model.
+    
+    The output logits are 1 x seq_len x 64: this is not the true alphabet size (33).
+    See:
+        https://github.com/evolutionaryscale/esm/issues/86
+        https://github.com/evolutionaryscale/esm/issues/252
+    """
+    from esm.tokenization.sequence_tokenizer import EsmSequenceTokenizer 
+    Tokenizer = EsmSequenceTokenizer() 
+    return Tokenizer
+
+def decode_token(token_id,
+                 tokenizer=None):
+    """
+    Decode a token ID to a string.
+
+    The output logits are 1 x seq_len x 64: this is not the true alphabet size (33).
+    See:
+        https://github.com/evolutionaryscale/esm/issues/86
+        https://github.com/evolutionaryscale/esm/issues/252
+    """
+    if tokenizer is None:
+        tokenizer = get_sequence_tokenizer()
+    return tokenizer.decode(token_id)
+
+
+class Alphabet:
+    def __init__(self, tokenizer=None):
+        if tokenizer is None:
+            tokenizer = get_sequence_tokenizer()
+        idx_to_str = {i: tokenizer.decode(i) for i in range(64)}
+        str_to_idx = {v: k for k, v in idx_to_str.items()}
+        self.tokenizer = tokenizer
+        self.str_to_idx = str_to_idx
+        self.idx_to_str = idx_to_str
+
+    def get_token(self, idx):
+        if not isinstance(idx, int):
+            raise ValueError(f"Index must be an integer, got {type(idx)}")
+        return self.idx_to_str[idx]
+
+    def get_idx(self, token):
+        if not isinstance(token, str):
+            raise ValueError(f"Token must be a string, got {type(token)}")
+        return self.str_to_idx[token]
+    
+    def get_mask_idx(self):
+        return self.str_to_idx["<mask>"]
+     
+    def get_batch_converter(self): 
+        def batch_converter(data): 
+            batch_labels  = [x[0] for x in data]
+            batch_strs = [x[1] for x in data]
+            batch_tokens = torch.stack([torch.tensor(self.tokenizer.encode(x)) for x in batch_strs])
+            return batch_labels, batch_strs, batch_tokens
+        return batch_converter
+    
+    def __len_used___(self):
+        return len(self.tokenizer.all_token_ids)
+    
+    def __len__(self):
+        return len(self.idx_to_str)
+        
+
+# def main(dms_input,
+#          dms_output,
+#          model_location,
+#          sequence=None,
+#          mutation_col=None,
+#          offset_idx=1,
+#          scoring_strategy=None,
+
+
+
+
+
+
+########################################################
+## Patient embeddings
+########################################################
 
 # %%
 def get_mean_embeddings(outputs,

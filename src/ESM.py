@@ -68,6 +68,53 @@ def list_scoring_strategies(model: Optional[str] = None,
             scoring_strategies[m] = options
     return scoring_strategies
 
+
+def load_model(model_loc,
+               model_name=None,
+               verbose=True):
+    
+    from esm2 import pretrained
+    import warnings
+    
+    #Check if the model_loc is passed as a string ( model name)
+    if isinstance(model_loc, str):
+
+        if model_name is None:
+            model_name = model_loc
+
+        # Avoid an infinite loop of trying to download the model (internal to esm)
+        model_loc = fix_esm_model_name(model_loc)
+
+        # Load the model
+        with warnings.catch_warnings():
+            # Suppress warning about missing regression weights (not needed for current VEP metrics?)
+            if verbose < 2:
+                warnings.filterwarnings('ignore', 
+                                        category=UserWarning, 
+                                        message='Regression weights not found, predicting contacts will not produce correct results.')
+            model, alphabet = pretrained.load_model_and_alphabet(model_loc) 
+    
+    elif isinstance(model_loc, tuple) and len(model_loc) == 2:
+        model, alphabet = model_loc[0], model_loc[1]
+    else:
+        raise ValueError(f"Model {model_loc} is not supported")
+
+    # Set the model name
+    if isinstance(model_name, str):
+        model.__class__.__name__ = model_name
+
+    # Return the model and alphabet
+    return model, alphabet
+
+def fix_esm_model_name(model_name):
+    if model_name == "esm1v_t33_650M_UR90S":
+        model_name = "esm1v_t33_650M_UR90S_1"
+    if model_name == "esmfold_v0":
+        model_name = "esmfold_3B_v0"
+    if model_name == "esmfold_v1":
+        model_name = "esmfold_3B_v1"
+    return model_name 
+
 def get_torch_data_i(transcript_id, 
                      results, 
                      alphabet,

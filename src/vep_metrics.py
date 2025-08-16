@@ -388,6 +388,7 @@ def get_token_probs(model,
                                "tensorflow"],
                     method=["wt-marginals",
                             "masked-marginals",
+                            "masked-marginals-esm3",
                             "masked-marginals-msa",
                             "pseudo-ppl",
                             "pseudo-ppl-mlm"],
@@ -463,7 +464,77 @@ def get_token_probs(model,
                     model(batch_tokens_masked.to(device))["logits"], 
                     dim=-1
                 )
-            all_token_probs.append(token_probs[:, i].to(device))  # vocab size
+            all_token_probs.append(token_probs[:, i].to(device))  
+            
+        # Concatenate all token probabilities along dimension 0 (sequence length)
+        # and then add a batch dimension (unsqueeze at dim 0)
+        # This creates a tensor of shape [1, sequence_length, vocab_size]
+        token_probs = torch.cat(all_token_probs, dim=0).unsqueeze(0)
+
+        # Check the shape of the token probabilities
+        _check_token_probs(token_probs=token_probs,
+                           batch_tokens=batch_tokens,
+                           alphabet=alphabet)
+        
+        return token_probs
+
+    elif method == "masked-marginals-esm3":
+        import attr
+        from esm.sdk.api import LogitsConfig, ESMProtein
+        
+        if sequence is None:
+            raise ValueError("Sequence must be provided for masked-marginals-esm3")
+                
+        batch_tokens = batch_tokens.cuda()
+        # Get the device from batch_tokens
+        device = batch_tokens.device
+
+        # Construct the protein tensor
+        protein_tensor = model.encode(ESMProtein(sequence=sequence))
+
+        # Get mask token ID based on model type
+        # For ESM-C, mask token is typically 32
+        mask_token_id = getattr(model, "mask_token_id", 32)
+
+        # If using ESM3, get mask token ID from tokenizers
+        if  hasattr(model, "tokenizers"):
+            mask_token_id = model.tokenizers.sequence.mask_token_id
+ 
+        all_token_probs = []
+        for i in tqdm(range(batch_tokens.size(-1)),
+                        desc=f"Computing token probabilities: 'masked-marginals'",
+                        disable=not progress_bar,
+                        leave=leave):
+            
+            # Skip tokens that are not in the token_indices list
+            if token_indices is not None:
+                # Account for the BOS (Beginning of Sentence) token
+                if i-1 not in token_indices:
+                    # Create placeholder tensor on the same device as batch_tokens
+                    token_probs = torch.zeros(1, len(alphabet), device=device)
+                    all_token_probs.append(token_probs)
+                    continue 
+
+            # Mask the tokens
+            masked_tokens = batch_tokens.clone()
+            masked_tokens[0, i] = mask_token_id
+            masked_protein_tensor = attr.evolve(protein_tensor, 
+                                                sequence=masked_tokens.squeeze()) 
+            # Get logits at the masked position
+            with torch.no_grad():
+                logits_output = model.logits(
+                    masked_protein_tensor,
+                    LogitsConfig(sequence=True)
+                    )
+            # The output logits are 1 x seq_len x 64: this is not the true alphabet size (33)
+            # https://github.com/evolutionaryscale/esm/issues/86
+            # https://github.com/evolutionaryscale/esm/issues/252
+            token_logits = logits_output.logits.sequence[0, i]
+            # Convert logits to probabilities
+            token_probs = torch.log_softmax(token_logits, dim=-1)
+
+            all_token_probs.append(token_probs.unsqueeze(0))  
+
         # Concatenate all token probabilities along dimension 0 (sequence length)
         # and then add a batch dimension (unsqueeze at dim 0)
         # This creates a tensor of shape [1, sequence_length, vocab_size]

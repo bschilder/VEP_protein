@@ -11,12 +11,84 @@ import pathlib
 import pandas as pd
 from tqdm.auto import tqdm  
 import torch
-from esm2 import pretrained, MSATransformer
 from typing import List, Union, Tuple, Any
 
 import src.utils as utils
 import src.biopython as bp
 import src.vep_metrics as vm
+
+esm_old = True
+try: 
+    from src.ESM import load_model
+    esm_old = True
+except:
+    pass
+try: 
+    from src.ESM3 import load_model
+    esm_old = False
+except:
+    pass  
+
+
+
+def seq_to_data(sequence,
+                name="protein1",
+                **kwargs):
+    data = [
+        (name, bp.preprocess_sequence(sequence, **kwargs)),
+    ]
+    return data
+
+def seq_to_batch(sequence,
+                 alphabet,
+                 **kwargs):
+    """Convert a sequence to a batch of data.
+    
+    Args:
+        sequence: The sequence to convert.
+        alphabet: The alphabet to use.
+    Returns:
+        batch_labels: The labels of the batch.
+        batch_strs: The strings of the batch.
+        batch_tokens: The tokens of the batch.
+    """
+    # Convert the sequence to data
+    data = seq_to_data(sequence, **kwargs)
+
+    # Get the batch converter
+    batch_converter = alphabet.get_batch_converter()
+    
+    # Convert the data to a batch
+    (batch_labels, 
+     batch_strs, 
+     batch_tokens) = batch_converter(data)
+    return batch_labels, batch_strs, batch_tokens
+
+
+def _get_model_name(model_loc):
+    if isinstance(model_loc, str):
+        model_name = model_loc
+    elif isinstance(model_loc, tuple) and len(model_loc) == 2:
+        model_name = model_loc[0]._get_name()
+    else:
+         model_name = model_loc._get_name()
+    return model_name
+
+def _assign_model_name(model, model_name):
+    model.__class__.__name__ = model_name
+
+
+def msa_to_batch(msa_path,
+                 msa_samples,
+                 alphabet):
+    # Read the MSA
+    data = bp.read_msa(msa_path, msa_samples)
+    batch_converter = alphabet.get_batch_converter()
+    (batch_labels, 
+        batch_strs, 
+        batch_tokens) = batch_converter(data)   
+    return batch_labels, batch_strs, batch_tokens
+
 
 def create_parser():
     parser = argparse.ArgumentParser(
@@ -106,78 +178,7 @@ def create_parser():
         help="Do not use GPU even if available")
     return parser
 
-def seq_to_data(sequence,
-                name="protein1",
-                **kwargs):
-    data = [
-        (name, bp.preprocess_sequence(sequence, **kwargs)),
-    ]
-    return data
-
-def seq_to_batch(sequence,
-                 alphabet,
-                 **kwargs):
-    """Convert a sequence to a batch of data.
-    
-    Args:
-        sequence: The sequence to convert.
-        alphabet: The alphabet to use.
-    Returns:
-        batch_labels: The labels of the batch.
-        batch_strs: The strings of the batch.
-        batch_tokens: The tokens of the batch.
-    """
-    # Convert the sequence to data
-    data = seq_to_data(sequence, **kwargs)
-
-    # Get the batch converter
-    batch_converter = alphabet.get_batch_converter()
-    
-    # Convert the data to a batch
-    (batch_labels, 
-     batch_strs, 
-     batch_tokens) = batch_converter(data)
-    return batch_labels, batch_strs, batch_tokens
-
-
-def load_model(model_loc,
-               model_name=None,
-               verbose=True):
-    
-    #Check if the model_loc is passed as a string ( model name)
-    if isinstance(model_loc, str):
-    # Avoid an infinite loop of trying to download the model (internal to esm)
-        model_loc = fix_esm_model_name(model_loc)
-
-        # Load the model
-        with warnings.catch_warnings():
-            # Suppress warning about missing regression weights (not needed for current VEP metrics?)
-            if verbose < 2:
-                warnings.filterwarnings('ignore', 
-                                        category=UserWarning, 
-                                        message='Regression weights not found, predicting contacts will not produce correct results.')
-            model, alphabet = pretrained.load_model_and_alphabet(model_loc)
-    
-    elif isinstance(model_loc, tuple) and len(model_loc) == 2:
-        model, alphabet = model_loc[0], model_loc[1]
-    else:
-        raise ValueError(f"Model {model_loc} is not supported")
-
-    # Set the model name
-    if isinstance(model_name, str):
-        model.__class__.__name__ = model_name
-
-    # Return the model and alphabet
-    return model, alphabet
-
-def _get_model_name(model_loc):
-    if isinstance(model_loc, str):
-        model_name = model_loc
-    elif isinstance(model_loc, tuple) and len(model_loc) == 2:
-        model_name = model_loc[0]._get_name()
-    else:
-         model_name = model_loc._get_name()
-    return model_name
+ 
   
 def compute_pppl(row,
                  mutation_col,
@@ -215,17 +216,7 @@ def compute_pppl(row,
                                           sequence=sequence_mut,
                                           alphabet=alphabet,
                                           progress_bar=progress_bar)
-    return tuple_mean_sum_pppl
-
-def fix_esm_model_name(model_name):
-    if model_name == "esm1v_t33_650M_UR90S":
-        model_name = "esm1v_t33_650M_UR90S_1"
-    if model_name == "esmfold_v0":
-        model_name = "esmfold_3B_v0"
-    if model_name == "esmfold_v1":
-        model_name = "esmfold_3B_v1"
-    return model_name
-
+    return tuple_mean_sum_pppl 
 
 def main(
     dms_input: str,
@@ -273,6 +264,21 @@ def main(
             Example: True
         verbose: Whether to print verbose output
             Example: True
+
+    Returns:
+        df: DataFrame with predictions
+            Example: df.head()
+
+    Example:
+        df = main(
+            dms_input="data/mutations.csv",
+            dms_output="results/predictions.csv",
+            model_location="esm2_t33_650M_UR50D",
+            sequence="MVKVGVNG...",
+            mutation_col="mutant", 
+            scoring_strategy="wt-marginals",   
+        )
+        df.head()
     """
 
     # Check if results already exist
@@ -319,7 +325,7 @@ def main(
         ####-- MSA models --####
         # Original code from: 
         # https://github.com/facebookresearch/esm/blob/2b369911bb5b4b0dda914521b9475cad1656b2ac/examples/variant-prediction/predict.py#L161
-        if isinstance(model, MSATransformer):
+        if type(model).__name__ == "MSATransformer":
             #### masked-marginals-msa ####
             
             # Check that the scoring strategy is masked-marginals-msa
@@ -327,16 +333,14 @@ def main(
                 scoring_strategy = "masked-marginals-msa"
             assert (
                 scoring_strategy == "masked-marginals-msa"
-            ), "MSA Transformer only supports masked marginals strategy"
-
-            # Read the MSA
-            data = bp.read_msa(msa_path, msa_samples)
+            ), "MSA Transformer only supports masked marginals strategy" 
             
-            # Convert the data to a batch
-            batch_converter = alphabet.get_batch_converter()
+            # Convert the data to a batch 
             (batch_labels, 
              batch_strs, 
-             batch_tokens) = batch_converter(data)
+             batch_tokens) = msa_to_batch(msa_path,
+                                          msa_samples,
+                                          alphabet)
             
             # Move batch tokens to device
             batch_tokens = batch_tokens.to(device)
@@ -408,6 +412,9 @@ def main(
             # https://github.com/facebookresearch/esm/blob/2b369911bb5b4b0dda914521b9475cad1656b2ac/examples/variant-prediction/predict.py#L205
             elif scoring_strategy == "masked-marginals":
 
+                if not esm_old:
+                    scoring_strategy = "masked-marginals-esm3"
+
                 # Convert the sequence to a batch
                 (batch_labels, 
                  batch_strs, 
@@ -423,9 +430,10 @@ def main(
                 # Compute token probabilities
                 token_probs = vm.get_token_probs(model=model,
                                                  alphabet=alphabet,
+                                                 sequence=batch_strs[0], # Pass the processed sequence
                                                  batch_tokens=batch_tokens,
                                                  token_indices=mutation_idx,
-                                                 method="masked-marginals", 
+                                                 method=scoring_strategy, 
                                                  progress_bar=progress_bar)
 
                 tqdm.pandas(desc=f"Computing 'masked-marginals' for {model_name}", 

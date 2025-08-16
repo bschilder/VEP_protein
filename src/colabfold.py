@@ -73,7 +73,7 @@ AFDB_CACHE = pooch.os_cache("alphafold_db")
 def search_files(base_dir,
                  tx_id,
                  subdir = "af2_sameMSA",
-                 suffix = ".pdb",
+                 suffix = ".pdb*",
                  model_number = 1):
     
     pdb_files = glob.glob(os.path.join(base_dir,
@@ -2406,12 +2406,106 @@ def plot_contact_map_diff_barplot(
 
     return fig, df
 
+def plot_contact_map_diff_barplot_grouped(
+    bar_df,
+    group_by="superpopulation",
+    figsize=(10, 5),
+    cmap="seismic_r", 
+):
+    """
+    Plot a grouped barplot showing the number and percentage of contact map differences
+    (e.g., gained/lost contacts) for each group (e.g., superpopulation).
+
+    Args:
+        bar_df (pd.DataFrame): DataFrame containing columns for group, 'Type' (e.g., 'Gained', 'Lost'),
+            'Count' (number of contacts), and 'Percent' (percentage of contacts).
+        group_by (str): Column name in bar_df to group bars by (default: "superpopulation").
+        figsize (tuple): Size of the matplotlib figure (default: (10, 5)).
+        cmap (str): Name of the matplotlib colormap to use for bar colors (default: "seismic_r").
+
+    Returns:
+        None. Displays the plot.
+
+    Notes:
+        - The function sorts the bars by 'Count' in descending order.
+        - Bar colors are chosen for colorblind accessibility.
+        - Each bar is annotated with its count and percentage.
+    """
+    bar_df.sort_values(by="Count", ascending=False, inplace=True)
+
+    # Use the first and last colors from seismic_r as the palette
+    import matplotlib as mpl
+    cmap_obj = mpl.colormaps.get_cmap(cmap)
+    # For colorblind accessibility, use slightly different shades of blue and red
+    # Use 0.85 and 0.30 for more distinguishable, less saturated colors
+    palette = [cmap_obj(0.85), cmap_obj(0.30)]
+
+    # Make the figure wider
+    fig, ax = plt.subplots(figsize=figsize) 
+    sns.barplot(
+        data=bar_df,
+        x=group_by,
+        y="Count",
+        hue="Type",
+        ax=ax,
+        palette=palette,
+        dodge=True, 
+    )
+
+    # Remove top and right plot borders
+    ax.spines['top'].set_visible(False)
+    ax.spines['right'].set_visible(False)
+
+    # Add labels above each bar: f"{Count}\n({Percent:.2f}%)"
+    n_superpop = len(ax.get_xticklabels())
+    n_hue = len(ax.get_legend_handles_labels()[1])
+    for i, p in enumerate(ax.patches):
+        height = p.get_height()
+        if height == 0:
+            continue
+        superpop_idx = i // n_hue
+        hue_idx = i % n_hue
+        if superpop_idx >= n_superpop:
+            continue
+        superpop = ax.get_xticklabels()[superpop_idx].get_text()
+        hue = ax.get_legend_handles_labels()[1][hue_idx]
+        # Find the row in bar_df
+        row = bar_df[(bar_df[group_by] == superpop) & (bar_df["Type"] == hue)]
+        if not row.empty:
+            count_val = row["Count"].values[0]
+            percent_val = row["Percent"].values[0]
+            label = f"{count_val}\n({percent_val:.2f}%)"
+            # Add a tiny bit of padding to the left of each label (e.g., 2 pixels)
+            ax.annotate(label,
+                        (p.get_x() + p.get_width() / 2 + 0.02, height),
+                        ha='center', va='bottom',
+                        fontsize=9,  
+                        xytext=(0, 3), textcoords='offset points')
+    ax.set_xlabel(group_by.title())
+    ax.set_ylabel("Contact Counts")
+    ax.legend(title="Contact Change")
+    plt.tight_layout()
+
 
 def revert_haplotype_naming(names, sep="_"):
     """
-    Revert haplotype naming from "871P_L_1645R_T" -> "871P>L,1645R>T".
-    Accepts a single string or an iterable of strings.
-    Returns a single string or a list of strings, matching the input type.
+    Revert haplotype naming from the compact form to a more readable mutation list.
+
+    For example, converts "871P_L_1645R_T" to "871P>L,1645R>T".
+
+    Args:
+        names (str or iterable of str): Haplotype name(s) in the compact form.
+        sep (str): Separator used in the compact form (default: "_").
+
+    Returns:
+        str or list of str: Reverted haplotype name(s) in the format "orig>mut,orig2>mut2,...".
+            The return type matches the input type.
+
+    Example:
+        >>> revert_haplotype_naming("871P_L_1645R_T")
+        '871P>L,1645R>T'
+        >>> revert_haplotype_naming(["871P_L_1645R_T", "100A_G"])
+        ['871P>L,1645R>T', '100A>G']
     """
     def revert_one(name):
         parts = name.split(sep)
@@ -3852,3 +3946,79 @@ def plot_superpopulation_maps(contact_maps, pow=1, nrows=2, cmap='viridis', bin_
 
     plt.tight_layout()
     plt.show()
+
+
+def compress_npy_files(base_dir="~/projects/data/colabfold/",
+                       rep_types=["_single_repr_", 
+                                  "_pair_repr_"], 
+                       force=False,
+                       remove_original=False):
+
+    import os
+    import numpy as np
+    import glob
+    from tqdm import tqdm
+
+    # Expand the user path and format with tx_id
+    base_dir = os.path.expanduser(base_dir)
+    for rep_type in rep_types:
+
+        # List all folders (directories) within the base_dir
+        tx_folders = [os.path.join(base_dir, f) for f in os.listdir(base_dir) if os.path.isdir(os.path.join(base_dir, f))]
+
+        subfolders = [os.path.join(tx_folder, d) 
+                for tx_folder in tx_folders 
+                for d in os.listdir(tx_folder) 
+                if os.path.isdir(os.path.join(tx_folder, d))]
+
+        for folder in subfolders:
+
+            # Get the files
+            files = glob.glob(os.path.expanduser(f"{folder}/*{rep_type}*.npy"))
+            if len(files) == 0:
+                print(f"No files found for {folder}")
+                continue
+            else:
+                print(f"{folder} has {len(files)} files")
+            
+            # Get total file sizes
+            total_size = sum(os.path.getsize(f) for f in files)
+            print(f"Total size of {len(files)} files in {folder}: {total_size/1024/1024/1024:.2f} GB")
+            
+            # Define the npz file
+            npz_file = f"{folder}/{os.path.basename(files[0]).split("_")[0]}_{rep_type.strip('_')}.npz"
+            
+            # Check if the npz file exists
+            if not os.path.exists(npz_file) or force:  
+                # Collect the map arrays in a dictionary
+                mmap_arrays = {}
+                for i, file in tqdm(enumerate(files), total=len(files)):
+                    mmap_arrays[os.path.basename(file)] = np.load(file, mmap_mode='r+')
+                    
+                # # You can then process and save chunks of this mmap_array
+                # # For example, to compress a portion and save it as a new compressed NPY file:
+                # # (This still involves loading a chunk into memory for compression)
+                
+                print(f"Saving {npz_file}")
+                np.savez_compressed(npz_file, **mmap_arrays)
+
+            # Get the size of the original files (already computed as total_size)
+            # Get the size of the compressed npz file
+            compressed_size = os.path.getsize(npz_file)
+            print(f"Compressed file size: {compressed_size/1024/1024/1024:.2f} GB")
+            if total_size > 0:
+                percent_compression = 100 * (1 - compressed_size / total_size)
+                print(f"Percent compression: {percent_compression:.2f}%")
+            else:
+                print("Original total size is zero, cannot compute percent compression.")
+            
+            # # Read back in the compressed npz file to check its contents
+            # loaded = np.load(npz_file, allow_pickle=True)
+            # print(f"Keys in {npz_file}: {list(loaded.keys())}")
+            # for k in loaded.files:
+            #     print(f"Shape of {k}: {loaded[k].shape}")
+            
+            if remove_original:
+                for file in files:
+                    os.remove(file)
+

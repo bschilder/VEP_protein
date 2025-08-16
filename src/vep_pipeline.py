@@ -11,9 +11,18 @@ import src.utils as utils
 import src.haplosaurus as hs
 import src.proteingym as pg
 import src.biopython as bp
+
+esm_old = True
 try:
     import src.ESM_predict as ESMp
     import src.ESM as ESM
+    esm_old = True
+except:
+    pass
+try:
+    import src.ESM_predict as ESMp
+    import src.ESM3 as ESM3
+    esm_old = False
 except:
     pass
 
@@ -29,7 +38,14 @@ def list_models(as_list=True):
     """
     models = []
     # ESM models
-    models += ESM.list_models(return_list=True)
+    try:
+        models += ESM.list_models(return_list=True)
+    except:
+        pass
+    try:
+        models += ESM3.list_models()
+    except:
+        pass
     # Other models TBD...
     # ....
     if as_list:
@@ -54,7 +70,14 @@ def list_scoring_strategies(models: list[str] = None):
     """
     scoring_strategies = {}
     # ESM models
-    scoring_strategies.update(ESM.list_scoring_strategies())
+    try:
+        scoring_strategies.update(ESM.list_scoring_strategies())
+    except:
+        pass
+    try:
+        scoring_strategies.update(ESM3.list_scoring_strategies())
+    except:
+        pass
     # Other models TBD...
     # ....
 
@@ -193,14 +216,29 @@ def vep_pipeline(prot_df: pd.DataFrame = None,
             prot_df_model = prot_df
             
         # Load the model
-        if model_location in ESM.list_models(return_list=True):
-            
-            model_location = ESMp.fix_esm_model_name(model_location)
-            model, alphabet = ESMp.load_model(model_loc=model_location, 
-                                              model_name=model_location, 
-                                              verbose=verbose)
-        else:
-            raise ValueError(f"Model {model_location} not supported")
+        model_loaded = False
+        try:
+            if model_location in ESM.list_models(return_list=True):
+                
+                model_location = ESM.fix_esm_model_name(model_location)
+                model, alphabet = ESM.load_model(model_loc=model_location, 
+                                                 model_name=model_location, 
+                                                 verbose=verbose)
+                model_loaded = True
+        except Exception as e:
+            print(f"Error loading model: {e}")
+            pass
+        try:
+            if model_location in ESM3.list_models(): 
+                model, alphabet = ESM3.load_model(model_loc=model_location, 
+                                                  model_name=model_location, 
+                                                  verbose=verbose)
+                model_loaded = True
+        except Exception as e:
+            print(f"Error loading model: {e}")
+            pass
+        if not model_loaded:
+            raise ValueError(f"Model failed to load: {model_location}")
         
         # Iterate over proteins
         for pid in tqdm(prot_df_model['protein'].unique().tolist(),
@@ -273,8 +311,29 @@ def vep_pipeline(prot_df: pd.DataFrame = None,
                             os.makedirs(os.path.dirname(save_path), exist_ok=True)
 
                         # Run VEP
-                        ## ESM models
-                        if model_location in ESM.list_models(return_list=True):
+                        ## ESM1/2 models
+                        model_run = False
+                        try:
+                            if model_location in ESM.list_models(return_list=True):
+                                ESMp.main(
+                                    dms_input=variants_path,
+                                    dms_output=save_path,
+                                    model_location=[(model, alphabet)],
+                                    sequence=msa,
+                                    mutation_col=mutation_col,
+                                    offset_idx=1,
+                                    scoring_strategy=ss,
+                                    is_ref=is_ref, 
+                                    force=force,
+                                    enable_data_parallel=enable_data_parallel,
+                                    verbose=verbose
+                                )
+                            model_run = True
+                        except:
+                            pass
+                        ## ESM3/C models
+                        # try:
+                        if model_location in ESM3.list_models():
                             ESMp.main(
                                 dms_input=variants_path,
                                 dms_output=save_path,
@@ -288,8 +347,12 @@ def vep_pipeline(prot_df: pd.DataFrame = None,
                                 enable_data_parallel=enable_data_parallel,
                                 verbose=verbose
                             )
-                        else:
-                            raise ValueError(f"Model {model_location} not supported")
+                            model_run = True
+                        # except Exception as e:
+                        #     print(f"Error running model: {e}")
+                        #     pass 
+                        if not model_run:
+                            raise ValueError(f"Model failed to run: {model_location}")
                         
     return save_paths
 

@@ -132,6 +132,10 @@ def merge_vep(save_dir = None,
     save_dir = os.path.expanduser(save_dir)
     if isinstance(scoring_strategy, str):
         scoring_strategy = [scoring_strategy]
+
+    scoring_strategy = [ss for ss in scoring_strategy if ss ]
+
+
     # Create empty list to store dataframes
     dfs = []
     for ss in scoring_strategy:
@@ -143,7 +147,10 @@ def merge_vep(save_dir = None,
                                         save_format=save_format)
         else:
             if isinstance(vep_files, pd.DataFrame):
-                all_files = vep_files.loc[vep_files['scoring_strategy']==ss].file.unique().tolist()
+                if vep_files.empty:
+                    raise ValueError("`vep_files` is empty")
+                else:
+                    all_files = vep_files.loc[vep_files['scoring_strategy']==ss].file.unique().tolist()
             elif isinstance(vep_files, list):
                 all_files = vep_files
             else:
