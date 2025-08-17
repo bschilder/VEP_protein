@@ -4374,9 +4374,9 @@ def plot_vep_histogram_with_arrows(
     legend_title="Clinical Signifance",
     external_legend_annotation=False,
     arrow_text_fontsize=11,
-    x_label="VEP Score",
+    x_label=r"$VEP_{mean}$",
     y_label="Probability",
-    title=None
+    title="Variant Effect Prediction (VEP) Distributions",
 ):
     """
     Plot a histogram of VEP scores by clinical significance, with custom arrows and annotation.
@@ -4700,8 +4700,9 @@ def plot_ref_percentile_schematic(ax=None, show=False, barplot_ylim=None, schema
         ax_top.text(ref_x-0.1, 0.25, "REF", color='grey', fontsize=10, fontweight=None, va='center', ha='right', rotation=90)
         ax_top.set_ylabel("Density")
         ax_top.set_yticks([])
-        ax_top.set_title("REF underestimates pathogenicity", fontsize=10, fontweight='bold')
-        ax_top.set_xlabel("VEP Percentile")
+        # fontweight does not apply to LaTeX text; use \mathbf{} for bold in LaTeX
+        ax_top.set_title(r"$\mathbf{VEP_{REF}\ underestimates}$" + "\n" + r"$\mathbf{pathogenicity}$", fontsize=10, loc='center')
+        ax_top.set_xlabel(r"$VEP_{REF}$ percentile")
         ax_top.set_xlim(-3, 3)
         ax_top.set_xticks([-3, 0, 3])
         ax_top.set_xticklabels(['0', '50', '100'])
@@ -4719,8 +4720,8 @@ def plot_ref_percentile_schematic(ax=None, show=False, barplot_ylim=None, schema
         ax_bottom.text(ref_x-0.1, 0.25, "REF", color='grey', fontsize=10, fontweight=None, va='center', ha='right', rotation=90)
         ax_bottom.set_ylabel("Density")
         ax_bottom.set_yticks([])
-        ax_bottom.set_title("REF overestimates pathogenicity", fontsize=10, fontweight='bold')
-        ax_bottom.set_xlabel("VEP Percentile")
+        ax_bottom.set_title(r"$\mathbf{VEP_{REF}\ overestimates}$" + "\n" + r"$\mathbf{pathogenicity}$", fontsize=10, loc='center')
+        ax_bottom.set_xlabel(r"$VEP_{REF}$ percentile")
         ax_bottom.set_xlim(-3, 3)
         ax_bottom.set_xticks([-3, 0, 3])
         ax_bottom.set_xticklabels(['0', '50', '100'])
@@ -4757,8 +4758,8 @@ def plot_ref_percentile_schematic(ax=None, show=False, barplot_ylim=None, schema
         ax_top.text(ref_x-0.1, 0.25, "REF", color='grey', fontsize=10, fontweight=None, va='center', ha='right', rotation=90)
         ax_top.set_ylabel("Density")
         ax_top.set_yticks([])
-        ax_top.set_title("REF underestimates pathogenicity", fontweight='bold')
-        ax_top.set_xlabel("VEP Percentile")
+        ax_top.set_title(r"$VEP_{REF}$ underestimates\npathogenicity", fontweight='bold')
+        ax_top.set_xlabel(r"$VEP_{REF}$ percentile")
         ax_top.set_xlim(-3, 3)
         ax_top.set_xticks([-3, 0, 3])
         ax_top.set_xticklabels(['0', '50', '100'])
@@ -4776,8 +4777,8 @@ def plot_ref_percentile_schematic(ax=None, show=False, barplot_ylim=None, schema
         ax_bottom.text(ref_x-0.1, 0.25, "REF", color='grey', fontsize=10, fontweight=None, va='center', ha='right', rotation=90)
         ax_bottom.set_ylabel("Density")
         ax_bottom.set_yticks([])
-        ax_bottom.set_title("REF overestimates pathogenicity", fontweight='bold')
-        ax_bottom.set_xlabel("VEP Percentile")
+        ax_bottom.set_title(r"$VEP_{REF}$ overestimates\npathogenicity", fontweight='bold')
+        ax_bottom.set_xlabel(r"$VEP_{REF}$ percentile")
         ax_bottom.set_xlim(-3, 3)
         ax_bottom.set_xticks([-3, 0, 3])
         ax_bottom.set_xticklabels(['0', '50', '100'])
@@ -4798,8 +4799,8 @@ def plot_ref_vep_percentile_stacked_bar(
     figsize=(9, 4), 
     label_padding=0.15, 
     is_ref=True,
-    title="REF VEP Percentiles Relative to Full VEP Distribution",
-    x_label="VEP Quantile",
+    title=r"$VEP_{REF}$ Percentiles Relative to Full $VEP$ Distribution",
+    x_label=r"$VEP_{mean}$ Quantile",
     y_label="Proportion of Variants",
     show_arrows=False,
     show_schematic=True,
@@ -4927,7 +4928,7 @@ def plot_ref_vep_percentile_stacked_bar(
     ax.legend(
         handles[::-1],
         reversed_labels,
-        title='REF VEP\nPercentile Bin',
+        title=r"$VEP_{REF}$" + "\n" + "percentile bin",
         bbox_to_anchor=(-0.15, 1),
         loc='upper right',
         borderaxespad=0.0
@@ -5041,7 +5042,7 @@ def plot_ref_vep_percentile_stacked_bar(
         ax.text(
             x_arrow + 0.08,
             ycenter + arrow_length/2 + label_padding/2,
-            "REF Underestimates\nPathogenicity",
+            r"$VEP_{REF}$ underestimates\npathogenicity",
             va='center', ha='left', rotation=90, fontsize=fontsize, fontweight='bold'
         )
 
@@ -5056,7 +5057,7 @@ def plot_ref_vep_percentile_stacked_bar(
         ax.text(
             x_arrow + 0.08,
             ycenter - arrow_length/2 - label_padding/2,
-            "REF Overestimates\nPathogenicity",
+            r"$VEP_{REF}$ overestimates\npathogenicity",
             va='center', ha='left', rotation=90, fontsize=fontsize, fontweight='bold'
         )
 
@@ -5203,7 +5204,7 @@ def plot_ref_vep_std_stacked_bar(vep_df,
     ax.text(
         x_arrow + 0.08,
         ycenter + arrow_length/2 + label_padding/2,
-        "REF Underestimates\nPathogenicity",
+        r"$VEP_{REF}$ underestimates\npathogenicity",
         va='center', ha='left', rotation=90, fontsize=fontsize, fontweight='bold'
     )
 
@@ -5217,7 +5218,7 @@ def plot_ref_vep_std_stacked_bar(vep_df,
     ax.text(
         x_arrow + 0.08,
         ycenter - arrow_length/2 - label_padding/2,
-        "REF Overestimates\nPathogenicity",
+        r"$VEP_{REF}$ overestimates\npathogenicity",
         va='center', ha='left', rotation=90, fontsize=fontsize, fontweight='bold'
     )
 
@@ -5405,7 +5406,7 @@ def plot_ref_vep_diff_stacked_bar(vep_df,
     ax.text(
         x_arrow + 0.08,
         ycenter + arrow_length/2 + label_padding/2,
-        "REF Underestimates\nPathogenicity",
+        r"$VEP_{REF}$ underestimates\npathogenicity",
         va='center', ha='left', rotation=90, fontsize=fontsize, fontweight='bold'
     )
 
@@ -5419,7 +5420,7 @@ def plot_ref_vep_diff_stacked_bar(vep_df,
     ax.text(
         x_arrow + 0.08,
         ycenter - arrow_length/2 - label_padding/2,
-        "REF Overestimates\nPathogenicity",
+        r"$VEP_{REF}$ overestimates\npathogenicity",
         va='center', ha='left', rotation=90, fontsize=fontsize, fontweight='bold'
     )
 
@@ -5731,7 +5732,7 @@ def plot_top_diff_variants(
         annotation_clip=False
     )
     ax.text(
-        0 - arrow_length/2, label_y, r"$\bf{REF\ overestimates}$" + "\n" + r"$\bf{pathogenicity}$",
+        0 - arrow_length/2, label_y, r"$\bf{VEP_{REF}\ overestimates}$" + "\n" + r"$\bf{pathogenicity}$",
         ha='right', va='top', color=palatte["path"], fontsize=label_fontsize,
         transform=ax.get_xaxis_transform()
     )
@@ -5744,7 +5745,7 @@ def plot_top_diff_variants(
         annotation_clip=False
     )
     ax.text(
-        0 + arrow_length/2, label_y, r"$\bf{REF\ underestimates}$" + "\n" + r"$\bf{pathogenicity}$",
+        0 + arrow_length/2, label_y, r"$\bf{VEP_{REF}\ underestimates}$" + "\n" + r"$\bf{pathogenicity}$",
         ha='left', va='top', color=palatte["benign"], fontsize=label_fontsize,
         transform=ax.get_xaxis_transform()
     )
