@@ -1,4 +1,5 @@
 import os
+from re import T
 import warnings
 from typing import Dict, List, Optional, Union, Tuple, Set
 from pathlib import Path
@@ -2866,7 +2867,8 @@ def merge_haplotype_datasets(haplotype_datasets,
 
     # Iterate over the rest of the datasets
     for i, (dataset_id, ds) in tqdm(enumerate(haplotype_datasets.items()), 
-                    desc="Merging haplotype datasets"):
+                                    total=len(haplotype_datasets),
+                                    desc="Merging haplotype datasets"):
         
         # Skip the first dataset (used for 'merged' variable)
         if i == 0:
@@ -3031,18 +3033,22 @@ def merge_haplotype_datasets(haplotype_datasets,
 
 
 
-def plot_haplotypes_summary(haplotypes,
-                                max_edits = 10,
-                                bin_size = 200,
-                                bins=50, 
-                                color=("grey","grey"),
-                                edgecolor=("black","black"),
-                                figsize=(13, 4),
-                                title=("Number of Haplotypes per Protein", "Number of Wildtype (WT) Variants per Haplotype"),
-                                xlabel=("Number of Haplotypes", "Number of WT Variants"),
-                                ylabel=("Number of Proteins", "Number of Haplotypes"),
-                                gridspec_kw={'width_ratios': [0.3, 1]},
-                                verbose = True):
+def plot_haplotypes_summary(
+    haplotypes,
+    max_edits=10,
+    bin_size=300,
+    bins=50,
+    color=("grey", "grey"),
+    edgecolor=("black", "black"),
+    figsize=(13, 4),
+    title=("Number of Haplotypes per Protein", "Number of Wildtype (WT) Variants per Haplotype"),
+    xlabel=("Number of Haplotypes", "Number of WT Variants"),
+    ylabel=("Number of Proteins", "Number of Haplotypes"),
+    gridspec_kw={'width_ratios': [0.3, 1]},
+    verbose=True,
+    show_median=True,  # New argument to control median annotation
+    median_line_kwargs=None,  # Optional kwargs for the median line
+):
     """
     Plot the number of haplotypes per protein (subplot1) and 
     the number of WT variants per haplotype (subplot2).
@@ -3052,9 +3058,12 @@ def plot_haplotypes_summary(haplotypes,
         max_edits (int): The maximum number of edits to include in the plot.
         bin_size (int): The size of the bins for the WT variants.
         verbose (bool): Whether to print verbose output. Defaults to True.
+        show_median (bool): Whether to show the median as a vertical line in subplot 1.
+        median_line_kwargs (dict or None): Optional kwargs for axvline (e.g., color, linestyle).
     """
     import matplotlib.pyplot as plt
     import pandas as pd
+    import numpy as np
 
     hap_df = haplotypes_to_df(haplotypes).reset_index()
     hap_df = utils.add_edits(hap_df)
@@ -3092,10 +3101,24 @@ def plot_haplotypes_summary(haplotypes,
 
     # --- Plot 2: Number of Haplotypes per Protein (now on the left) ---
     ax1 = axes[0]
-    ax1.hist(counts_per_protein["haplotype"], bins=bins, color=color[0], edgecolor=edgecolor[0])
+    n_haplotypes = counts_per_protein["haplotype"]
+    ax1.hist(n_haplotypes, bins=bins, color=color[0], edgecolor=edgecolor[0])
     ax1.set_ylabel(ylabel[0])
     ax1.set_xlabel(xlabel[0])
     ax1.set_title(title[0])
+
+    # Optionally add median line
+    if show_median:
+        median_val = np.median(n_haplotypes)
+        if median_line_kwargs is None:
+            median_line_kwargs = dict(color="goldenrod", linestyle="--", linewidth=2, label=f"Median = {int(median_val)}")
+        else:
+            # Ensure label is present
+            median_line_kwargs = dict(median_line_kwargs)  # copy
+            if "label" not in median_line_kwargs:
+                median_line_kwargs["label"] = f"Median = {int(median_val)}"
+        ax1.axvline(median_val, **median_line_kwargs)
+        ax1.legend()
 
     # --- Plot 1: Number of WT Variants per Haplotype (now on the right) ---
     ax2 = axes[1]
@@ -3113,6 +3136,12 @@ def plot_haplotypes_summary(haplotypes,
 
     plt.tight_layout()
     plt.show()
+
+    return {'fig':fig, 
+            'axes':axes,
+            'data':{'ax1':hap_df,
+                    'ax2':counts_per_protein}
+                    }
 
 
 

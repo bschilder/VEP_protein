@@ -938,6 +938,66 @@ def plot_vep_variance(vep_df,
 
     if return_df:
         return vep_variance
+    
+
+def compute_representativeness_stats(
+    vep_df,
+    groupby_cols=['model_location', 'protein', 'clinsig', 'mutant', 'scoring_strategy'],
+    y='VEP_percentile',
+    is_ref=True
+):
+    """
+    Compute statistics summarizing how representative the reference VEP is of each variant-specific VEP distribution.
+
+    This function calculates the percentile rank, mean, and standard deviation of the 'VEP' column
+    within groups defined by `groupby_cols`. If the specified percentile column (`y`) does not exist,
+    it will be created. The function also ensures that 'VEP_mean' and 'VEP_std' columns are present,
+    computing them if necessary.
+
+    Parameters
+    ----------
+    vep_df : pd.DataFrame
+        Input DataFrame containing at least a 'VEP' column and columns specified in `groupby_cols`.
+    groupby_cols : list of str, optional
+        Columns to group by when computing statistics (default:
+        ['model_location','protein','clinsig','mutant','scoring_strategy']).
+    y : str, optional
+        Name of the percentile column to compute if not present (default: 'VEP_percentile').
+    is_ref : bool, optional
+        Whether to filter for REF haplotypes (default: True).
+
+    Returns
+    -------
+    pd.DataFrame
+        DataFrame with added columns for percentile rank (`y`), 'VEP_mean', and 'VEP_std'.
+    """
+    # Compute percentile rank if not present
+    if y not in vep_df.columns:
+        vep_df[y] = vep_df.groupby(groupby_cols)['VEP'].rank(pct=True) * 100
+    # Compute standard deviation if not present
+    if 'VEP_std' not in vep_df.columns:
+        vep_df['VEP_std'] = vep_df.groupby(groupby_cols)['VEP'].transform('std')
+    # Compute mean if not present
+    if 'VEP_mean' not in vep_df.columns:
+        vep_df['VEP_mean'] = vep_df.groupby(groupby_cols)['VEP'].transform('mean')
+
+    if "VEP_mean_diff" not in vep_df.columns:
+        vep_df["VEP_mean_diff"] = vep_df["VEP"] - vep_df["VEP_mean"]
+
+    if "VEP_ref_diff" not in vep_df.columns:
+        ref_vep = vep_df.loc[vep_df["is_ref"]].set_index(groupby_cols)["VEP"]
+        vep_df["VEP_REF"] = vep_df.set_index(groupby_cols).index.map(ref_vep)
+        vep_df["VEP_ref_diff"] = vep_df["VEP"] - vep_df["VEP_REF"]
+
+     # Filter for REF haplotypes
+    vep_df = vep_df.copy()
+    if is_ref:
+        pct_df = vep_df.loc[vep_df['is_ref']==True]
+    else:
+        pct_df = vep_df
+
+    return pct_df
+
 
 def plot_vep_percentiles(vep_df,
                         is_ref=True,
@@ -954,37 +1014,39 @@ def plot_vep_percentiles(vep_df,
                         height=3,
                         aspect=.9,
                         title_y=1,
+                        x_rotation=45,
+                        x_ha='right',
                         sharex=True,
                         sharey=True,
-                        return_df=False,
                         save_path=None,
-                        cut=0,  # Parameter to control violin plot distribution inference (0 = no inference beyond data)
+                        invert_xaxis=True,
+                        cut=0,  # Parameter to control violin plot distribution inference (0 = no inference beyond data) 
                         **kwargs):
+
+    def _format_label(label):
+        # Replace "path" with "pathogenic" and "_" with " "
+        label = label.replace("path", "pathogenic")
+        label = label.replace("_", " ")
+        return label
 
     if suptitle is None and is_ref:
         suptitle = 'Reference Representativeness'
     elif suptitle is None and not is_ref:
-        suptitle = y.replace('_', ' ')
+        suptitle = _format_label(y)
 
-    # Get filtered data
-    if y not in vep_df.columns:
-        vep_df[y] = vep_df.groupby(groupby_cols)['VEP'].rank(pct=True)*100
-    vep_df = vep_df.copy()
-
-    # Filter for REF haplotypes
-    if is_ref:
-        vep_df = vep_df.loc[vep_df['is_ref']==True]
+    pct_df = compute_representativeness_stats(vep_df, groupby_cols=groupby_cols, y=y, is_ref=is_ref)
 
     # Sort by scoring strategy
-    vep_df = utils.sort_by_reverse_string(vep_df, 
+    pct_df = utils.sort_by_reverse_string(pct_df, 
                                                 column='scoring_strategy', 
                                                 extra_sort_cols=['model_location','clinsig'],
                                                 ascending=[False, True, True])
     
-    pct_stats = vep_df.loc[vep_df['is_ref']==True]['VEP_percentile'].describe()
+    pct_stats = pct_df.loc[pct_df['is_ref']==True]['VEP_percentile'].describe()
 
-    g = sns.FacetGrid(data=vep_df, 
-                      col=col, row=row, 
+    g = sns.FacetGrid(data=pct_df, 
+                      col=col, 
+                      row=row, 
                       height=height, 
                       aspect=aspect, 
                       margin_titles=True, 
@@ -992,11 +1054,19 @@ def plot_vep_percentiles(vep_df,
                       sharex=sharex, 
                       sharey=sharey)
     
+    # Handle hue=None gracefully
+    map_df_kwargs = dict(x=x, y=y)
+    if hue is not None:
+        map_df_kwargs['hue'] = hue
+    if palette is not None and hue is not None:
+        map_df_kwargs['palette'] = palette
+
     # Add cut parameter to violin plot to control distribution inference
     if func == sns.violinplot:
-        g.map_dataframe(func, x=x, y=y, hue=hue, palette=palette, cut=cut, **kwargs)
+        map_df_kwargs['cut'] = cut
+        g.map_dataframe(func, **map_df_kwargs, **kwargs)
     else:
-        g.map_dataframe(func, x=x, y=y, hue=hue, palette=palette, **kwargs)
+        g.map_dataframe(func, **map_df_kwargs, **kwargs)
         
     # Add a dotted horizontal line at 0.5
     for ax in g.axes.flat:
@@ -1012,7 +1082,7 @@ def plot_vep_percentiles(vep_df,
                 ha='left', va='center', color='gray', alpha=0.7)
 
     # Count the number of unique haplotypes per group and update x-axis labels
-    if 'haplotype' in vep_df.columns:
+    if 'haplotype' in pct_df.columns:
         for ax in g.axes.flat:
             if not ax.get_xlabel():
                 continue
@@ -1023,12 +1093,23 @@ def plot_vep_percentiles(vep_df,
             # Count unique haplotypes for each group
             counts = {}
             for label in tick_labels:
-                if label in vep_df[x].values:
-                    counts[label] = vep_df[vep_df[x] == label]['haplotype'].nunique()
+                # Unformat label for lookup: reverse _format_label
+                lookup_label = label.split('\n')[0]  # Remove (n=...) if present
+                # Try to reverse the formatting for lookup
+                # Replace "pathogenic" with "path" and " " with "_"
+                lookup_label_raw = lookup_label.replace("pathogenic", "path").replace(" ", "_")
+                if lookup_label_raw in pct_df[x].values:
+                    counts[label] = pct_df[pct_df[x] == lookup_label_raw]['haplotype'].nunique()
+                else:
+                    # Try original label as fallback
+                    if lookup_label in pct_df[x].values:
+                        counts[label] = pct_df[pct_df[x] == lookup_label]['haplotype'].nunique()
+                    else:
+                        counts[label] = 0
             
-            # Update labels with counts of unique haplotypes
-            new_labels = [f"{label}\n(n={counts.get(label, 0)})" for label in tick_labels]
-            ax.set_xticklabels(new_labels, rotation=45, ha='right')
+            # Update labels with counts of unique haplotypes and apply formatting
+            new_labels = [f"{_format_label(label)}\n(n={counts.get(label, 0)})" for label in tick_labels]
+            ax.set_xticklabels(new_labels, rotation=x_rotation, ha=x_ha)
 
     # Remove subplot titles and add margin titles
     g.figure.suptitle(suptitle, y=title_y)  # Remove overall title if any
@@ -1039,9 +1120,12 @@ def plot_vep_percentiles(vep_df,
     
     # Adjust x-axis labels
     for ax in g.axes.flat:
-        ax.set_xlabel(f"{x} (unique haplotypes)")
+        ax.set_xlabel(f"{_format_label(x)} (unique haplotypes)")
 
     _rm_subplot_prefixes(g)
+
+    if invert_xaxis:
+        g.axes.flat[0].invert_xaxis() 
 
     plt.tight_layout()
     
@@ -1051,8 +1135,7 @@ def plot_vep_percentiles(vep_df,
         
     plt.show()
 
-    if return_df:
-        return vep_df
+    return {'fig':g, 'axes':ax, 'data':pct_df}
 
 
 def _filter_palette(palette, labels):
@@ -4275,4 +4358,1400 @@ def merge_vep_and_samples(vep_df,
                 print(f"Max duplicates: {duplicate_check.max()}")
     
     return vep_samples
+
+
+def plot_vep_histogram_with_arrows(
+    vep_df,
+    model_name=None, 
+    min_haplotype_seq_len_pct=None,
+    figsize=(9, 4),
+    add_arrows=True,
+    arrow_y=-0.25,
+    arrow_length=0.25,
+    arrow_head_width=0.012,
+    arrow_head_length=0.065,
+    arrow_linewidth=0,
+    legend_title="Clinical Signifance",
+    external_legend_annotation=False,
+    arrow_text_fontsize=11,
+    x_label="VEP Score",
+    y_label="Probability",
+    title=None
+):
+    """
+    Plot a histogram of VEP scores by clinical significance, with custom arrows and annotation.
+
+    Parameters
+    ----------
+    vep_df : pd.DataFrame
+        DataFrame containing VEP results, must have columns: 'haplotype', 'protein', 'haplotype_sequence_len_pct', 'model_location', 'scoring_strategy', 'mutant', 'clinsig', 'VEP'.
+    model_name : str
+        Name of the model (for annotation).
+    utils : module
+        Module with get_clinsig_palette().
+    min_haplotype_seq_len_pct : float
+        Minimum percent of haplotype sequence length to include.
+    figsize : tuple
+        Figure size.
+    arrow_y : float
+        Y position of the arrows (axes fraction).
+    arrow_length : float
+        Length of the arrows (axes fraction).
+    arrow_head_width : float
+        Width of the arrow head (axes fraction).
+    arrow_head_length : float
+        Length of the arrow head (axes fraction).
+    arrow_linewidth : float
+        Line width of the arrows.
+    legend_title : str
+        Title for the legend.
+    external_legend_annotation : bool, optional
+        If True, places the legend and annotation text outside the plot to the right (default: False).
+    arrow_text_fontsize : int, optional
+        Font size for the text labels on the bottom arrows (default: 11).
+    x_label : str, optional
+        Label for the x-axis (default: "VEP Score").
+    y_label : str, optional
+        Label for the y-axis (default: "Probability").
+    title : str, optional
+        Title for the plot (default: None, no title).
+    """
+    import matplotlib.pyplot as plt
+    import seaborn as sns
+    import pandas as pd
+    import matplotlib.patches as mpatches
+
+    vep_df = vep_df.copy()
+
+    n_haplotypes = vep_df["haplotype"].nunique()
+    n_proteins = vep_df["protein"].nunique()
+
+    # Filter and aggregate
+    if min_haplotype_seq_len_pct is not None:
+        if 'haplotype_sequence_len_pct' not in vep_df.columns:
+            raise ValueError("min_haplotype_seq_len_pct is set, but 'haplotype_sequence_len_pct' column is not present in the dataframe")
+        vep_df = vep_df.loc[vep_df['haplotype_sequence_len_pct'] > min_haplotype_seq_len_pct]
+
+    hist_df = vep_df \
+        .groupby(['model_location', 'scoring_strategy', "protein", "mutant", "clinsig"]) \
+        .agg({"VEP": "mean", "haplotype": "count"}).reset_index()
+
+    # Normalize 'clinsig' column
+    hist_df["clinsig"] = hist_df["clinsig"].str.replace("path", "pathogenic", regex=False).str.replace("_", " ")
+
+    # Get palette and normalize its keys
+    palette = utils.get_clinsig_palette()
+    palette = {k.replace("path", "pathogenic").replace("_", " "): v for k, v in palette.items()}
+
+    # Recompute mutant counts after normalization
+    mutant_counts = hist_df.groupby('clinsig')['mutant'].nunique()
+
+    # Add mutant counts to clinsig labels
+    clinsig_label_map = {
+        clinsig: f"{clinsig} ({mutant_counts.get(clinsig, 0)} variants)"
+        for clinsig in hist_df["clinsig"].unique()
+    }
+    hist_df["clinsig_label"] = hist_df["clinsig"].map(clinsig_label_map)
+    palette = {clinsig_label_map.get(k, k): v for k, v in palette.items()}
+
+    # Ensure 'clinsig' is a categorical with the palette order
+    clinsig_order = list(palette.keys())
+    hist_df['clinsig'] = pd.Categorical(hist_df['clinsig'], categories=clinsig_order, ordered=True)
+    hist_df = hist_df.sort_values('clinsig')
+
+    fig, ax = plt.subplots(figsize=figsize)
+    hist = sns.histplot(
+        hist_df,
+        x='VEP',
+        hue='clinsig_label',
+        multiple='layer',
+        stat="probability",
+        palette=palette,
+        ax=ax
+    )
+
+    # Set axis labels and title
+    ax.set_xlabel(x_label)
+    ax.set_ylabel(y_label)
+    if title:
+        ax.set_title(title)
+
+    # Change legend title and position
+    legend = ax.get_legend()
+    if legend is not None:
+        legend.set_title(legend_title)
+        if external_legend_annotation:
+            # Move legend outside the plot to the right
+            legend.set_bbox_to_anchor((1.02, 1.0))
+            legend.set_loc('upper left')
+
+    # Concise annotation string with italic prefixes
+    lines = [
+        r'$\it{proteins:}$ ' + str(n_proteins),
+        r'$\it{haplotypes:}$ ' + str(n_haplotypes),
+    ]
+    if model_name is not None:
+        lines.append(r'$\it{model:}$ ' + str(model_name))
+    textstr = '\n'.join(lines)
+    
+    if external_legend_annotation:
+        # Place annotation text outside the plot to the right, below the legend
+        # Position it lower to avoid overlap with the legend
+        ax.text(
+            1.02, 0.5, textstr, fontsize=12, va='top', ha='left',
+            transform=ax.transAxes,
+            bbox=dict(facecolor='white', edgecolor='none', alpha=0.7)
+        )
+    else:
+        # Place annotation text inside the plot (original behavior)
+        ax.text(
+            0.02, 0.98, textstr, fontsize=12, va='top', ha='left',
+            transform=ax.transAxes,
+            bbox=dict(facecolor='white', edgecolor='none', alpha=0.7)
+                )
+    
+    if external_legend_annotation:
+        # Adjust layout to make room for external legend and annotation
+        plt.subplots_adjust(right=0.75)
+    else:
+        plt.tight_layout()
+    
+    if add_arrows:
+        # ---- Add arrows underneath the plot ----
+        fig.subplots_adjust(bottom=0.22)  # Make room for arrows
+
+        # Helper to convert data coordinate x to axes fraction
+        def data_to_axes(x, ax):
+            x0, x1 = ax.get_xlim()
+            return (x - x0) / (x1 - x0)
+
+        zero_axes = data_to_axes(0, ax)
+
+        # Use original palette for arrows
+        orig_palette = utils.get_clinsig_palette()
+
+        # Adjust arrow parameters when external legend is enabled to prevent overlap
+        if external_legend_annotation:
+            # Keep arrows visible but adjust positioning for smaller plot area
+            adjusted_arrow_length = arrow_length * 0.8  # Moderate reduction
+            adjusted_head_width = arrow_head_width * 0.85  # Keep heads visible
+            adjusted_head_length = arrow_head_length * 0.85  # Keep heads visible
+            arrow_spacing = 0.008  # Reduced spacing to prevent overlap
+        else:
+            # Use original arrow parameters
+            adjusted_arrow_length = arrow_length
+            adjusted_head_width = arrow_head_width
+            adjusted_head_length = arrow_head_length
+            arrow_spacing = 0.02
+
+        # Pathogenic (left) arrow
+        left_arrow_start = zero_axes - adjusted_head_width * 2
+        left_arrow_end = left_arrow_start - adjusted_arrow_length
+        left_arrow = mpatches.FancyArrowPatch(
+            (left_arrow_start, arrow_y), (left_arrow_end, arrow_y),
+            mutation_scale=25,
+            arrowstyle=f'-|>,head_length={int(adjusted_head_length*100)},head_width={int(adjusted_head_width*100)}',
+            color=orig_palette.get("path", "#d62728"),
+            linewidth=arrow_linewidth,
+            transform=ax.transAxes,
+            zorder=10,
+            clip_on=False
+        )
+        ax.add_patch(left_arrow)
+        left_label_x = (left_arrow_start + left_arrow_end) / 2
+        ax.text(
+            left_label_x - .04, arrow_y, "pathogenic",
+            color="white", fontsize=arrow_text_fontsize, fontweight='bold', ha='left', va='center',
+            transform=ax.transAxes, zorder=11
+        )
+
+        # Benign (right) arrow
+        right_arrow_start = zero_axes + arrow_spacing
+        right_arrow_end = right_arrow_start + adjusted_arrow_length
+        right_arrow = mpatches.FancyArrowPatch(
+            (right_arrow_start, arrow_y), (right_arrow_end, arrow_y),
+            mutation_scale=25,
+            arrowstyle=f'-|>,head_length={int(adjusted_head_length*100)},head_width={int(adjusted_head_width*100)}',
+            color=orig_palette.get("benign", "#2ca02c"),
+            linewidth=arrow_linewidth,
+            transform=ax.transAxes,
+            zorder=10,
+            clip_on=False
+        )
+        ax.add_patch(right_arrow)
+        right_label_x = (right_arrow_start + right_arrow_end) / 2
+        ax.text(
+            right_label_x, arrow_y, "benign",
+            color="white", fontsize=arrow_text_fontsize, fontweight='bold', ha='right', va='center',
+            transform=ax.transAxes, zorder=11
+        )
+
+    plt.show()
+    return {'fig':fig, 'axes':ax, 'data':hist_df}
+
+def plot_ref_percentile_schematic(ax=None, show=False, barplot_ylim=None, schematic_heights=[0.35, 0.30, 0.35]):
+    """
+    Plot a schematic showing how REF can under- or over-estimate pathogenicity
+    using a 3-row grid: top (REF far right), blank, bottom (REF far left).
+    If ax is provided, draws the schematic into that axis (as a single column).
+    If ax is None, creates a new figure and axes.
+
+    Parameters
+    ----------
+    ax : matplotlib.axes.Axes or None
+        If provided, draws the schematic into this axis (as a single column).
+        If None, creates a new figure and axes.
+    show : bool
+        Whether to call plt.show() (only if ax is None).
+    barplot_ylim : tuple or None
+        If provided, (ymin, ymax) to align the schematic's top and bottom with the barplot.
+    schematic_heights : list, optional
+        Heights of the three schematic subplots as fractions of total height [top, blank, bottom] (default: [0.35, 0.30, 0.35]).
+    schematic_padding : float, optional
+        Padding between the barplot and schematic plots (default: 0.05).
+
+    Returns
+    -------
+    dict with keys:
+        "fig": matplotlib.figure.Figure
+        "axs": list of matplotlib.axes.Axes (top, blank, bottom)
+        "data": pd.DataFrame (x, y for the normal curve)
+    """
+    from matplotlib.colors import LinearSegmentedColormap
+    import matplotlib.pyplot as plt
+    from matplotlib import gridspec
+
+    x = np.linspace(-3, 3, 500)
+    y = np.exp(-0.5 * x**2) / np.sqrt(2 * np.pi)
+    data = pd.DataFrame({"x": x, "y": y})
+
+    palette = utils.get_clinsig_palette()
+    cmap = LinearSegmentedColormap.from_list("red_blue", [palette["path"], palette["benign"]])
+
+    def gradient_fill(ax, x, y, cmap, alpha=0.5, zorder=1):
+        x_norm = (x - x.min()) / (x.max() - x.min())
+        for i in range(len(x) - 1):
+            ax.fill_between(
+                x[i:i+2], y[i:i+2], color=cmap(x_norm[i]), alpha=alpha, zorder=zorder
+            )
+
+    # The normal curve's max is about 0.4, min is 0
+    # We'll use this to map the barplot's y-axis to the schematic's y-axis
+    schematic_ymin = 0
+    schematic_ymax = 0.4
+    if barplot_ylim is not None:
+        barplot_ymin, barplot_ymax = barplot_ylim
+        # We'll map barplot_ymin to schematic_ymin and barplot_ymax to schematic_ymax
+        # For the schematic, set ylim to (schematic_ymin, schematic_ymax)
+        # But for the top and bottom axes, we want the top of the top schematic to align with barplot_ymax,
+        # and the bottom of the bottom schematic to align with barplot_ymin.
+        # So we set the ylims of both to (schematic_ymin, schematic_ymax)
+        # and set the position of the axes to fill the vertical space from 0 to 1 in the parent axis.
+        # This is handled below.
+
+    if ax is not None:
+        # Draw the schematic as a 3-row grid inside a single axis using manually positioned axes
+
+        fig = ax.figure
+        axs = []
+
+        # We'll use 3 axes positioned manually to align with the barplot
+        # The top schematic should align with the top of the barplot, bottom with bottom
+        # Add some spacing between the schematics
+        heights = schematic_heights  # top, blank, bottom (configurable heights)
+        
+        # Get the parent axis position
+        parent_pos = ax.get_position()
+        parent_x0, parent_y0, parent_width, parent_height = parent_pos.x0, parent_pos.y0, parent_pos.width, parent_pos.height
+        
+        # Calculate positions for each sub-axis with proper spacing
+        y_positions = []
+        y0 = parent_y0 + parent_height  # Start from top of parent
+        for h in heights:
+            y_positions.append((y0 - h * parent_height, h * parent_height))
+            y0 -= h * parent_height
+        
+        for i, (y_pos, height) in enumerate(y_positions):
+            if i == 1:  # blank axis
+                blank_ax = fig.add_axes([parent_x0, y_pos, parent_width, height])
+                blank_ax.axis('off')
+                axs.append(blank_ax)
+            else:
+                sub_ax = fig.add_axes([parent_x0, y_pos, parent_width, height])
+                axs.append(sub_ax)
+
+        ax_top, ax_blank, ax_bottom = axs
+
+        # Set ylims to align with barplot if provided
+        if barplot_ylim is not None:
+            barplot_ymin, barplot_ymax = barplot_ylim
+            # Keep the schematic's natural y-axis range for proper curve display
+            ax_top.set_ylim(schematic_ymin, schematic_ymax)
+            ax_bottom.set_ylim(schematic_ymin, schematic_ymax)
+        else:
+            ax_top.set_ylim(schematic_ymin, schematic_ymax)
+            ax_bottom.set_ylim(schematic_ymin, schematic_ymax)
+
+        # Top subplot: REF far right
+        ax_top.plot(x, y, color='black', lw=2)
+        gradient_fill(ax_top, x, y, cmap, alpha=0.7)
+        ref_x = 2.2
+        ax_top.axvline(ref_x, color='grey', linestyle='--', lw=2, zorder=10)
+        ax_top.text(ref_x-0.1, 0.25, "REF", color='grey', fontsize=10, fontweight=None, va='center', ha='right', rotation=90)
+        ax_top.set_ylabel("Density")
+        ax_top.set_yticks([])
+        ax_top.set_title("REF underestimates pathogenicity", fontsize=10, fontweight='bold')
+        ax_top.set_xlabel("VEP Percentile")
+        ax_top.set_xlim(-3, 3)
+        ax_top.set_xticks([-3, 0, 3])
+        ax_top.set_xticklabels(['0', '50', '100'])
+        ax_top.spines['right'].set_visible(False)
+        ax_top.spines['top'].set_visible(False)
+
+        # Middle subplot: blank space
+        ax_blank.axis('off')
+
+        # Bottom subplot: REF far left
+        ax_bottom.plot(x, y, color='black', lw=2)
+        gradient_fill(ax_bottom, x, y, cmap, alpha=0.7)
+        ref_x = -2.2
+        ax_bottom.axvline(ref_x, color='grey', linestyle='--', lw=2, zorder=10)
+        ax_bottom.text(ref_x-0.1, 0.25, "REF", color='grey', fontsize=10, fontweight=None, va='center', ha='right', rotation=90)
+        ax_bottom.set_ylabel("Density")
+        ax_bottom.set_yticks([])
+        ax_bottom.set_title("REF overestimates pathogenicity", fontsize=10, fontweight='bold')
+        ax_bottom.set_xlabel("VEP Percentile")
+        ax_bottom.set_xlim(-3, 3)
+        ax_bottom.set_xticks([-3, 0, 3])
+        ax_bottom.set_xticklabels(['0', '50', '100'])
+        ax_bottom.spines['right'].set_visible(False)
+        ax_bottom.spines['top'].set_visible(False)
+
+        # Hide axis frame, ticks, and labels for the parent axis
+        ax.set_xticks([])
+        ax.set_yticks([])
+        ax.set_frame_on(False)
+        ax.set_xlabel("")
+        ax.set_ylabel("")
+        ax.set_title("")
+
+        return {"fig": fig, "axs": [ax_top, ax_blank, ax_bottom], "data": data}
+
+    else:
+        # Standalone schematic as before
+        fig = plt.figure(figsize=(4, 10.5))
+        gs = gridspec.GridSpec(3, 1, height_ratios=[1, 1, 1], hspace=0.3)
+        ax_top = fig.add_subplot(gs[0])
+        ax_blank = fig.add_subplot(gs[1])
+        ax_bottom = fig.add_subplot(gs[2], sharex=ax_top)
+        axs = [ax_top, ax_blank, ax_bottom]
+
+        ax_top.set_ylim(schematic_ymin, schematic_ymax)
+        ax_bottom.set_ylim(schematic_ymin, schematic_ymax)
+
+        # Top subplot: REF far right
+        ax_top.plot(x, y, color='black', lw=2)
+        gradient_fill(ax_top, x, y, cmap, alpha=0.7)
+        ref_x = 2.2
+        ax_top.axvline(ref_x, color='grey', linestyle='--', lw=2, zorder=10)
+        ax_top.text(ref_x-0.1, 0.25, "REF", color='grey', fontsize=10, fontweight=None, va='center', ha='right', rotation=90)
+        ax_top.set_ylabel("Density")
+        ax_top.set_yticks([])
+        ax_top.set_title("REF underestimates pathogenicity", fontweight='bold')
+        ax_top.set_xlabel("VEP Percentile")
+        ax_top.set_xlim(-3, 3)
+        ax_top.set_xticks([-3, 0, 3])
+        ax_top.set_xticklabels(['0', '50', '100'])
+        ax_top.spines['right'].set_visible(False)
+        ax_top.spines['top'].set_visible(False)
+
+        # Middle subplot: blank space
+        ax_blank.axis('off')
+
+        # Bottom subplot: REF far left
+        ax_bottom.plot(x, y, color='black', lw=2)
+        gradient_fill(ax_bottom, x, y, cmap, alpha=0.7)
+        ref_x = -2.2
+        ax_bottom.axvline(ref_x, color='grey', linestyle='--', lw=2, zorder=10)
+        ax_bottom.text(ref_x-0.1, 0.25, "REF", color='grey', fontsize=10, fontweight=None, va='center', ha='right', rotation=90)
+        ax_bottom.set_ylabel("Density")
+        ax_bottom.set_yticks([])
+        ax_bottom.set_title("REF overestimates pathogenicity", fontweight='bold')
+        ax_bottom.set_xlabel("VEP Percentile")
+        ax_bottom.set_xlim(-3, 3)
+        ax_bottom.set_xticks([-3, 0, 3])
+        ax_bottom.set_xticklabels(['0', '50', '100'])
+        ax_bottom.spines['right'].set_visible(False)
+        ax_bottom.spines['top'].set_visible(False)
+
+        plt.tight_layout()
+        if show:
+            plt.show()
+        return {"fig": fig, "axs": axs, "data": data}
+
+
+def plot_ref_vep_percentile_stacked_bar(
+    vep_df, 
+    groupby_cols=['model_location','protein','clinsig','mutant','scoring_strategy'],
+    y='VEP_percentile',
+    n_bins=10, 
+    figsize=(9, 4), 
+    label_padding=0.15, 
+    is_ref=True,
+    title="REF VEP Percentiles Relative to Full VEP Distribution",
+    x_label="VEP Quantile",
+    y_label="Proportion of Variants",
+    show_arrows=False,
+    show_schematic=True,
+    schematic_width_ratio=1.2,
+    barplot_width_ratio=4,
+    schematic_heights=[0.35, 0.30, 0.35],
+    schematic_padding=0.05
+):
+    """
+    Plot a stacked bar plot showing the distribution of REF VEP percentiles
+    relative to the full VEP distribution, binned by VEP_mean quantiles.
+    Optionally, add a schematic illustration to the right of the plot.
+
+    Parameters
+    ----------
+    vep_df : pd.DataFrame
+        DataFrame containing at least 'VEP_mean' and 'VEP_percentile' columns.
+    groupby_cols : list, optional
+        Columns to group by for computing representativeness stats (default: ['model_location','protein','clinsig','mutant','scoring_strategy']).
+    y : str, optional
+        Column name for y-axis values (default: 'VEP_percentile').
+    n_bins : int, optional
+        Number of quantile bins for VEP_mean (default: 10).
+    figsize : tuple, optional
+        Figure size for the plot (default: (9, 4)).
+    label_padding : float, optional
+        Vertical padding between the two y-axis text labels (default: 0.15).
+    is_ref : bool, optional
+        Whether to compute REF statistics (default: True).
+    title : str, optional
+        Plot title (default: "REF VEP Percentiles Relative to Full VEP Distribution").
+    x_label : str, optional
+        X-axis label (default: "VEP Quantile").
+    y_label : str, optional
+        Y-axis label (default: "Proportion of Variants").
+    show_arrows : bool, optional
+        Whether to show arrows and labels indicating under/overestimation (default: False).
+    show_schematic : bool, optional
+        Whether to show a schematic illustration to the right of the plot (default: True).
+    schematic_width_ratio : float, optional
+        Width ratio for the schematic subplot (default: 1.2).
+    barplot_width_ratio : float, optional
+        Width ratio for the barplot subplot (default: 4).
+    schematic_heights : list, optional
+        Heights of the three schematic subplots as fractions of total height [top, blank, bottom] (default: [0.35, 0.30, 0.35]).
+    schematic_padding : float, optional
+        Padding between the barplot and schematic plots (default: 0.05).
+    """
+    from matplotlib import cm
+    import matplotlib.pyplot as plt
+
+    vep_df = vep_df.copy()
+
+    data = compute_representativeness_stats(vep_df, groupby_cols=groupby_cols, y=y, is_ref=is_ref)
+
+    # Bin VEP_mean into quantile bins (x-axis)
+    vep_binned, bin_edges = pd.qcut(data['VEP_mean'], q=n_bins, labels=False, retbins=True, duplicates='drop')
+    data = data.copy()
+    data['VEP_binned'] = vep_binned
+
+    # Create bin range labels as strings, e.g. "0.12–0.34"
+    bin_labels = []
+    for i in range(len(bin_edges) - 1):
+        left = bin_edges[i]
+        right = bin_edges[i + 1]
+        left_str = f"{left:.2g}" if abs(left) < 1e4 else f"{left:.2e}"
+        right_str = f"{right:.2g}" if abs(right) < 1e4 else f"{right:.2e}"
+        bin_labels.append(f"{left_str}\n→\n{right_str}")
+
+    # Map integer bin codes to string labels
+    data['VEP_binned_label'] = data['VEP_binned'].map(lambda x: bin_labels[int(x)] if pd.notnull(x) else np.nan)
+
+    # Bin VEP_percentile into deciles (y-axis bins)
+    percentile_bins = np.linspace(0, 100, 11)
+    percentile_labels = [f"{int(percentile_bins[i])}-{int(percentile_bins[i+1])}%" for i in range(10)]
+    data['VEP_percentile_decile'] = pd.cut(
+        data['VEP_percentile'],
+        bins=percentile_bins,
+        labels=percentile_labels,
+        include_lowest=True,
+        right=True
+    )
+
+    # Prepare data for stacked bar plot (as proportions)
+    stacked = data.groupby(['VEP_binned_label', 'VEP_percentile_decile']).size().unstack(fill_value=0)
+    stacked_prop = stacked.div(stacked.sum(axis=1), axis=0)
+    stacked_prop = stacked_prop.reindex(bin_labels)
+
+    # Get the number of deciles for the color map
+    n_cats = len(percentile_labels)
+    cmap = cm.get_cmap('coolwarm', n_cats)
+    colors = [cmap(i) for i in range(n_cats)]
+
+    # Flip the order of the columns (deciles) and colors for the legend (bottom to top)
+    reversed_labels = percentile_labels[::-1]
+    reversed_colors = colors[::-1]
+    stacked_prop = stacked_prop[reversed_labels]
+
+    # If showing schematic, use gridspec to allocate space for the schematic
+    if show_schematic:
+        import matplotlib.gridspec as gridspec
+        fig = plt.figure(figsize=figsize)
+        # width_ratios: [main plot, schematic]
+        gs = gridspec.GridSpec(1, 2, width_ratios=[barplot_width_ratio, schematic_width_ratio], wspace=schematic_padding)
+        ax = fig.add_subplot(gs[0])
+        schematic_ax = fig.add_subplot(gs[1])
+    else:
+        fig, ax = plt.subplots(figsize=figsize)
+        schematic_ax = None
+
+    stacked_prop.plot(
+        kind='bar',
+        stacked=True,
+        ax=ax,
+        color=reversed_colors,
+        width=0.95
+    )
+    ax.set_xlabel(x_label)
+    ax.set_ylabel(y_label)
+    ax.set_title(title)
+    
+    # Ensure y-axis is constrained to 0-1 range for proportions
+    ax.set_ylim(0, 1)
+    handles, legend_labels = ax.get_legend_handles_labels()
+    ax.legend(
+        handles[::-1],
+        reversed_labels,
+        title='REF VEP\nPercentile Bin',
+        bbox_to_anchor=(-0.15, 1),
+        loc='upper right',
+        borderaxespad=0.0
+    )
+    ax.yaxis.set_major_formatter(plt.FuncFormatter(lambda y, _: '{:.2f}'.format(y)))
+    ax.set_xticklabels(ax.get_xticklabels(), rotation=0)
+
+    # Remove top and right margin lines (spines)
+    ax.spines['top'].set_visible(False)
+    ax.spines['right'].set_visible(False)
+    ax.spines['bottom'].set_visible(False)
+
+    plt.tight_layout()
+
+    # --- Add up/down arrows to the right of the barplot that align with the schematic ---
+    if show_schematic:
+        # Get axis limits for y
+        ymin, ymax = ax.get_ylim()
+        ycenter = (ymin + ymax) / 2  # Center of the barplot
+        
+        # Set the x position for the arrows just to the right of the plot
+        xlim = ax.get_xlim()
+        x_arrow = xlim[1] + 0.05
+        
+        # Length of arrows - extend almost to top and bottom with small gap in middle
+        arrow_gap = (ymax - ymin) * 0.05  # Small gap in the middle
+        top_arrow_length = (ymax - ymin) * 0.45  # Extend almost to top
+        bottom_arrow_length = (ymax - ymin) * 0.45  # Extend almost to bottom
+        
+        # Arrow for "REF Underestimates Pathogenicity" (upward)
+        ax.annotate(
+            "",
+            xy=(x_arrow, ymax - arrow_gap),
+            xytext=(x_arrow, ycenter + arrow_gap),
+            arrowprops=dict(arrowstyle="->", color="black", lw=2.5),
+            annotation_clip=False
+        )
+        
+        # Arrow for "REF Overestimates Pathogenicity" (downward)
+        ax.annotate(
+            "",
+            xy=(x_arrow, ymin + arrow_gap),
+            xytext=(x_arrow, ycenter - arrow_gap),
+            arrowprops=dict(arrowstyle="->", color="black", lw=2.5),
+            annotation_clip=False
+        )
+        
+        # Add horizontal dotted lines connecting schematics to barplot
+        # Get the schematic axis positions to draw connecting lines
+        if show_schematic and schematic_ax is not None:
+            # Get the right edge of the barplot
+            barplot_right = ax.get_position().x1
+            
+            # Get the left edge of the schematic
+            schematic_left = schematic_ax.get_position().x0
+            
+            # Get the y-positions of the schematic subplots
+            schematic_pos = schematic_ax.get_position()
+            schematic_y0, schematic_height = schematic_pos.y0, schematic_pos.height
+            
+            # Calculate y-positions for the connecting lines
+            # Top schematic: connect from middle of top schematic to barplot
+            top_y = schematic_y0 + schematic_height * (1 - schematic_heights[0]/2)
+            # Bottom schematic: connect from middle of bottom schematic to barplot  
+            bottom_y = schematic_y0 + schematic_height * schematic_heights[2]/2
+            
+            # Draw horizontal dotted lines from barplot right edge to schematic left edge
+            # Use data coordinates for x-axis and transform y-positions to data coordinates
+            x_data_right = ax.get_xlim()[1]  # Right edge of barplot data
+            
+            # Transform the y-positions from display coordinates to data coordinates
+            # We want the lines to align with the title positions in each schematic
+            # Top schematic title is roughly at 75% of its height
+            top_title_y = schematic_y0 + schematic_height * (1 - schematic_heights[0] * 0.25)
+            # Bottom schematic title is roughly at 25% of its height  
+            bottom_title_y = schematic_y0 + schematic_height * schematic_heights[2] * 0.75
+            
+            # Convert these display coordinates to data coordinates for the barplot
+            top_data_y = ax.transData.inverted().transform((0, top_title_y))[1]
+            bottom_data_y = ax.transData.inverted().transform((0, bottom_title_y))[1]
+            
+            # Draw lines from barplot right edge to arrows
+            ax.plot([x_data_right, x_arrow], [top_data_y, top_data_y], color='gray', linestyle=':', alpha=0.7, linewidth=1.5)
+            ax.plot([x_data_right, x_arrow], [bottom_data_y, bottom_data_y], color='gray', linestyle=':', alpha=0.7, linewidth=1.5)
+        
+        # Expand the xlim to make sure arrows and labels are visible
+        ax.set_xlim(xlim[0], x_arrow + 0.6)
+
+    # --- Optionally add arrows and labels along the y-axis, outside the right margin ---
+    if show_arrows:
+        # Get axis limits for y
+        ymin, ymax = ax.get_ylim()
+        ycenter = 0.5  # Origin for arrows
+
+        # Set the x position for the arrows and labels just outside the right of the plot
+        xlim = ax.get_xlim()
+        x_arrow = xlim[1] + 0.1
+
+        # Length of arrows (as a fraction of y-axis)
+        arrow_length = (ymax - ymin) * 0.35
+
+        # Arrow for "REF Underestimates Pathogenicity" (upward)
+        fontsize = 8
+        ax.annotate(
+            "",
+            xy=(x_arrow, ycenter + arrow_length),
+            xytext=(x_arrow, ycenter),
+            arrowprops=dict(arrowstyle="->", color="black", lw=2),
+            annotation_clip=False
+        )
+        ax.text(
+            x_arrow + 0.08,
+            ycenter + arrow_length/2 + label_padding/2,
+            "REF Underestimates\nPathogenicity",
+            va='center', ha='left', rotation=90, fontsize=fontsize, fontweight='bold'
+        )
+
+        # Arrow for "REF Overestimates Pathogenicity" (downward)
+        ax.annotate(
+            "",
+            xy=(x_arrow, ycenter - arrow_length),
+            xytext=(x_arrow, ycenter),
+            arrowprops=dict(arrowstyle="->", color="black", lw=2),
+            annotation_clip=False
+        )
+        ax.text(
+            x_arrow + 0.08,
+            ycenter - arrow_length/2 - label_padding/2,
+            "REF Overestimates\nPathogenicity",
+            va='center', ha='left', rotation=90, fontsize=fontsize, fontweight='bold'
+        )
+
+        # Optionally, expand the xlim to make sure arrows and labels are visible
+        ax.set_xlim(xlim[0], x_arrow + 0.75)
+
+    # --- Optionally add schematic to the right of the plot ---
+    if show_schematic and schematic_ax is not None:
+        # Draw the schematic into the provided axis, aligning top/bottom with barplot
+        barplot_ylim = ax.get_ylim()
+        # Remove all content from schematic_ax, then fill it with 3 axes that fill the vertical space
+        # We'll use inset_axes with bbox_to_anchor covering the full vertical range
+        from mpl_toolkits.axes_grid1.inset_locator import inset_axes
+        schematic_ax.set_xticks([])
+        schematic_ax.set_yticks([])
+        schematic_ax.set_frame_on(False)
+        schematic_ax.set_title("")
+        schematic_ax.set_xlabel("")
+        schematic_ax.set_ylabel("")
+        # Remove all children from schematic_ax
+        for child in schematic_ax.get_children():
+            try:
+                child.remove()
+            except Exception:
+                pass
+        # Now, fill schematic_ax with the schematic, using the full vertical space
+        plot_ref_percentile_schematic(ax=schematic_ax, show=False, barplot_ylim=barplot_ylim, schematic_heights=schematic_heights)
+
+    plt.show()
+    # Return both axes if schematic is shown
+    if show_schematic and schematic_ax is not None:
+        return {"fig": fig, "axes": (ax, schematic_ax), "data": data}
+    else:
+        return {"fig": fig, "axes": ax, "data": data}
+
+
+def plot_ref_vep_std_stacked_bar(vep_df, 
+                                groupby_cols = ['model_location','protein','clinsig','mutant','scoring_strategy'],
+                                y='VEP_percentile',
+                                n_bins=10, 
+                                figsize=(9, 4), 
+                                label_padding=0.15, 
+                                is_ref=True,
+                                title="Standard Deviations Separating REF VEP from full VEP Distribution Mean",
+                                x_label="VEP Quantile",
+                                y_label="Proportion of Variants"):
+    """
+    Plot a stacked bar plot of VEP percentiles, binned by quantiles and standard deviation categories.
+    Adds arrows and labels to indicate under/overestimation of pathogenicity.
+    Returns the matplotlib figure and axis, and the processed data.
+    """
+    from matplotlib import cm
+    import matplotlib.pyplot as plt
+
+    vep_df = vep_df.copy()
+    data = compute_representativeness_stats(vep_df, groupby_cols=groupby_cols, y=y, is_ref=is_ref)
+
+    # Bin VEP into quantile bins and get bin edges for labeling
+    vep_binned, bin_edges = pd.qcut(data['VEP_mean'], q=n_bins, labels=False, retbins=True, duplicates='drop')
+    data = data.copy()
+    data['VEP_binned'] = vep_binned
+
+    # Create bin range labels as strings, e.g. "0.12–0.34"
+    bin_labels = []
+    for i in range(len(bin_edges) - 1):
+        left = bin_edges[i]
+        right = bin_edges[i + 1]
+        left_str = f"{left:.2g}" if abs(left) < 1e4 else f"{left:.2e}"
+        right_str = f"{right:.2g}" if abs(right) < 1e4 else f"{right:.2e}"
+        bin_labels.append(f"{left_str}\n↓\n{right_str}")
+
+    # Map integer bin codes to string labels
+    data['VEP_binned_label'] = data['VEP_binned'].map(lambda x: bin_labels[int(x)] if pd.notnull(x) else np.nan)
+
+    # For each row, compute (VEP - VEP_mean) / VEP_std using the row's own mean and std
+    def pct_group(row):
+        if pd.isnull(row['VEP']) or pd.isnull(row['VEP_mean']) or pd.isnull(row['VEP_std']) or row['VEP_std'] == 0:
+            return np.nan
+        return np.round((row['VEP'] - row['VEP_mean']) / row['VEP_std'], 1)
+
+    data['VEP_pct_group'] = data.apply(pct_group, axis=1)
+
+    # For plotting, bin VEP_pct_group into categories with a central bin of +/-0.5 SD
+    bins = [-np.inf, -2, -1, -0.5, 0.5, 1, 2, np.inf]
+    labels = ['<-2', '-1 → -2', '-0.5 → -1', '-0.5 ↔ 0.5', '0.5 → 1', '1 → 2', '>2']
+    data['VEP_pct_group_cat'] = pd.cut(data['VEP_pct_group'], bins=bins, labels=labels)
+
+    # Prepare data for stacked bar plot (as proportions), using the string bin labels for x-axis
+    stacked = data.groupby(['VEP_binned_label', 'VEP_pct_group_cat']).size().unstack(fill_value=0)
+    stacked_prop = stacked.div(stacked.sum(axis=1), axis=0)  # Proportion (0-1)
+
+    # Ensure the x-axis bins are in the correct order
+    stacked_prop = stacked_prop.reindex(bin_labels)
+
+    # Get the number of categories for the color map
+    n_cats = len(labels)
+    cmap = cm.get_cmap('coolwarm', n_cats)
+    colors = [cmap(i) for i in range(n_cats)]
+
+    # Flip the order of the columns (categories) and colors for the legend (bottom to top)
+    reversed_labels = labels[::-1]
+    reversed_colors = colors[::-1]
+    stacked_prop = stacked_prop[reversed_labels]
+
+    fig, ax = plt.subplots(figsize=figsize)
+    stacked_prop.plot(
+        kind='bar', 
+        stacked=True, 
+        ax=ax,
+        color=reversed_colors,
+        width=0.95
+    )
+    ax.set_xlabel(x_label)
+    ax.set_ylabel(y_label)
+    ax.set_title(title)
+    handles, legend_labels = ax.get_legend_handles_labels()
+    ax.legend(
+        handles[::-1], 
+        reversed_labels, 
+        title='Standard\nDeviations', 
+        bbox_to_anchor=(-0.15, 1),
+        loc='upper right',
+        borderaxespad=0.0
+    )
+    ax.yaxis.set_major_formatter(plt.FuncFormatter(lambda y, _: '{:.2f}'.format(y)))
+    ax.set_xticklabels(ax.get_xticklabels(), rotation=0)
+    plt.tight_layout()
+
+    # --- Add arrows and labels along the y-axis, outside the right margin ---
+    ymin, ymax = ax.get_ylim()
+    ycenter = 0.5
+    xlim = ax.get_xlim()
+    x_arrow = xlim[1] + 0.1
+    arrow_length = (ymax - ymin) * 0.35
+    fontsize = 8
+
+    ax.annotate(
+        "",
+        xy=(x_arrow, ycenter + arrow_length),
+        xytext=(x_arrow, ycenter),
+        arrowprops=dict(arrowstyle="->", color="black", lw=2),
+        annotation_clip=False
+    )
+    ax.text(
+        x_arrow + 0.08,
+        ycenter + arrow_length/2 + label_padding/2,
+        "REF Underestimates\nPathogenicity",
+        va='center', ha='left', rotation=90, fontsize=fontsize, fontweight='bold'
+    )
+
+    ax.annotate(
+        "",
+        xy=(x_arrow, ycenter - arrow_length),
+        xytext=(x_arrow, ycenter),
+        arrowprops=dict(arrowstyle="->", color="black", lw=2),
+        annotation_clip=False
+    )
+    ax.text(
+        x_arrow + 0.08,
+        ycenter - arrow_length/2 - label_padding/2,
+        "REF Overestimates\nPathogenicity",
+        va='center', ha='left', rotation=90, fontsize=fontsize, fontweight='bold'
+    )
+
+    ax.set_xlim(xlim[0], x_arrow + 0.75)
+    plt.show()
+    return {"fig": fig, "ax": ax, "data": data}
+
+def plot_ref_vep_diff_stacked_bar(vep_df, 
+                                groupby_cols = ['model_location','protein','clinsig','mutant','scoring_strategy'],
+                                y='VEP_mean_diff',
+                                n_bins=5, 
+                                figsize=(9, 4), 
+                                label_padding=0.15, 
+                                is_ref=True,
+                                title="VEP Differences (REF - Full) by VEP Quantile",
+                                x_label="VEP Quantile",
+                                y_label="Proportion of Variants",
+                                n_diff_bins=5):
+    """
+    Plot a stacked bar plot of VEP percentiles, binned by quantiles and VEP difference categories.
+    Uses VEP_diff column instead of standard deviations.
+    Adds arrows and labels to indicate under/overestimation of pathogenicity.
+    Returns the matplotlib figure and axis, and the processed data.
+
+    Parameters
+    ----------
+    vep_df : pd.DataFrame
+        DataFrame containing VEP results.
+    groupby_cols : list, optional
+        Columns to group by for computing representativeness stats (default: ['model_location','protein','clinsig','mutant','scoring_strategy']).
+    y : str, optional
+        Column name for y-axis values (default: 'VEP_percentile').
+    n_bins : int, optional
+        Number of quantile bins for VEP_mean (default: 5).
+    figsize : tuple, optional
+        Figure size (default: (9, 4)).
+    label_padding : float, optional
+        Vertical padding between arrow labels (default: 0.15).
+    is_ref : bool, optional
+        Whether to compute REF statistics (default: True).
+    title : str, optional
+        Plot title (default: "VEP Differences (REF - Full) by VEP Quantile").
+    x_label : str, optional
+        X-axis label (default: "VEP Quantile").
+    y_label : str, optional
+        Y-axis label (default: "Proportion of Variants").
+    n_diff_bins : int, optional
+        Number of bins for VEP_diff categorization (default: 5).
+    """
+    from matplotlib import cm
+    import matplotlib.pyplot as plt
+
+    vep_df = vep_df.copy()
+    data = compute_representativeness_stats(vep_df, groupby_cols=groupby_cols, y=y, is_ref=is_ref)
+    
+    # Check what columns are available in the data
+    print(f"Available columns in data: {data.columns.tolist()}")
+    print(f"Looking for column: {y}")
+    
+    # Ensure the y column exists
+    if y not in data.columns:
+        available_cols = [col for col in data.columns if 'diff' in col.lower() or 'std' in col.lower()]
+        if available_cols:
+            print(f"Column '{y}' not found. Available similar columns: {available_cols}")
+            y = available_cols[0]  # Use the first available column
+            print(f"Using column: {y}")
+        else:
+            raise ValueError(f"Column '{y}' not found in data. Available columns: {data.columns.tolist()}")
+
+    # Bin VEP into quantile bins and get bin edges for labeling
+    vep_binned, bin_edges = pd.qcut(data["VEP_mean"], q=n_bins, labels=False, retbins=True, duplicates='drop')
+    data = data.copy()
+    data['VEP_binned'] = vep_binned
+
+    # Create bin range labels as strings, e.g. "0.12–0.34"
+    bin_labels = []
+    for i in range(len(bin_edges) - 1):
+        left = bin_edges[i]
+        right = bin_edges[i + 1]
+        left_str = f"{left:.2g}" if abs(left) < 1e4 else f"{left:.2e}"
+        right_str = f"{right:.2g}" if abs(right) < 1e4 else f"{right:.2e}"
+        bin_labels.append(f"{left_str}\n→\n{right_str}")
+
+    # Map integer bin codes to string labels
+    data['VEP_binned_label'] = data['VEP_binned'].map(lambda x: bin_labels[int(x)] if pd.notnull(x) else np.nan)
+
+    # Use VEP_diff column directly for categorization
+    # Bin VEP_diff into categories based on n_diff_bins parameter
+    if n_diff_bins == 5:
+        # Default 5-bin categorization
+        bins = [-np.inf, -0.5, -0.2, 0.2, 0.5, np.inf]
+        labels = ['<-0.5', '-0.5 → -0.2', '-0.2 ↔ 0.2', '0.2 → 0.5', '>0.5']
+    elif n_diff_bins == 3:
+        # 3-bin categorization
+        bins = [-np.inf, -0.2, 0.2, np.inf]
+        labels = ['<-0.2', '-0.2 ↔ 0.2', '>0.2']
+    elif n_diff_bins == 7:
+        # 7-bin categorization
+        bins = [-np.inf, -1.0, -0.5, -0.2, 0.2, 0.5, 1.0, np.inf]
+        labels = ['<-1.0', '-1.0 → -0.5', '-0.5 → -0.2', '-0.2 ↔ 0.2', '0.2 → 0.5', '0.5 → 1.0', '>1.0']
+    else:
+        # Dynamic binning based on n_diff_bins
+        # Create evenly spaced bins around 0
+        max_diff = data[y].abs().max()
+        if max_diff > 0:
+            bin_edges = np.linspace(-max_diff, max_diff, n_diff_bins + 1)
+            bins = [-np.inf] + list(bin_edges[1:-1]) + [np.inf]
+            labels = []
+            for i in range(len(bins) - 1):
+                if i == 0:
+                    labels.append(f'<{bins[1]:.2f}')
+                elif i == len(bins) - 2:
+                    labels.append(f'>{bins[-2]:.2f}')
+                else:
+                    labels.append(f'{bins[i]:.2f} → {bins[i+1]:.2f}')
+        else:
+            # Fallback to default 5-bin if no variation
+            bins = [-np.inf, -0.5, -0.2, 0.2, 0.5, np.inf]
+            labels = ['<-0.5', '-0.5 → -0.2', '-0.2 ↔ 0.2', '0.2 → 0.5', '>0.5']
+    
+    data[y+"_cat"] = pd.cut(data[y], bins=bins, labels=labels)
+    
+    # Check if we have the expected columns for grouping
+    print(f"Columns after categorization: {data.columns.tolist()}")
+    print(f"VEP_binned_label unique values: {data['VEP_binned_label'].unique()}")
+    print(f"Category column '{y}_cat' unique values: {data[y+'_cat'].unique()}")
+
+    # Prepare data for stacked bar plot (as proportions), using the string bin labels for x-axis
+    cat_column = y+"_cat"
+    stacked = data.groupby(['VEP_binned_label', cat_column]).size().unstack(fill_value=0)
+    stacked_prop = stacked.div(stacked.sum(axis=1), axis=0)  # Proportion (0-1)
+
+    # Ensure the x-axis bins are in the correct order
+    stacked_prop = stacked_prop.reindex(bin_labels)
+
+    # Get the number of categories for the color map
+    n_cats = len(labels)
+    cmap = cm.get_cmap('coolwarm', n_cats)
+    colors = [cmap(i) for i in range(n_cats)]
+
+    # Flip the order of the columns (categories) and colors for the legend (bottom to top)
+    reversed_labels = labels[::-1]
+    reversed_colors = colors[::-1]
+    stacked_prop = stacked_prop[reversed_labels]
+
+    fig, ax = plt.subplots(figsize=figsize)
+    stacked_prop.plot(
+        kind='bar', 
+        stacked=True, 
+        ax=ax,
+        color=reversed_colors,
+        width=0.95
+    )
+    ax.set_xlabel(x_label)
+    ax.set_ylabel(y_label)
+    ax.set_title(title)
+    handles, legend_labels = ax.get_legend_handles_labels()
+    ax.legend(
+        handles[::-1], 
+        reversed_labels, 
+        title=f'{y.replace("_", " ").title()}\nCategories', 
+        bbox_to_anchor=(-0.15, 1),
+        loc='upper right',
+        borderaxespad=0.0
+    )
+    ax.yaxis.set_major_formatter(plt.FuncFormatter(lambda y, _: '{:.2f}'.format(y)))
+    ax.set_xticklabels(ax.get_xticklabels(), rotation=0)
+    plt.tight_layout()
+
+    # --- Add arrows and labels along the y-axis, outside the right margin ---
+    ymin, ymax = ax.get_ylim()
+    ycenter = 0.5
+    xlim = ax.get_xlim()
+    x_arrow = xlim[1] + 0.1
+    arrow_length = (ymax - ymin) * 0.35
+    fontsize = 8
+
+    ax.annotate(
+        "",
+        xy=(x_arrow, ycenter + arrow_length),
+        xytext=(x_arrow, ycenter),
+        arrowprops=dict(arrowstyle="->", color="black", lw=2),
+        annotation_clip=False
+    )
+    ax.text(
+        x_arrow + 0.08,
+        ycenter + arrow_length/2 + label_padding/2,
+        "REF Underestimates\nPathogenicity",
+        va='center', ha='left', rotation=90, fontsize=fontsize, fontweight='bold'
+    )
+
+    ax.annotate(
+        "",
+        xy=(x_arrow, ycenter - arrow_length),
+        xytext=(x_arrow, ycenter),
+        arrowprops=dict(arrowstyle="->", color="black", lw=2),
+        annotation_clip=False
+    )
+    ax.text(
+        x_arrow + 0.08,
+        ycenter - arrow_length/2 - label_padding/2,
+        "REF Overestimates\nPathogenicity",
+        va='center', ha='left', rotation=90, fontsize=fontsize, fontweight='bold'
+    )
+
+    ax.set_xlim(xlim[0], x_arrow + 0.75)
+    plt.show()
+    return {"fig": fig, "ax": ax, "data": data}
+
+def plot_top_diff_variants(
+        vep_df,
+        freq_df=None,
+        figsize=(8, None),
+        label_fontsize=10,
+        show=True,
+        x="VEP_mean_diff",
+        is_ref_filter=None,
+        abs_diff_threshold=1,
+        x_label="VEP difference",
+        y_label=None,
+        title=  r"Variants where REF VEP is $\pm$1 VEP unit from the mean",
+        max_rows=10,
+        sample_head_and_tail=False,
+        arrow_bottom_margin=0.25,
+        arrow_text_padding=0.05,
+        table_width_ratio=0.4
+    ):
+    """
+    Plot variants where the REF was +/- 1 VEP unit from the mean (or other x column).
+
+    Parameters
+    ----------
+    vep_df : pd.DataFrame
+        DataFrame with variant effect predictions, must include columns:
+        'is_ref', 'VEP_mean_diff', 'haplotype', 'GENEINFO', 'HGVSp', 'mutant',
+        'RS', 'n_haplotypes', 'VEP', 'VEP_mean', 'mean_freq', 'clinsig'
+    freq_df : pd.DataFrame, optional
+        DataFrame with haplotype frequencies, must include 'haplotype' and *_freq columns.
+    figsize : tuple, optional
+        Figure size (width, height). If height is None, will be set to 2 * n rows.
+    label_fontsize : int, optional
+        Font size for annotation labels.
+    show : bool, optional
+        Whether to call plt.show().
+         x : str, optional
+         Column to use for the x-axis (default: "VEP_mean_diff").
+     arrow_bottom_margin : float, optional
+         Amount of whitespace between the arrows and the bottom of the plot (default: 0.25).
+     arrow_text_padding : float, optional
+         Amount of padding between the arrows and the text annotations below them (default: 0.05).
+     table_width_ratio : float, optional
+         Width ratio for the table relative to the barplot (default: 0.4).
+
+     Returns
+     -------
+     matplotlib.axes.Axes
+         The barplot axes.
+    """
+    import matplotlib.pyplot as plt
+    import seaborn as sns
+    import pandas as pd
+
+
+    diff_df = vep_df.copy ()
+
+    if is_ref_filter is not None:
+        diff_df = diff_df.loc[diff_df["is_ref"] ==is_ref_filter]
+
+    # Find variants where the REF was +/- 1 VEP unit from the mean
+    # (If x is not "VEP_mean_diff", still filter by VEP_mean_diff for consistency)
+    if abs_diff_threshold is not None:
+        diff_df = diff_df.loc[((diff_df[x] > abs_diff_threshold) | (diff_df[x] < -abs_diff_threshold))]
+
+    # Merge in mean_freq if freq_df is provided
+    if freq_df is not None:
+        freq_cols = [col for col in freq_df.columns if col.endswith("_freq") and col != "top_superpopulation_freq"]
+        total_hap_freqs = freq_df.set_index("haplotype")[freq_cols].mean(axis=1).reset_index().rename(columns={0: "mean_freq"})
+        diff_df = diff_df.merge(total_hap_freqs, on=["haplotype"], how="left")
+    
+
+    diff_df = utils.sort_by_clinsig(diff_df)
+    diff_df[x+"_abs"] = diff_df[x].abs()
+    diff_df.sort_values(by=x, ascending=False, inplace=True)
+
+    if max_rows is not None:
+        print(f"Sampling {max_rows} rows from {len(diff_df)}")
+        if title is not None:
+            title_tmp = f" ({min(max_rows, len(diff_df))} / {len(diff_df)} rows shown)"
+            title += title_tmp #r"$\it{" + title_tmp.replace(" ", r"\ ") + r"}$"
+        if sample_head_and_tail:
+            diff_df = pd.concat([diff_df.head(max_rows//2), 
+                                 diff_df.tail(max_rows//2)])
+        else:
+            diff_df = diff_df.head(max_rows)
+    
+
+
+
+    print(diff_df.groupby(["model_location", "scoring_strategy"]).agg({"mutant": pd.Series.nunique, "protein": pd.Series.nunique}))
+    
+    diff_df["Gene"] = diff_df["GENEINFO"].str.split(":").str[0]
+    diff_df["label"] = (
+        r"$\bf{HGVSp}$: " + r"$\bf{" + diff_df["HGVSp"].str.replace(r'([\\_{}$%#&^~])', r'\\\1', regex=True) + "}$" + "\n"
+        + r"$\it{Mutation}$: " + diff_df["mutant"] + "\n"
+        + r"$\it{Gene}$: " + diff_df["Gene"] + "\n"
+        + r"$\it{RSID}$: " + diff_df["RS"].apply(lambda x: f"rs{x}" if pd.notna(x) else "N/A") + "\n"
+        + r"$\it{Haplotypes}$: " + diff_df["n_haplotypes"].astype(str) + "\n"
+        + (
+            r"$\it{Haplotype\ ID}$: " + diff_df["haplotype"].str.split(":").str[1] + "\n"
+            + r"$\it{VEP_{hap}}$: " + diff_df["VEP"].apply(lambda x: f"{x:.2f}") + "\n"
+            if is_ref_filter is not True else ""
+        )
+        + r"$\it{VEP_{REF}}$: " + diff_df["VEP_REF"].apply(lambda x: f"{x:.2f}") + "\n"
+        + r"$\it{VEP_{mean}}$: " + diff_df["VEP_mean"].apply(lambda x: f"{x:.2f}") + "\n"
+        + r"$\it{Freq_{REF}}$: " + diff_df["mean_freq"].apply(lambda x: f"{x:.2e}")
+    )
+    # Make all labels unique by appending a unique index to each label
+    diff_df["label"] = diff_df["label"] + " [#" + diff_df.reset_index().index.astype(str) + "]"
+     
+    n_rows = len(diff_df)
+    if figsize[1] is None:
+        fig_height = max(2, n_rows * .5)
+        figsize = (figsize[0], fig_height)
+
+    # Create figure with subplots for barplot and table
+    import matplotlib.gridspec as gridspec
+    fig = plt.figure(figsize=figsize)
+    
+    # Use width_ratios to control barplot vs table proportions
+    # Adjust height_ratios to align table header with space above first bar
+    gs = gridspec.GridSpec(1, 2, width_ratios=[1, table_width_ratio], wspace=0.02, height_ratios=[1])
+    
+    # Create barplot subplot
+    ax = fig.add_subplot(gs[0])
+    palatte = utils.get_clinsig_palette()
+
+    # Add an extra row with value 0 to create space above the first data row
+    # This will allow the table header to align with the space above the first bar
+    extra_row = diff_df.iloc[0].copy()
+    extra_row[x] = 0  # Set the x value to 0
+    extra_row["label"] = "SPACER"  # Add a label for the spacer row
+    
+    # Create a new dataframe with the extra row at the top
+    plot_df = pd.concat([pd.DataFrame([extra_row]), diff_df], ignore_index=True)
+    # Ensure the extra row is at the top by setting categorical order for y
+    # The first label is the spacer, followed by the real data labels in order
+    y_order = plot_df["label"].tolist()
+    y_order.reverse()
+    # Set the 'label' column as a categorical with this order
+    plot_df["label"] = pd.Categorical(plot_df["label"], categories=y_order, ordered=True)
+    
+    barplot = sns.barplot(
+        plot_df,
+        x=x,
+        y="label",
+        hue="clinsig",
+        palette=palatte,
+        ax=ax
+    )
+    ax.set_title(
+        title,
+        loc='left'  # Align title to the left
+    )
+    if x_label is not None:
+        ax.set_xlabel(x_label)
+    else:
+        ax.set_xlabel(x.replace("_", " ").title())
+    if y_label is not None:
+        ax.set_ylabel(y_label)
+    else:
+        ax.set_ylabel(None)
+    ax.legend(title="Clinical Significance")
+    ax.yaxis.tick_right()  # Move y-axis tick labels to the right
+    ax.yaxis.set_label_position("right")  # Move y-axis label to the right (if present)
+
+    # Create table subplot
+    table_ax = fig.add_subplot(gs[1])
+    table_ax.axis('off')  # Hide the table subplot axes
+    
+    # Hide the spacer row label (first row) and show the real data labels
+    ax.set_yticklabels([''] + [f"{row['GENEINFO'].split(':')[0]}:{row['mutant']}" 
+                              for _, row in diff_df.iterrows()])
+    
+    # Adjust y-axis limits to account for the extra row
+    ax.set_ylim(-0.5, len(plot_df) - 0.5)
+    
+    # Get the y-axis positions for perfect alignment
+    y_positions = ax.get_yticks()
+    
+    # Create table data (without prefixes in cells, just the values)
+    table_data = []
+    for i, pos in enumerate(y_positions):
+        # Skip the first row (spacer row) and get data from the original diff_df
+        if i == 0:
+            continue  # Skip spacer row
+        row_data = diff_df.iloc[i-1] if (i-1) < len(diff_df) else {}
+        
+        # Build row data conditionally
+        row = [
+            row_data.get('GENEINFO', 'N/A').split(':')[0] if pd.notna(row_data.get('GENEINFO')) else 'N/A',
+            row_data.get('mutant', 'N/A'),
+            f"rs{row_data.get('RS', 'N/A')}" if pd.notna(row_data.get('RS')) else "N/A",
+            str(row_data.get('n_haplotypes', 'N/A'))
+        ]
+        
+        # Add VEP column conditionally
+        if is_ref_filter is not True:
+            row.append(f"{row_data.get('VEP', 'N/A'):.2f}" if pd.notna(row_data.get('VEP')) else "N/A")
+        
+        # Add remaining columns
+        row.extend([
+            f"{row_data.get('VEP_REF', 'N/A'):.2f}" if pd.notna(row_data.get('VEP_REF')) else "N/A",
+            f"{row_data.get('VEP_mean', 'N/A'):.2f}" if pd.notna(row_data.get('VEP_mean')) else "N/A",
+            f"{row_data.get('mean_freq', 'N/A'):.2e}" if pd.notna(row_data.get('mean_freq')) else "N/A"
+        ])
+        
+        # Add haplotype ID conditionally
+        if is_ref_filter is not True:
+            hap_id = row_data.get('haplotype', 'N/A').split(':')[1] if pd.notna(row_data.get('haplotype')) else 'N/A'
+            row.append(hap_id)
+        
+        table_data.append(row)
+    
+    # Create table using matplotlib.pyplot.table
+    # Build column headers conditionally
+    col_labels = [r'Gene', r'Mutation', r'RS', r'Haplotypes']
+    
+    # Add VEP column conditionally
+    if is_ref_filter is not True:
+        col_labels.append(r'VEP$_{hap}$')
+    
+    # Add remaining columns
+    col_labels.extend([r'VEP$_{REF}$', r'VEP$_{mean}$', r'Freq$_{REF}$'])
+    
+    # Add haplotype ID column conditionally
+    if is_ref_filter is not True:
+        col_labels.append(r'Hap ID')
+    
+    table = table_ax.table(
+        cellText=table_data,
+        colLabels=col_labels,
+        cellLoc='left',
+        loc='center',
+        bbox=[0, 0, 1, 1]  # Fill the entire table subplot
+    )
+
+    # Style the table
+    table.auto_set_font_size(False)
+    table.set_fontsize(8)
+    
+    # Use reasonable row heights for readability
+    table.scale(1, 2)  # Adjust row heights to match barplot
+    
+    # Auto-adjust column widths to accommodate content
+    table.auto_set_column_width(col=list(range(len(table_data[0]))))
+    
+    # Style the header row
+    for i in range(len(table_data[0])):
+        header_cell = table[(0, i)]
+        header_cell.set_facecolor('#666666')  # Lighter grey background
+        header_cell.set_text_props(weight='bold', color='white')
+        header_cell.set_height(0.1)  # Make header row slightly taller
+    
+    # Style the data rows
+    for i in range(1, len(table_data) + 1):
+        for j in range(len(table_data[0])):
+            cell = table[(i, j)]
+            # Alternate row colors for better readability
+            if (i-1) % 2 == 0:  # Adjust for header row offset
+                cell.set_facecolor('#F5F5F5')  # Light gray
+            else:
+                cell.set_facecolor('white')
+            cell.set_text_props(weight='normal', color='black')
+    
+    # Add borders to the table
+    for i in range(len(table_data) + 1):
+        for j in range(len(table_data[0])):
+            cell = table[(i, j)]
+            cell.set_edgecolor('black')
+            cell.set_linewidth(0.5)
+    
+    # Remove y-axis labels since we now have a table
+    ax.set_yticklabels([])
+    ax.set_ylabel(None)
+
+    # Add vertical grey dotted lines at -1 and 1 if x is VEP_mean_diff
+    if x == "VEP_mean_diff":
+        ax.axvline(0, color='grey', linestyle='-', linewidth=3, zorder=1)
+        ax.axvline(-1, color='grey', linestyle=':', linewidth=1.5, zorder=1)
+        ax.axvline(1, color='grey', linestyle=':', linewidth=1.5, zorder=1)
+
+    # Add grid lines through the center of each bar
+    # Skip the top-most grid line (last ytick) to avoid cluttering the spacer row area
+    yticks = ax.get_yticks()
+    for i, ytick in enumerate(yticks):
+        if i < len(yticks) - 1:  # Skip the last (top-most) grid line
+            ax.axhline(ytick, color='lightgray', linestyle='--', linewidth=0.7, zorder=0)
+
+    # Add arrows and labels under the x-axis
+    xmin, xmax = ax.get_xlim()
+    arrow_y = -arrow_bottom_margin  # relative to axes fraction, below x-axis label
+    label_y = -(arrow_bottom_margin + arrow_text_padding)  # further below for the text
+
+    arrow_length = (xmax - xmin) * 0.35
+
+    # Draw left arrow: from 0 to negative
+    ax.annotate(
+        '', xy=(0 - arrow_length, arrow_y), xytext=(0, arrow_y),
+        xycoords=('data', 'axes fraction'), textcoords=('data', 'axes fraction'),
+        arrowprops=dict(arrowstyle='-|>', color=palatte["path"], lw=3),
+        annotation_clip=False
+    )
+    ax.text(
+        0 - arrow_length/2, label_y, r"$\bf{REF\ overestimates}$" + "\n" + r"$\bf{pathogenicity}$",
+        ha='right', va='top', color=palatte["path"], fontsize=label_fontsize,
+        transform=ax.get_xaxis_transform()
+    )
+
+    # Draw right arrow: from 0 to positive
+    ax.annotate(
+        '', xy=(0 + arrow_length, arrow_y), xytext=(0, arrow_y),
+        xycoords=('data', 'axes fraction'), textcoords=('data', 'axes fraction'),
+        arrowprops=dict(arrowstyle='-|>', color=palatte["benign"], lw=2),
+        annotation_clip=False
+    )
+    ax.text(
+        0 + arrow_length/2, label_y, r"$\bf{REF\ underestimates}$" + "\n" + r"$\bf{pathogenicity}$",
+        ha='left', va='top', color=palatte["benign"], fontsize=label_fontsize,
+        transform=ax.get_xaxis_transform()
+    )
+
+    plt.ylabel(None)
+    plt.tight_layout()
+    if show:
+        plt.show()
+    return ax, table_ax
 
