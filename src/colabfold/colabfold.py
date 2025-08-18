@@ -70,20 +70,60 @@ import src.utils as utils
 
 AFDB_CACHE = pooch.os_cache("alphafold_db")
 
-def search_files(base_dir,
-                 tx_id,
-                 subdir = "af2_sameMSA",
-                 suffix = ".pdb*",
-                 model_number = 1):
-    
-    pdb_files = glob.glob(os.path.join(base_dir,
-                                    tx_id,
-                                    "**",
-                                    #    "*_unrelaxed_rank_001_*.pdb"
-                                    f"{subdir}/*_unrelaxed_*_model_{model_number}_*{suffix}"
-                                    ),
-                        recursive=True)
-    print(len(pdb_files),"PDB files found") 
+def search_files(
+    base_dir,
+    tx_id,
+    subdir="af2_sameMSA",
+    suffix=".pdb*",
+    model_number=1,
+    ref_only=False
+):
+    """
+    Search for PDB files in a specified directory structure.
+
+    This function searches recursively for PDB files matching a specific pattern
+    within a given base directory and transcript ID. Optionally, it can filter
+    to return only the reference (REF) PDB file.
+
+    Args:
+        base_dir (str): The base directory to search within.
+        tx_id (str): The transcript ID subdirectory to search under.
+        subdir (str, optional): Subdirectory name containing the PDB files. Default is "af2_sameMSA".
+        suffix (str, optional): File suffix or pattern to match. Default is ".pdb*".
+        model_number (int, optional): Model number to include in the filename pattern. Default is 1.
+        ref_only (bool, optional): If True, return only the reference (REF) file. Default is False.
+
+    Returns:
+        list: List of matching PDB file paths. If ref_only is True, returns a list with a single REF file,
+              or an empty list if not found.
+
+    Raises:
+        ValueError: If ref_only is True and no REF file is found for the given transcript ID.
+
+    Example:
+        >>> files = search_files("/data/colabfold", "ENST00000357654")
+        >>> print(files)
+        ['/data/colabfold/ENST00000357654/af2_sameMSA/sample_unrelaxed_rank_001_model_1.pdb', ...]
+        >>> ref_file = search_files("/data/colabfold", "ENST00000357654", ref_only=True)
+        >>> print(ref_file)
+        ['/data/colabfold/ENST00000357654/af2_sameMSA/sample_REF_unrelaxed_model_1.pdb']
+    """
+    pdb_files = glob.glob(
+        os.path.join(
+            base_dir,
+            tx_id,
+            "**",
+            f"{subdir}/*_unrelaxed_*_model_{model_number}_*{suffix}"
+        ),
+        recursive=True
+    )
+    if ref_only:
+        from .colabfold import get_ref_key  # Ensure get_ref_key is imported if not already
+        ref_file = get_ref_key(pdb_files, pattern="REF", error=False)
+        pdb_files = [ref_file] if ref_file is not None else []
+        if len(pdb_files) == 0:
+            raise ValueError(f"No REF file found for {tx_id}")
+    print(len(pdb_files), "PDB files found")
     return pdb_files
 
 def import_pdb(pdb_path: str, 
@@ -244,6 +284,7 @@ def import_contact_maps(
     pdb_files,
     return_distance_map=True,
     continuous=True,
+    as_dict=True,
     verbose=True,
     **kwargs
 ):
@@ -252,28 +293,58 @@ def import_contact_maps(
 
     This function processes each PDB file in the provided list, extracts the structure,
     and computes the contact map using the specified parameters. Empty files are skipped.
+    Handles both plain and gzipped (.gz) PDB files.
 
     Args:
         pdb_files (list of str): List of paths to PDB files.
         return_distance_map (bool, optional): If True, return the normalized distance map instead of a contact map. Default is True.
         continuous (bool, optional): If True, use continuous scoring for contact map; otherwise, use binary scoring. Default is True.
+        as_dict (bool, optional): If True, return a dictionary mapping each PDB file path to its corresponding contact map (numpy.ndarray). Default is True.
         verbose (bool, optional): If True, print progress and information. Default is True.
         **kwargs: Additional keyword arguments passed to get_contact_map.
 
     Returns:
-        dict: A dictionary mapping each PDB file path to its corresponding contact map (numpy.ndarray).
+        dict: A dictionary mapping each PDB file path to its corresponding contact map (numpy.ndarray). 
+        If as_dict is False and there is only one PDB file, returns a single contact map.
 
     Example:
         >>> pdb_files = ["protein1.pdb", "protein2.pdb"]
         >>> contact_maps = import_contact_maps(pdb_files, continuous=False)
         >>> print(contact_maps["protein1.pdb"].shape)
     """
+    import gzip
+    import io
+
     contact_maps = {}
     for pdb_file in tqdm(pdb_files):
-        if os.path.getsize(pdb_file) == 0:
-            print(f"Skipping {pdb_file} because it is empty")
+        # Check for empty file (works for both .gz and plain)
+        try:
+            if pdb_file.endswith('.gz'):
+                with gzip.open(pdb_file, 'rt') as f:
+                    first_char = f.read(1)
+                    if not first_char:
+                        print(f"Skipping {pdb_file} because it is empty")
+                        continue
+            else:
+                if os.path.getsize(pdb_file) == 0:
+                    print(f"Skipping {pdb_file} because it is empty")
+                    continue
+        except Exception as e:
+            print(f"Error reading {pdb_file}: {e}")
             continue
-        structure = import_pdb(pdb_file)
+
+        # For gzipped files, decompress to string and pass as file-like object
+        if pdb_file.endswith('.gz'):
+            with gzip.open(pdb_file, 'rt') as f:
+                pdb_string = f.read()
+            pdb_io = io.StringIO(pdb_string)
+            # import_pdb expects a path or URL, not a file-like object, so we need to
+            # call the parser directly here to avoid AttributeError
+            from Bio.PDB import PDBParser
+            parser = PDBParser()
+            structure = parser.get_structure("structure", pdb_io)
+        else:
+            structure = import_pdb(pdb_file)
         contact_maps[pdb_file] = get_contact_map(
             structure,
             return_distance_map=return_distance_map,
@@ -281,6 +352,11 @@ def import_contact_maps(
             verbose=verbose,
             **kwargs
         )
+    if not as_dict:
+        if len(contact_maps) == 1:
+            return list(contact_maps.values())[0]
+        else:
+            raise ValueError("Cannot return a single contact map if as_dict is False and there are multiple PDB files")
     return contact_maps
 
 def get_plddt(structure,
@@ -2053,8 +2129,15 @@ def get_ref_key(contact_maps, pattern="REF", error=True):
         '/path/to/sample_REF_001.npy'
     """
     import os
+    if isinstance(contact_maps, dict):
+        names = list(contact_maps.keys())
+    elif isinstance(contact_maps, list):
+        names = contact_maps
+    else:
+        raise ValueError(f"contact_maps must be a dict or list, not {type(contact_maps)}")
+
     matches = []
-    for x in contact_maps.keys():
+    for x in names:
         base = os.path.basename(x)
         fields = base.split("_")
         if len(fields) < 2:
@@ -2195,10 +2278,13 @@ def plot_contact_map_diff(
     ref_key=None,
     bin_size=20,
     cmap="seismic_r",
-    figsize=(8, 6),
+    figsize=None,
     dpi=100,
     agg_func=nonzero_mean,
-    title="Gain/Loss of Contact Relative to REF",
+    title="Gained/Lost Contacts Relative to REF",
+    xlabel="Residue Position",
+    ylabel="Residue Position",
+    legend_title="Proportion of Haplotypes with Contact Change",
     show_plot=True,
     verbose=True,
     weights=None,
@@ -2306,9 +2392,9 @@ def plot_contact_map_diff(
         vmin=-1, vmax=1
     )
     ax.set_title(title)
-    ax.set_xlabel("Residue position")
-    ax.set_ylabel("Residue position")
-    cbar = plt.colorbar(im, ax=ax, label="Contact change vs REF")
+    ax.set_xlabel(xlabel)
+    ax.set_ylabel(ylabel)
+    cbar = plt.colorbar(im, ax=ax, label=legend_title)
     cbar.set_ticks([-1, -0.5, 0, 0.5, 1])
     cbar.set_ticklabels(['Lost in all', '-0.5', 'No change', '+0.5', 'Gained in all'])
     plt.tight_layout()
@@ -2317,11 +2403,12 @@ def plot_contact_map_diff(
     else:
         plt.close(fig)
 
-    return fig, diff_vs_ref
+    return {'fig':fig, 'axes':ax, 'data':diff_vs_ref}
 
 def plot_contact_map_diff_barplot(
     diff_map, 
-    title="Contact Points Gained vs Lost", 
+    title="Contact Points Gained vs. Lost", 
+    ylabel="Contact Counts",
     figsize=(4, 5), 
     cmap="seismic_r",
     percent_precision=2,
@@ -2334,6 +2421,7 @@ def plot_contact_map_diff_barplot(
     Args:
         diff_map: 2D numpy array of contact map differences.
         title: Title for the plot.
+        ylabel: Y-axis label.
         figsize: Figure size for the plot.
         cmap: Colormap for the bars.
         percent_precision: Number of decimal places to show for percent values.
@@ -2371,8 +2459,8 @@ def plot_contact_map_diff_barplot(
     # Plot as barplot
     import matplotlib as mpl
     cmap_obj = mpl.colormaps.get_cmap(cmap)
-    # For "Gained" (positive), use the high end; for "Lost" (negative), use the low end 
-    colors = [cmap_obj(1.0),  cmap_obj(0.0)]
+    # For "Gained" (positive), use the high end (0.85); for "Lost" (negative), use the low end (0.30)
+    colors = [cmap_obj(0.85),  cmap_obj(0.30)]
 
     labels = df['Type']
     values = df['Count']
@@ -2385,7 +2473,7 @@ def plot_contact_map_diff_barplot(
         fig = ax.figure
 
     bars = ax.bar(labels, values, color=colors)
-    ax.set_ylabel('Number of contact points')
+    ax.set_ylabel(ylabel)
     ax.set_title(title)
     for i, bar in enumerate(bars):
         height = bar.get_height()
@@ -2410,6 +2498,10 @@ def plot_contact_map_diff_barplot_grouped(
     bar_df,
     group_by="superpopulation",
     figsize=(10, 5),
+    translate_superpop_names=True,
+    ylabel="Contact Counts",
+    xlabel=None,
+    legend_title="Contact Change\nRelative to REF",
     cmap="seismic_r", 
 ):
     """
@@ -2422,6 +2514,8 @@ def plot_contact_map_diff_barplot_grouped(
         group_by (str): Column name in bar_df to group bars by (default: "superpopulation").
         figsize (tuple): Size of the matplotlib figure (default: (10, 5)).
         cmap (str): Name of the matplotlib colormap to use for bar colors (default: "seismic_r").
+        legend_title (str): Title for the legend (default: "Contact Change\nRelative to REF").
+        ylabel (str): Y-axis label (default: "Contact Counts").
 
     Returns:
         None. Displays the plot.
@@ -2431,7 +2525,34 @@ def plot_contact_map_diff_barplot_grouped(
         - Bar colors are chosen for colorblind accessibility.
         - Each bar is annotated with its count and percentage.
     """
-    bar_df.sort_values(by="Count", ascending=False, inplace=True)
+
+    bar_df = bar_df.copy()
+    
+    # Translate superpopulation names to more readable names in the subplot titles
+    if translate_superpop_names:
+        import src.onekg as og 
+        bar_df[group_by] = bar_df[group_by].apply(lambda x: og.SUPERPOP_NAMES_DICT[x].replace(" ","\n")+"\n"*(3-og.SUPERPOP_NAMES_DICT[x].count(" "))+"("+x+")")
+
+    # Validate data
+    required_columns = [group_by, 'Type', 'Count', 'Percent']
+    missing_columns = [col for col in required_columns if col not in bar_df.columns]
+    if missing_columns:
+        raise ValueError(f"Missing required columns: {missing_columns}")
+    
+    # Ensure Count and Percent are numeric
+    bar_df['Count'] = pd.to_numeric(bar_df['Count'], errors='coerce')
+    bar_df['Percent'] = pd.to_numeric(bar_df['Percent'], errors='coerce')
+    
+    # Check for any NaN values
+    if bar_df[['Count', 'Percent']].isna().any().any():
+        print("Warning: NaN values found in Count or Percent columns")
+    
+    # Sort by the sum of 'Count' for each group, descending
+    group_sums = bar_df.groupby(group_by)["Count"].sum().sort_values(ascending=False)
+    # Reorder the dataframe so that group_by is a categorical with the desired order
+    bar_df[group_by] = pd.Categorical(bar_df[group_by], categories=group_sums.index, ordered=True)
+    bar_df = bar_df.sort_values(by=group_by)
+
 
     # Use the first and last colors from seismic_r as the palette
     import matplotlib as mpl
@@ -2456,36 +2577,61 @@ def plot_contact_map_diff_barplot_grouped(
     ax.spines['top'].set_visible(False)
     ax.spines['right'].set_visible(False)
 
-    # Add labels above each bar: f"{Count}\n({Percent:.2f}%)"
-    n_superpop = len(ax.get_xticklabels())
-    n_hue = len(ax.get_legend_handles_labels()[1])
-    for i, p in enumerate(ax.patches):
-        height = p.get_height()
+    # Get the legend handles and labels to understand the order
+    legend_handles, legend_labels = ax.get_legend_handles_labels()
+    
+    # Create a mapping from the data to ensure correct annotation placement
+    # Get the unique groups and their order as they appear on the x-axis
+    x_tick_labels = [label.get_text() for label in ax.get_xticklabels()]
+    
+    # Annotate each bar with its count and percentage
+    # The patches are ordered by hue first, then by group
+    # So for 2 hues and N groups, the order is: hue1_group1, hue1_group2, ..., hue1_groupN, hue2_group1, hue2_group2, ..., hue2_groupN
+    
+    n_groups = len(x_tick_labels)
+    n_hues = len(legend_labels)
+    
+    for i, patch in enumerate(ax.patches):
+        height = patch.get_height()
         if height == 0:
             continue
-        superpop_idx = i // n_hue
-        hue_idx = i % n_hue
-        if superpop_idx >= n_superpop:
+            
+        # Calculate which group and hue this patch corresponds to
+        # For seaborn barplot with dodge=True, patches are ordered by hue first, then by group
+        hue_idx = i // n_groups
+        group_idx = i % n_groups
+        
+        if hue_idx >= n_hues or group_idx >= n_groups:
             continue
-        superpop = ax.get_xticklabels()[superpop_idx].get_text()
-        hue = ax.get_legend_handles_labels()[1][hue_idx]
-        # Find the row in bar_df
-        row = bar_df[(bar_df[group_by] == superpop) & (bar_df["Type"] == hue)]
+            
+        group_name = x_tick_labels[group_idx]
+        hue_name = legend_labels[hue_idx]
+        
+        # Find the corresponding data row
+        row = bar_df[(bar_df[group_by] == group_name) & (bar_df["Type"] == hue_name)]
+        
         if not row.empty:
             count_val = row["Count"].values[0]
             percent_val = row["Percent"].values[0]
+            
             label = f"{count_val}\n({percent_val:.2f}%)"
-            # Add a tiny bit of padding to the left of each label (e.g., 2 pixels)
+            
+            # Position the annotation at the top of the bar
             ax.annotate(label,
-                        (p.get_x() + p.get_width() / 2 + 0.02, height),
+                        (patch.get_x() + patch.get_width() / 2, height),
                         ha='center', va='bottom',
                         fontsize=9,  
                         xytext=(0, 3), textcoords='offset points')
-    ax.set_xlabel(group_by.title())
-    ax.set_ylabel("Contact Counts")
-    ax.legend(title="Contact Change")
+    
+    if xlabel is None:
+        xlabel = group_by.title()
+    
+    ax.set_xlabel(xlabel)
+    ax.set_ylabel(ylabel)
+    ax.legend(title=legend_title)
     plt.tight_layout()
-
+    
+    return {'fig':fig, 'axes':ax, 'data':bar_df}
 
 def revert_haplotype_naming(names, sep="_"):
     """
@@ -3765,13 +3911,13 @@ def plot_superpopulation_contact_diff(
     pairs_per_colset=4,
     use_common_heatmap_scale=True,
     set_common_barplot_ylim=True,
-    suptitle="Gained/Lost Contacts by Superpopulation\n(Relative to REF)",
+    suptitle="Gained/Lost Contacts by Superpopulation Relative to REF",
+    translate_superpop_names=True,
     width_ratios=[1, 0.2],
     figsize=(8, 4.5),
     wspace=0.05, 
     hspace=0.3,
-    show=True,
-    return_fig=False,
+    show_plot=True, 
 ):
     """
     Plot heatmaps and barplots of gained/lost contacts by superpopulation.
@@ -3793,9 +3939,7 @@ def plot_superpopulation_contact_diff(
     suptitle : str, optional
         Figure supertitle.
     show : bool, optional
-        Whether to call plt.show().
-    return_fig : bool, optional
-        If True, return the matplotlib Figure object.
+        Whether to call plt.show(). 
     width_ratios : list, optional
         Width ratios for the columns.
     figsize : tuple, optional
@@ -3812,6 +3956,12 @@ def plot_superpopulation_contact_diff(
     """
     populations = list(specific_binary_diff_figs.keys())
     n_pops = len(populations)
+
+
+    # Translate superpopulation names to more readable names in the subplot titles
+    if translate_superpop_names:
+        import src.onekg as og
+        superpop_names_dict = og.SUPERPOP_NAMES_DICT 
 
     # For this application, we know the min/max for the binary diff maps are -1 and 1 (proportion units)
     if use_common_heatmap_scale:
@@ -3877,7 +4027,7 @@ def plot_superpopulation_contact_diff(
                                cmap=cmap,
                                interpolation='nearest',
                                vmin=vmin, vmax=vmax)
-            ax_heat.set_title(f"{pop}")
+            ax_heat.set_title(f"{superpop_names_dict[pop]} ({pop})" if translate_superpop_names else pop)
             ax_heat.set_xlabel(orig_ax.get_xlabel())
             ax_heat.set_ylabel(orig_ax.get_ylabel())
         else:
@@ -3886,9 +4036,10 @@ def plot_superpopulation_contact_diff(
 
         # Right: barplot
         ax_bar = axes[row, col_bar] if nrows > 1 else axes[0, col_bar]
-        bar_fig, bar_df = plot_contact_map_diff_barplot(specific_binary_diff_maps[pop], ax=ax_bar)
+        bar_fig, bar_df = plot_contact_map_diff_barplot(specific_binary_diff_maps[pop], 
+                                                        ax=ax_bar)
         bar_df["superpopulation"] = pop
-        ax_bar.set_title(f"{pop}")
+        ax_bar.set_title(f"{superpop_names_dict[pop]} ({pop})" if translate_superpop_names else pop)
         if barplot_ylim is not None:
             ax_bar.set_ylim(barplot_ylim)
         bar_figs.append(bar_fig)
@@ -3906,9 +4057,9 @@ def plot_superpopulation_contact_diff(
 
     fig.suptitle(suptitle, fontsize=18, y=1.01)
     plt.tight_layout()
-    if show:
+    if show_plot:
         plt.show() 
-    return fig, bar_dfs
+    return {'fig':fig, 'axes':axes, 'data':bar_dfs}
 
 
 def plot_superpopulation_maps(contact_maps, pow=1, nrows=2, cmap='viridis', bin_size=10):
@@ -4022,3 +4173,142 @@ def compress_npy_files(base_dir="~/projects/data/colabfold/",
                 for file in files:
                     os.remove(file)
 
+def compute_population_specific_contact_maps(
+    contact_maps,
+    contact_maps_binary,
+    freq_df, 
+    superpopulation_specific_only=True,
+    exclude_ref_from_weights=False,
+    weight_binary_maps=False,
+):
+    """
+    Compute population-specific contact map statistics and difference maps.
+
+    This function performs the following steps for each population (as defined by frequency columns in the input DataFrame):
+
+    1. **Map haplotype IDs to PDB files:**
+       - For each haplotype in the contact maps, determine the corresponding PDB file and add this information to the frequency DataFrame.
+
+    2. **Identify frequency columns:**
+       - Select columns in the DataFrame that represent population frequencies (excluding 'top_superpopulation_freq').
+
+    3. **For each population:**
+       1. Identify the subset of haplotypes belonging exclusively to the current population by filtering the DataFrame.
+       2. Gather the contact maps for these haplotypes.
+       3. Compute the weighted average contact map for the population using the population-specific frequencies as weights.
+       4. Compute the mean difference map for the population by subtracting the reference contact map from each population member's contact map, then averaging these differences.
+       5. Compute binary gain/loss maps for the population by:
+          - Creating a dictionary of binary contact maps for the population and the reference.
+          - Calling `plot_contact_map_diff` to generate a difference map and a corresponding figure (without displaying the plot).
+       6. Store the results for each population in dictionaries.
+
+    4. **Return a dictionary containing:**
+       - `specific_maps`: Weighted average contact maps for each population.
+       - `specific_diff_maps`: Mean difference maps (relative to reference) for each population.
+       - `specific_binary_diff_maps`: Binary gain/loss maps for each population.
+       - `specific_binary_diff_figs`: Figures visualizing the binary gain/loss maps for each population.
+
+    Args:
+        contact_maps: dict of {haplotype_id: contact_map}
+        contact_maps_binary: dict of {haplotype_id: binary_contact_map}
+        freq_df: DataFrame with haplotype frequencies and metadata
+        superpopulation_specific_only: bool, optional
+            Whether to only include haplotypes that are exclusive to the superpopulation.
+            If True (default), only include haplotypes that are exclusive to the superpopulation, and weight them according to their frequency in the superpopulation.
+            If False, include all haplotypes but weight them according to their frequency in the superpopulation.
+        exclude_ref_from_weights: bool, optional
+            Whether to exclude the reference from the weights.
+            If True, the reference will not be included in the weights.
+            If False, the reference will be included in the weights.
+            Default is False.
+            
+    Returns:
+        dict with:
+            - specific_maps: average contact maps per population
+            - specific_diff_maps: mean difference maps per population
+            - specific_binary_diff_maps: binary gain/loss maps per population
+            - specific_binary_diff_figs: figures for binary gain/loss maps per population
+    """
+    # Get the pdb file for each haplotype
+    hap_id_dict = get_haplotype_ids(contact_maps.keys(), as_dict=-1)
+    freq_df = freq_df.copy()
+    freq_df["pdb_file"] = freq_df['haplotype'].str.split(":").str[1].map(hap_id_dict)
+    freq_df_pdb = freq_df.set_index("pdb_file")
+    freq_df_pdb = freq_df_pdb[freq_df_pdb.index.notna()] 
+    # reorder freq_df_pdb to match contact_maps (not strictly needed here)
+    freq_df_pdb = freq_df_pdb.loc[[k for k in contact_maps.keys() if k in freq_df_pdb.index]]
+
+    freq_cols = [col for col in freq_df.columns if "freq" in col and col != "top_superpopulation_freq"]
+    specific_maps = {}
+    specific_diff_maps = {}
+    specific_binary_diff_maps = {}
+    specific_binary_diff_figs = {}
+
+    ref_key = get_ref_key(contact_maps)
+
+    for col in tqdm(freq_cols):
+        pop = col.split("_")[0] 
+
+        ##### COMPUTE CONTINUOUS CONTACT MAPS #####
+        
+        if superpopulation_specific_only:
+            # Subset to only haplotypes that are exclusive to the superpopulation
+            df = freq_df_pdb.loc[freq_df_pdb["specific_superpopulation"]==pop].copy() 
+        
+        else:  
+            # Include all haplotypes but weight them according to their frequency in the superpopulation
+            df = freq_df_pdb.copy()
+         
+        # Exclude the reference from the weights
+        if exclude_ref_from_weights:
+            df = df.loc[df.index != ref_key]
+
+        # Subset the contact maps to only include the haplotypes in the dataframe
+        pop_map_keys, pop_maps = zip(*[(k,v) for k,v in contact_maps.items() if k in df.index])
+        
+        # Reorder the dataframe to match the contact maps
+        df = df.loc[[k for k in pop_map_keys if k in df.index]]
+
+        # Compute weight average population contact map
+        specific_maps[pop] = average_matrices(pop_maps, 
+                                                weights=df[col].values,
+                                                normalize_scale=False)  
+        # Compute absolute difference, then mean
+        if pop_maps:
+            diffs = np.stack(pop_maps) - contact_maps[ref_key]
+            mean_div = np.mean(diffs, axis=0)
+        else:
+            mean_div = 0
+        specific_diff_maps[pop] = mean_div 
+
+        ##### COMPUTE BINARY CONTACT MAPS #####
+        # Compute superpopulation-specific binary gain/loss maps
+        if superpopulation_specific_only:
+            binary_fig_out = plot_contact_map_diff(
+                {k: v for k, v in contact_maps_binary.items() if k in df.index or k == ref_key}, 
+                ref_key=ref_key,
+                weights=df[col].values if weight_binary_maps else None,
+
+                show_plot=False,
+                verbose=False,
+                
+            )  
+        else:
+            binary_fig_out = plot_contact_map_diff(
+                {k: v for k, v in contact_maps_binary.items() if k in df.index or k == ref_key}, 
+                ref_key=ref_key,
+                weights=df[col].values if weight_binary_maps else None,
+
+                show_plot=False,
+                verbose=False
+            )  
+        specific_binary_diff_maps[pop] = binary_fig_out['data'] 
+        specific_binary_diff_figs[pop] = binary_fig_out['fig']
+        #---- END OF FOR LOOP ----#
+
+    return {
+        "specific_maps": specific_maps,
+        "specific_diff_maps": specific_diff_maps,
+        "specific_binary_diff_maps": specific_binary_diff_maps,
+        "specific_binary_diff_figs": specific_binary_diff_figs,
+    }

@@ -946,7 +946,7 @@ def plot_enrichment_vs_interactions(
     y2_last_label=True,
     y1_axis_label="● Contact Enrichment",
     y2_axis_label="■ Number of Interactions",
-    x_axis_label="Interaction Threshold",
+    x_axis_label="Absolute Interaction Threshold",
     title="WT-Clinical Variant Interaction Strength vs. Contact Enrichment",
     figsize=(9, 6),
     add_arrow=True,
@@ -2304,6 +2304,8 @@ def plot_contact_and_sensitization_maps(
     masking_percentile1=50,
     masking_percentile2=25,
     height_width=20,
+    heatmap_alpha=None,
+    rectangles_alpha=0.9,
     rectangles_cmap={"high": "red", "low": "blue"},
     mask_color=None,
     show_plot=(True, True),
@@ -2332,6 +2334,10 @@ def plot_contact_and_sensitization_maps(
         Colormap for contact map.
     height_width : int, default 20
         Rectangle width/height.
+    heatmap_alpha : float or None, default None
+        Alpha for heatmap.
+    rectangles_alpha : float, default 0.9
+        Alpha for rectangles.
     mask_color : str or None, default None
         Color for masked values.
     show_plot : tuple of bool, default (True, True)
@@ -2346,7 +2352,8 @@ def plot_contact_and_sensitization_maps(
     if save_path is None:
         save_path = f"contact_map_{'sensitization_map' if add_rect else ''}.png"
 
-    heatmap_alpha = 0.5 if add_rect else 1
+    if heatmap_alpha is None:
+        heatmap_alpha = 0.5 if add_rect else 1
 
 
     outlier_sig = outlier_sig.dropna(subset=["wt_position", "clinical_position","outlier_type"])
@@ -2422,7 +2429,7 @@ def plot_contact_and_sensitization_maps(
                 height=height_width,
                 xy_pairs_are_idx=True,
                 fill=False,
-                alpha=0.9,
+                alpha=rectangles_alpha,
                 x_col="wt_position",
                 y_col="clinical_position",
                 color_col="outlier_type",
@@ -2592,10 +2599,13 @@ def add_extra_row_col(df,
 
 def plot_variant_sensitization_schematic(
     wtvariants_to_vep_linear_model_out,
+    
+    figsize=(20, 4),
+
     n_haplotypes=10,
     n_wt_variants=5,
     n_clinical_variants=5,
-    figsize=(20, 4),
+    
     extra_space=0.06,
     big_arrow_width=0.2,
     big_arrow_height=0.2,
@@ -2603,29 +2613,125 @@ def plot_variant_sensitization_schematic(
     linewidths=0.5,
     linecolor='grey',
 
+    replace_haplotype_prefix=False,
     random_seed=0,
     noise_scale=0.10,
     coef_matrix_scale=20,
     coef_matrix_min=None,
+
+    plot1_title="Haplotype x WT Variant Matrix",
+    plot2_title="Haplotype x Clinical Variant VEP Matrix",
+    plot3_title="WT x Clinical Variant Interaction Scores",
     
     plot1_kwargs={},
     plot2_kwargs={},
     plot3_kwargs={},
 
     plot1_cmap="binary",
-    plot2_cmap="coolwarm",
-    plot3_cmap="YlGnBu", 
+    plot2_cmap="coolwarm_r",
+    plot3_cmap="coolwarm_r",
+    
+    add_grey_box=True,
+    grey_box_color='lightgrey',
+    grey_box_alpha=0.3,
+    grey_box_left_extension=0.125,
+    grey_box_top_extension=0.13,
+    grey_box_right_extension=0.01,
+    grey_box_bottom_extension=0.005,
+    big_arrow_horizontal_offset=0.005,
+    grey_box_outline_kwargs={'edgecolor': 'black', 'linewidth': 3, 'linestyle': ':'},
+    title_pad=20,
+    xlabel_pad=10,       
     
 ):
     """
     Plots the variant sensitization schematic as three heatmaps with arrows.
     Returns the matplotlib Figure and Axes.
+    
+    Parameters
+    ----------
+    wtvariants_to_vep_linear_model_out : dict
+        Dictionary containing the linear model output data.
+    figsize : tuple, optional
+        Figure size as (width, height), default (20, 4).
+    n_haplotypes : int, optional
+        Number of haplotypes to display, default 10.
+    n_wt_variants : int, optional
+        Number of WT variants to display, default 5.
+    n_clinical_variants : int, optional
+        Number of clinical variants to display, default 5.
+    extra_space : float, optional
+        Extra space to add to the right of the third plot, default 0.06.
+    big_arrow_width : float, optional
+        Width scaling for the big arrow, default 0.2.
+    big_arrow_height : float, optional
+        Height scaling for the big arrow, default 0.2.
+    linewidths : float, optional
+        Line width for heatmap grid lines, default 0.5.
+    linecolor : str, optional
+        Color for heatmap grid lines, default 'grey'.
+    replace_haplotype_prefix : bool, optional
+        Whether to replace haplotype prefixes, default False.
+    random_seed : int, optional
+        Random seed for noise generation, default 0.
+    noise_scale : float, optional
+        Scale of noise to add to VEP matrix, default 0.10.
+    coef_matrix_scale : float, optional
+        Scaling factor for coefficient matrix, default 20.
+    coef_matrix_min : float, optional
+        Minimum threshold for coefficient values, default None.
+    plot1_title : str, optional
+        Title for the first plot, default "Haplotype x WT Variant Matrix".
+    plot2_title : str, optional
+        Title for the second plot, default "Haplotype x Clinical Variant VEP Matrix".
+    plot3_title : str, optional
+        Title for the third plot, default "WT x Clinical Variant Interaction Scores".
+    plot1_kwargs : dict, optional
+        Additional keyword arguments for the first heatmap.
+    plot2_kwargs : dict, optional
+        Additional keyword arguments for the second heatmap.
+    plot3_kwargs : dict, optional
+        Additional keyword arguments for the third heatmap.
+    plot1_cmap : str, optional
+        Colormap for the first plot, default "binary".
+    plot2_cmap : str, optional
+        Colormap for the second plot, default "coolwarm_r".
+    plot3_cmap : str, optional
+        Colormap for the third plot, default "coolwarm_r".
+    add_grey_box : bool, optional
+        Whether to add a grey box around the first two plots, default True.
+    grey_box_color : str, optional
+        Color of the grey box, default 'lightgrey'.
+    grey_box_alpha : float, optional
+        Transparency of the grey box, default 0.3.
+    grey_box_left_extension : float, optional
+        How far left to extend the grey box (in figure coordinates), default 0.125.
+    grey_box_top_extension : float, optional
+        How far up to extend the grey box (in figure coordinates), default 0.1.
+    grey_box_right_extension : float, optional
+        How far right to extend the grey box (in figure coordinates), default 0.01.
+    grey_box_bottom_extension : float, optional
+        How far down to extend the grey box (in figure coordinates), default 0.005.
+    big_arrow_horizontal_offset : float, optional
+        Horizontal offset for the "Extract Coefficients" arrow and label (in figure coordinates), default 0.005.
+    grey_box_outline_kwargs : dict or None, optional
+        Keyword arguments for the grey box outline/edge. If None, no outline is drawn. 
+        Common options include: {'edgecolor': 'black', 'linewidth': 2, 'linestyle': '--'}, default {'edgecolor': 'black', 'linewidth': 3, 'linestyle': ':'}.
+    title_pad : float, optional
+        Vertical padding/offset for all plot titles, default 20.
+    xlabel_pad : float, optional
+        Padding between x-axis tick labels and x-axis titles for all plots, default 4.
+    
+    Returns
+    -------
+    dict
+        Dictionary containing the figure, axes, and data.
     """
     import numpy as np
     import matplotlib.pyplot as plt
     import seaborn as sns
     from matplotlib import gridspec
-    from matplotlib.patches import FancyArrowPatch
+    from matplotlib.patches import FancyArrowPatch, Rectangle
     import pandas as pd
 
     fig = plt.figure(figsize=figsize)
@@ -2636,6 +2742,9 @@ def plot_variant_sensitization_schematic(
     Xwt = wtvariants_to_vep_linear_model_out['X_wt_clean'].iloc[0:n_haplotypes, :].copy()
     cols_with_1 = Xwt.columns[(Xwt == 1).any(axis=0)]
     Xwt = Xwt[cols_with_1].iloc[:, :n_wt_variants]
+    if replace_haplotype_prefix:
+        Xwt.index = [f"Hap{i+1}"+":"+x.split(":")[-1] for i, x in enumerate(Xwt.index)]
+
     Xwt_with_extra, annot = add_extra_row_col(Xwt, fill_value=np.nan, annot_type="int")
 
     sns.heatmap(
@@ -2649,9 +2758,9 @@ def plot_variant_sensitization_schematic(
         linecolor=linecolor,
         **plot1_kwargs
     )
-    axes[0].set_xlabel("WT Variant", fontsize=12)
+    axes[0].set_xlabel("WT Variant", fontsize=12, labelpad=xlabel_pad)
     axes[0].set_ylabel("Haplotype", fontsize=12)
-    axes[0].set_title("Binarized WT Variant Matrix", fontsize=14, pad=12)
+    axes[0].set_title(plot1_title, fontsize=14, pad=title_pad)
     axes[0].xaxis.set_label_position('top')
     axes[0].xaxis.tick_top()
 
@@ -2677,23 +2786,29 @@ def plot_variant_sensitization_schematic(
         cmap=plot2_cmap,
         **plot2_kwargs
     )
-    axes[1].set_xlabel("Clinical Variant", fontsize=12)
+    axes[1].set_xlabel("Clinical Variant", fontsize=12, labelpad=xlabel_pad)
     axes[1].set_ylabel(None, fontsize=12)
-    axes[1].set_title("VEP Matrix", fontsize=14, pad=12)
+    axes[1].set_title(plot2_title, fontsize=14, pad=title_pad)
     axes[1].xaxis.set_label_position('top')
     axes[1].xaxis.tick_top()
     axes[1].set_yticklabels([])
 
     # Third heatmap: WT x Clinical Variant Interaction Score Matrix
-    coef_matrix_abs = wtvariants_to_vep_linear_model_out['coef_matrix_abs'].copy()
+    coef_matrix_abs = wtvariants_to_vep_linear_model_out['coef_matrix_signed'].copy()
     coef_matrix_abs = coef_matrix_abs.iloc[:n_wt_variants, :n_clinical_variants]
     coef_matrix_abs.columns = coef_matrix_abs.columns.str.split(":").str[-1]
     coef_matrix_abs.index = coef_matrix_abs.index.str.split(":").str[-1]
     coef_matrix_abs *= coef_matrix_scale
     coef_matrix_abs = coef_matrix_abs.clip(upper=1)
+
+    if "vmin" not in plot3_kwargs and "vmax" not in plot3_kwargs:
+        plot3_kwargs["vmin"] = -coef_matrix_abs.abs().max().max()
+        plot3_kwargs["vmax"] = coef_matrix_abs.abs().max().max()
+ 
+
     # Set values below coef_min to 0
     if coef_matrix_min is not None:
-        coef_matrix_abs[coef_matrix_abs < coef_matrix_min] = 0
+        coef_matrix_abs[coef_matrix_abs.abs() < coef_matrix_min] = 0
 
     
     coef_matrix_abs_with_extra, annot_coef = add_extra_row_col(coef_matrix_abs, 
@@ -2708,8 +2823,7 @@ def plot_variant_sensitization_schematic(
 
     sns.heatmap(
         coef_matrix_abs_with_extra,
-        annot=annot_coef_numeric,
-        # fmt=".1e",
+        annot=annot_coef_numeric, 
         cbar=False,
         ax=axes[2],
         linewidths=linewidths,
@@ -2717,14 +2831,56 @@ def plot_variant_sensitization_schematic(
         cmap=plot3_cmap,
         **plot3_kwargs
     )
-    axes[2].set_xlabel("Clinical Variant", fontsize=12)
+    axes[2].set_xlabel("Clinical Variant", fontsize=12, labelpad=xlabel_pad)
     axes[2].set_ylabel("WT Variant", fontsize=12)
-    axes[2].set_title("WT x Clinical Variant Interaction Scores", fontsize=14, pad=12)
+    axes[2].set_title(plot3_title, fontsize=14, pad=title_pad)
     axes[2].xaxis.set_label_position('top')
     axes[2].xaxis.tick_top()
 
     # Remove yticklabels for the second plot for visual clarity
     axes[1].set_yticklabels([])
+
+    # Add grey box around first two plots if requested
+    if add_grey_box:
+        # Get the positions of the first two axes in figure coordinates
+        pos1 = axes[0].get_position()
+        pos2 = axes[1].get_position()
+        
+        # Calculate the bounding box that encompasses both plots
+        # Use the extension parameters to control box size on all sides
+        x_min = min(pos1.x0, pos2.x0) - grey_box_left_extension
+        x_max = max(pos1.x1, pos2.x1) + grey_box_right_extension
+        y_min = min(pos1.y0, pos2.y0) - grey_box_bottom_extension
+        y_max = max(pos1.y1, pos2.y1) + grey_box_top_extension
+        
+        # Add some padding around the plots
+        padding = 0.02
+        x_min -= padding
+        x_max += padding
+        y_min -= padding
+        y_max += padding
+        
+        # Create the grey box and add it to the figure
+        grey_box_kwargs = {
+            'facecolor': grey_box_color,
+            'alpha': grey_box_alpha,
+            'zorder': -10,  # Place far behind the plots
+            'transform': fig.transFigure
+        }
+        
+        # Add outline kwargs if provided
+        if grey_box_outline_kwargs is not None:
+            grey_box_kwargs.update(grey_box_outline_kwargs)
+        else:
+            grey_box_kwargs['edgecolor'] = 'none'
+        
+        grey_box = Rectangle(
+            (x_min, y_min),
+            x_max - x_min,
+            y_max - y_min,
+            **grey_box_kwargs
+        )
+        fig.patches.append(grey_box)
 
     # Add arrows between the first and second plots, aligned with each row
     fig.canvas.draw()
@@ -2778,8 +2934,12 @@ def plot_variant_sensitization_schematic(
     shrinkA = 10 * big_arrow_width
     shrinkB = 10 * big_arrow_width
 
+    # Apply horizontal offset to the arrow and label positions
+    x1_fig_frac_offset = x1_fig_frac + big_arrow_horizontal_offset
+    x2_fig_frac_offset = x2_fig_frac + big_arrow_horizontal_offset
+    
     big_arrow = FancyArrowPatch(
-        (x1_fig_frac, y1_fig_frac), (x2_fig_frac, y2_fig_frac),
+        (x1_fig_frac_offset, y1_fig_frac), (x2_fig_frac_offset, y2_fig_frac),
         transform=fig.transFigure,
         arrowstyle=arrowstyle,
         color="black",
@@ -2793,7 +2953,7 @@ def plot_variant_sensitization_schematic(
     fig.patches.append(big_arrow)
 
     # Add a label above the big arrow
-    label_x = (x1_fig_frac + x2_fig_frac) / 2
+    label_x = (x1_fig_frac_offset + x2_fig_frac_offset) / 2
     label_y = max(y1_fig_frac, y2_fig_frac) + 0.2 * big_arrow_height
     fig.text(
         label_x,

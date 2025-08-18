@@ -225,6 +225,10 @@ def merge_vep(save_dir = None,
         
         # Check if reformatted mutant is in haplotype string
         vep_df['mutant_in_haplotype'] = vep_df.apply(lambda x: _reformat_mutant(x[col_map['mutant']]) in x['haplotype'], axis=1)
+
+        # Add site column to get unique identifiers for each variant
+        vep_df['site'] = vep_df['protein'] + ":" + vep_df['mutant'] 
+
         assert len(vep_df)>0, "No VEP data found"
         if add_metadata:
             if all(col in vep_df.columns for col in [col_map['protein'], col_map['mutant']]):

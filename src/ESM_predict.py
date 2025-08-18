@@ -299,11 +299,15 @@ def main(
         print(f">1 scoring_strategy provided. Using only: '{scoring_strategy}'")
 
 
+    all_model_names = []
+
+
     # inference for each model
     for model_loc in model_location:
         
         # get model name
         model_name = _get_model_name(model_loc)
+        all_model_names += [model_name]
         
         # Load the model
         model, alphabet = load_model(model_loc, 
@@ -478,18 +482,16 @@ def main(
                     axis=1,
                 )
     # Check if there are any predictions
-    if df.dropna(subset=[model_name], how="all").empty:
+    if  df.dropna(subset=all_model_names, how="all").empty:
         if verbose>1:
-            print(f"No predictions generated for {model_name}. Skipping file save.")
+            print(f"No predictions generated for {" | ".join(all_model_names)}. Skipping file save.")
     # Save the results
     else:
         if verbose>1:
             print(f"Saving results to {dms_output}")
         if dms_output.endswith(".parquet"):
             df.to_parquet(dms_output, 
-                          compression="gzip")
-                
-           
+                            compression="gzip") 
         else:
             df.to_csv(dms_output)
 

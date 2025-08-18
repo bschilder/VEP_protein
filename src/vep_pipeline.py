@@ -155,6 +155,7 @@ def vep_pipeline(prot_df: pd.DataFrame = None,
     assert ens_id_col in prot_df.columns
 
     # Check models
+    models = utils.as_list(models)
     models = _check_models(models)
     
     # Check protein ids
