@@ -1,4 +1,4 @@
-from src.ColabFold.utils import *
+from src.colabfold.utils import *
 import tqdm.notebook
 
 TQDM_BAR_FORMAT = '{l_bar}{bar}| {n_fmt}/{total_fmt} [elapsed: {elapsed} remaining: {remaining}]'

@@ -539,7 +539,7 @@ def plot_contact_map(contact_map,
                      cmap="gnuplot2", 
                      agg_func=np.nanmax,
                      title=None,
-                     cbar_label="Contact score",
+                     cbar_label="Contact Score",
                      x_label="Residue Position",
                      y_label="Residue Position"):
     
