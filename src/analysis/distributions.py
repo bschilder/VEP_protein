@@ -636,7 +636,17 @@ def plot_test_normality(normality_results,
     return {'fig': fig, 'ax': ax, 'data': normality_by_clinsig_prop}
 
 
-def plot_ref_percentile_schematic(ax=None, show=False, barplot_ylim=None, schematic_heights=[0.35, 0.30, 0.35]):
+def plot_ref_percentile_schematic(
+    ax=None, 
+    show=False, 
+    barplot_ylim=None, 
+    schematic_heights=[0.35, 0.30, 0.35], 
+    title_loc="left", 
+    title_fontsize=10,
+    show_xlabel=(True, True), 
+    show_ylabel=(True, True),
+    gradient_granularity=None,
+    ):
     """
     Plot a schematic showing how REF can under- or over-estimate pathogenicity
     using a 3-row grid: top (REF far right), blank, bottom (REF far left).
@@ -654,8 +664,19 @@ def plot_ref_percentile_schematic(ax=None, show=False, barplot_ylim=None, schema
         If provided, (ymin, ymax) to align the schematic's top and bottom with the barplot.
     schematic_heights : list, optional
         Heights of the three schematic subplots as fractions of total height [top, blank, bottom] (default: [0.35, 0.30, 0.35]).
-    schematic_padding : float, optional
-        Padding between the barplot and schematic plots (default: 0.05).
+    title_loc : str, optional
+        Location for the schematic titles (default: "left").
+        Valid options include: "left", "center", "right", "upper left", "upper center", "upper right", etc.
+    title_fontsize : int, optional
+        Fontsize for the schematic titles (default: 10).
+    show_xlabel : tuple of bool, optional
+        Whether to show x-axis labels for the schematics (default: (True, True)).
+        First boolean controls top schematic, second controls bottom schematic.
+    show_ylabel : tuple of bool, optional
+        Whether to show y-axis labels for the schematics (default: (True, True)).
+        First boolean controls top schematic, second controls bottom schematic.
+    gradient_granularity : int or None, optional
+        If provided, controls the number of color steps in the gradient fill. If None, uses full resolution.
 
     Returns
     -------
@@ -667,6 +688,8 @@ def plot_ref_percentile_schematic(ax=None, show=False, barplot_ylim=None, schema
     from matplotlib.colors import LinearSegmentedColormap
     import matplotlib.pyplot as plt
     from matplotlib import gridspec
+    import numpy as np
+    import pandas as pd
 
     x = np.linspace(-3, 3, 500)
     y = np.exp(-0.5 * x**2) / np.sqrt(2 * np.pi)
@@ -675,12 +698,26 @@ def plot_ref_percentile_schematic(ax=None, show=False, barplot_ylim=None, schema
     palette = utils.get_clinsig_palette()
     cmap = LinearSegmentedColormap.from_list("red_blue", [palette["path"], palette["benign"]])
 
-    def gradient_fill(ax, x, y, cmap, alpha=0.5, zorder=1):
+    def gradient_fill(ax, x, y, cmap, alpha=0.5, zorder=1, granularity=None):
         x_norm = (x - x.min()) / (x.max() - x.min())
-        for i in range(len(x) - 1):
-            ax.fill_between(
-                x[i:i+2], y[i:i+2], color=cmap(x_norm[i]), alpha=alpha, zorder=zorder
-            )
+        if granularity is None:
+            # Default: smooth gradient
+            for i in range(len(x) - 1):
+                ax.fill_between(
+                    x[i:i+2], y[i:i+2], color=cmap(x_norm[i]), alpha=alpha, zorder=zorder
+                )
+        else:
+            # Discretize the gradient into 'granularity' bins
+            bins = np.linspace(x.min(), x.max(), granularity + 1)
+            for i in range(granularity):
+                mask = (x >= bins[i]) & (x <= bins[i+1])
+                x_bin = x[mask]
+                y_bin = y[mask]
+                if len(x_bin) < 2:
+                    continue
+                x_norm_bin = (x_bin - x.min()) / (x.max() - x.min())
+                color = cmap((bins[i] - x.min()) / (x.max() - x.min()))
+                ax.fill_between(x_bin, y_bin, color=color, alpha=alpha, zorder=zorder)
 
     # The normal curve's max is about 0.4, min is 0
     # We'll use this to map the barplot's y-axis to the schematic's y-axis
@@ -741,19 +778,25 @@ def plot_ref_percentile_schematic(ax=None, show=False, barplot_ylim=None, schema
 
         # Top subplot: REF far right
         ax_top.plot(x, y, color='black', lw=2)
-        gradient_fill(ax_top, x, y, cmap, alpha=0.7)
+        gradient_fill(ax_top, x, y, cmap, alpha=0.7, granularity=gradient_granularity)
         ref_x = 2.2
         ax_top.axvline(ref_x, color='grey', linestyle='--', lw=2, zorder=10)
         ax_top.text(ref_x-0.1, 0.25, "REF", color='grey', fontsize=10, fontweight=None, va='center', ha='right', rotation=90)
-        ax_top.set_ylabel("Density")
+        if show_ylabel[0]:  # Show ylabel for top schematic if first boolean is True
+            ax_top.set_ylabel("Density")
         ax_top.set_yticks([])
         # fontweight does not apply to LaTeX text; use \mathbf{} for bold in LaTeX
-        ax_top.set_title(r"$\mathbf{VEP_{REF}\ underestimates}$" + "\n" + r"$\mathbf{pathogenicity}$", fontsize=10, loc='center')
-        ax_top.set_xlabel(r"$VEP_{REF}$ percentile")
+        ax_top.set_title(r"$\mathbf{VEP_{REF}\ underestimates}$" + "\n" + r"$\mathbf{pathogenicity}$", 
+                        fontsize=title_fontsize, 
+                        loc=title_loc,
+                        fontweight='bold')
+        if show_xlabel[0]:  # Show xlabel for top schematic if first boolean is True
+            ax_top.set_xlabel(r"$VEP_{REF}$ percentile")
         ax_top.set_xlim(-3, 3)
         ax_top.set_xticks([-3, 0, 3])
         ax_top.set_xticklabels(['0', '50', '100'])
         ax_top.spines['right'].set_visible(False)
+        ax_top.spines['left'].set_visible(False)
         ax_top.spines['top'].set_visible(False)
 
         # Middle subplot: blank space
@@ -761,18 +804,23 @@ def plot_ref_percentile_schematic(ax=None, show=False, barplot_ylim=None, schema
 
         # Bottom subplot: REF far left
         ax_bottom.plot(x, y, color='black', lw=2)
-        gradient_fill(ax_bottom, x, y, cmap, alpha=0.7)
+        gradient_fill(ax_bottom, x, y, cmap, alpha=0.7, granularity=gradient_granularity)
         ref_x = -2.2
         ax_bottom.axvline(ref_x, color='grey', linestyle='--', lw=2, zorder=10)
         ax_bottom.text(ref_x-0.1, 0.25, "REF", color='grey', fontsize=10, fontweight=None, va='center', ha='right', rotation=90)
-        ax_bottom.set_ylabel("Density")
+        if show_ylabel[1]:  # Show ylabel for bottom schematic if second boolean is True
+            ax_bottom.set_ylabel("Density")
         ax_bottom.set_yticks([])
-        ax_bottom.set_title(r"$\mathbf{VEP_{REF}\ overestimates}$" + "\n" + r"$\mathbf{pathogenicity}$", fontsize=10, loc='center')
-        ax_bottom.set_xlabel(r"$VEP_{REF}$ percentile")
+        ax_bottom.set_title(r"$\mathbf{VEP_{REF}\ overestimates}$" + "\n" + r"$\mathbf{pathogenicity}$", 
+                            fontsize=title_fontsize, loc=title_loc,
+                            fontweight='bold')
+        if show_xlabel[1]:  # Show xlabel for bottom schematic if second boolean is True
+            ax_bottom.set_xlabel(r"$VEP_{REF}$ percentile")
         ax_bottom.set_xlim(-3, 3)
         ax_bottom.set_xticks([-3, 0, 3])
         ax_bottom.set_xticklabels(['0', '50', '100'])
         ax_bottom.spines['right'].set_visible(False)
+        ax_bottom.spines['left'].set_visible(False)
         ax_bottom.spines['top'].set_visible(False)
 
         # Hide axis frame, ticks, and labels for the parent axis
@@ -799,14 +847,16 @@ def plot_ref_percentile_schematic(ax=None, show=False, barplot_ylim=None, schema
 
         # Top subplot: REF far right
         ax_top.plot(x, y, color='black', lw=2)
-        gradient_fill(ax_top, x, y, cmap, alpha=0.7)
+        gradient_fill(ax_top, x, y, cmap, alpha=0.7, granularity=gradient_granularity)
         ref_x = 2.2
         ax_top.axvline(ref_x, color='grey', linestyle='--', lw=2, zorder=10)
         ax_top.text(ref_x-0.1, 0.25, "REF", color='grey', fontsize=10, fontweight=None, va='center', ha='right', rotation=90)
-        ax_top.set_ylabel("Density")
+        if show_ylabel[0]:  # Show ylabel for top schematic if first boolean is True
+            ax_top.set_ylabel("Density")
         ax_top.set_yticks([])
-        ax_top.set_title(r"$VEP_{REF}$ underestimates\npathogenicity", fontweight='bold')
-        ax_top.set_xlabel(r"$VEP_{REF}$ percentile")
+        ax_top.set_title(r"$VEP_{REF}$ underestimates\npathogenicity", fontweight='bold', loc=title_loc)
+        if show_xlabel[0]:  # Show xlabel for top schematic if first boolean is True
+            ax_top.set_xlabel(r"$VEP_{REF}$ percentile")
         ax_top.set_xlim(-3, 3)
         ax_top.set_xticks([-3, 0, 3])
         ax_top.set_xticklabels(['0', '50', '100'])
@@ -818,14 +868,18 @@ def plot_ref_percentile_schematic(ax=None, show=False, barplot_ylim=None, schema
 
         # Bottom subplot: REF far left
         ax_bottom.plot(x, y, color='black', lw=2)
-        gradient_fill(ax_bottom, x, y, cmap, alpha=0.7)
+        gradient_fill(ax_bottom, x, y, cmap, alpha=0.7, granularity=gradient_granularity)
         ref_x = -2.2
         ax_bottom.axvline(ref_x, color='grey', linestyle='--', lw=2, zorder=10)
         ax_bottom.text(ref_x-0.1, 0.25, "REF", color='grey', fontsize=10, fontweight=None, va='center', ha='right', rotation=90)
-        ax_bottom.set_ylabel("Density")
+        if show_ylabel[1]:  # Show ylabel for bottom schematic if second boolean is True
+            ax_bottom.set_ylabel("Density")
         ax_bottom.set_yticks([])
-        ax_bottom.set_title(r"$VEP_{REF}$ overestimates\npathogenicity", fontweight='bold')
-        ax_bottom.set_xlabel(r"$VEP_{REF}$ percentile")
+        ax_bottom.set_title(r"$VEP_{REF}$ overestimates\npathogenicity", 
+                            fontweight='bold', 
+                            loc=title_loc)
+        if show_xlabel[1]:  # Show xlabel for bottom schematic if second boolean is True
+            ax_bottom.set_xlabel(r"$VEP_{REF}$ percentile")
         ax_bottom.set_xlim(-3, 3)
         ax_bottom.set_xticks([-3, 0, 3])
         ax_bottom.set_xticklabels(['0', '50', '100'])
@@ -843,18 +897,26 @@ def plot_ref_vep_percentile_stacked_bar(
     groupby_cols=['model_location','protein','clinsig','mutant','scoring_strategy'],
     y='VEP_percentile',
     n_bins=10, 
-    figsize=(9, 4), 
+    figsize=(10, 4), 
     label_padding=0.15, 
     is_ref=True,
     title=r"$VEP_{REF}$ Percentiles Relative to Full $VEP$ Distribution",
     x_label=r"$VEP_{mean}$ Quantile",
     y_label="Proportion of Variants",
     show_arrows=False,
+    show_vertical_arrows=False,
     show_schematic=True,
-    schematic_width_ratio=1.2,
-    barplot_width_ratio=4,
-    schematic_heights=[0.35, 0.30, 0.35],
-    schematic_padding=0.05
+    legend_on_right=True,
+    legend_height_factor=1.5,
+    schematic_width_ratio=1.3,
+    barplot_width_ratio=5,
+    schematic_heights=[0.2, 0.3, 0.2],
+    schematic_padding_left=0.12,
+    schematic_padding_top=0.1,
+    schematic_title_loc="left",
+    show_schematic_xlabel=(False, True),
+    show_schematic_ylabel=(False, False),
+    use_quantile_labels=True
 ):
     """
     Plot a stacked bar plot showing the distribution of REF VEP percentiles
@@ -885,6 +947,15 @@ def plot_ref_vep_percentile_stacked_bar(
         Y-axis label (default: "Proportion of Variants").
     show_arrows : bool, optional
         Whether to show arrows and labels indicating under/overestimation (default: False).
+    show_vertical_arrows : bool, optional
+        Whether to show vertical up/down arrows connecting the barplot to the schematic (default: True).
+    legend_on_right : bool, optional
+        Whether to position the legend on the right side of the plot (default: False).
+        If True, the schematic will be moved further right to make room for the legend.
+    legend_height_factor : float, optional
+        Factor to control the height of the legend proportionally (default: 1.0).
+        If < 1.0, the legend height is shrunk proportionally.
+        If > 1.0, the legend height is grown proportionally.
     show_schematic : bool, optional
         Whether to show a schematic illustration to the right of the plot (default: True).
     schematic_width_ratio : float, optional
@@ -893,8 +964,21 @@ def plot_ref_vep_percentile_stacked_bar(
         Width ratio for the barplot subplot (default: 4).
     schematic_heights : list, optional
         Heights of the three schematic subplots as fractions of total height [top, blank, bottom] (default: [0.35, 0.30, 0.35]).
-    schematic_padding : float, optional
-        Padding between the barplot and schematic plots (default: 0.05).
+    schematic_padding_left : float, optional
+        Horizontal padding between the barplot and schematic plots (default: 0.05).
+    schematic_padding_top : float, optional
+        Vertical padding above the schematic column, moving it downward (default: 0.0).
+    schematic_title_loc : str, optional
+        Location for the schematic titles (default: "left").
+        Valid options include: "left", "center", "right", "upper left", "upper center", "upper right", etc.
+    show_schematic_xlabel : tuple of bool, optional
+        Whether to show x-axis labels for the schematics (default: (True, True)).
+        First boolean controls top schematic, second controls bottom schematic.
+    show_schematic_ylabel : tuple of bool, optional
+        Whether to show y-axis labels for the schematics (default: (True, True)).
+        First boolean controls top schematic, second controls bottom schematic.
+    use_quantile_labels : bool, optional
+        Whether to use quantile labels ("Q1", "Q2", etc.) for x-axis tick labels (default: True).
     """
     from matplotlib import cm
     import matplotlib.pyplot as plt
@@ -908,14 +992,19 @@ def plot_ref_vep_percentile_stacked_bar(
     data = data.copy()
     data['VEP_binned'] = vep_binned
 
-    # Create bin range labels as strings, e.g. "0.12–0.34"
-    bin_labels = []
-    for i in range(len(bin_edges) - 1):
-        left = bin_edges[i]
-        right = bin_edges[i + 1]
-        left_str = f"{left:.2g}" if abs(left) < 1e4 else f"{left:.2e}"
-        right_str = f"{right:.2g}" if abs(right) < 1e4 else f"{right:.2e}"
-        bin_labels.append(f"{left_str}\n→\n{right_str}")
+    # Create bin labels based on use_quantile_labels parameter
+    if use_quantile_labels:
+        # Use quantile labels like "Q1", "Q2", etc.
+        bin_labels = [f"Q{i+1}" for i in range(n_bins)]
+    else:
+        # Create bin range labels as strings, e.g. "0.12–0.34"
+        bin_labels = []
+        for i in range(len(bin_edges) - 1):
+            left = bin_edges[i]
+            right = bin_edges[i + 1]
+            left_str = f"{left:.2g}" if abs(left) < 1e4 else f"{left:.2e}"
+            right_str = f"{right:.2g}" if abs(right) < 1e4 else f"{right:.2e}"
+            bin_labels.append(f"{left_str}\n→\n{right_str}")
 
     # Map integer bin codes to string labels
     data['VEP_binned_label'] = data['VEP_binned'].map(lambda x: bin_labels[int(x)] if pd.notnull(x) else np.nan)
@@ -950,39 +1039,110 @@ def plot_ref_vep_percentile_stacked_bar(
     if show_schematic:
         import matplotlib.gridspec as gridspec
         fig = plt.figure(figsize=figsize)
-        # width_ratios: [main plot, schematic]
-        gs = gridspec.GridSpec(1, 2, width_ratios=[barplot_width_ratio, schematic_width_ratio], wspace=schematic_padding)
-        ax = fig.add_subplot(gs[0])
-        schematic_ax = fig.add_subplot(gs[1])
+        
+        if legend_on_right:
+            # When legend is on right, create 3 columns: barplot, legend, schematic
+            legend_width_ratio = 0.8  # Dedicated space for legend
+            gs = gridspec.GridSpec(1, 3, width_ratios=[barplot_width_ratio, legend_width_ratio, schematic_width_ratio], wspace=schematic_padding_left)
+            ax = fig.add_subplot(gs[0])
+            legend_ax = fig.add_subplot(gs[1])  # Dedicated axis for legend
+            schematic_ax = fig.add_subplot(gs[2])
+            
+            # Hide the legend axis (it's just for spacing)
+            legend_ax.set_xticks([])
+            legend_ax.set_yticks([])
+            legend_ax.spines['top'].set_visible(False)
+            legend_ax.spines['right'].set_visible(False)
+            legend_ax.spines['bottom'].set_visible(False)
+            legend_ax.spines['left'].set_visible(False)
+        else:
+            # Original layout: 2 columns - barplot and schematic
+            gs = gridspec.GridSpec(1, 2, width_ratios=[barplot_width_ratio, schematic_width_ratio], wspace=schematic_padding_left)
+            ax = fig.add_subplot(gs[0])
+            schematic_ax = fig.add_subplot(gs[1])
+            legend_ax = None
+        
+        # Apply top padding to schematic column if specified
+        if schematic_padding_top > 0:
+            # Adjust the schematic axis position to add top padding
+            schematic_pos = schematic_ax.get_position()
+            new_y0 = schematic_pos.y0 - schematic_padding_top
+            new_height = schematic_pos.height
+            schematic_ax.set_position([schematic_pos.x0, new_y0, schematic_pos.width, new_height])
     else:
         fig, ax = plt.subplots(figsize=figsize)
         schematic_ax = None
+        legend_ax = None
 
     stacked_prop.plot(
         kind='bar',
         stacked=True,
         ax=ax,
         color=reversed_colors,
-        width=0.95
+        width=0.95,
+        legend=False  # Disable automatic legend to prevent duplication
     )
     ax.set_xlabel(x_label)
     ax.set_ylabel(y_label)
     ax.set_title(title)
     
     # Add grey dotted horizontal line at y=0.5 across the entire plot
-    ax.axhline(y=0.5, color='grey', linestyle=':', linewidth=2, alpha=0.7)
+    ax.axhline(y=0.5, color='grey', linestyle=':', linewidth=2, alpha=0.7, zorder=10, xmax=2)
     
     # Ensure y-axis is constrained to 0-1 range for proportions
     ax.set_ylim(0, 1)
     handles, legend_labels = ax.get_legend_handles_labels()
-    ax.legend(
-        handles[::-1],
-        reversed_labels,
-        title=r"$VEP_{REF}$" + "\n" + "percentile bin",
-        bbox_to_anchor=(-0.15, 1),
-        loc='upper right',
-        borderaxespad=0.0
-    )
+    
+    if legend_on_right:
+        # Legend in the dedicated legend axis (middle column)
+        legend_ax.legend(
+            handles[::-1],
+            reversed_labels,
+            title=r"$VEP_{REF}$" + "\n" + "percentile bin",
+            loc='upper center',
+            borderaxespad=0.0,
+            bbox_to_anchor=(0.4, .97),  # Add a bit of padding to the top 
+        )
+    else:
+        # Legend on the left side of the barplot (original behavior)
+        # Calculate legend position and height based on height factor
+        if legend_height_factor != 1.0:
+            # Adjust y-position based on height factor
+            # For height_factor > 1, move legend down; for < 1, move it up
+            y_offset = (legend_height_factor - 1.0) * 0.5  # Scale factor for y-position adjustment
+            y_pos = 1.0 + y_offset
+        else:
+            y_pos = 1.0
+        
+        # Create legend with height adjustment
+        if legend_height_factor != 1.0:
+            # Calculate custom height for legend
+            # Use bbox_to_anchor with height adjustment
+            legend = ax.legend(
+                handles[::-1],
+                reversed_labels,
+                title=r"$VEP_{REF}$" + "\n" + "percentile bin",
+                bbox_to_anchor=(-0.15, y_pos),
+                loc='upper right',
+                borderaxespad=0.0,
+                # Adjust legend height by modifying the layout
+                ncol=1,  # Ensure single column for height control
+                frameon=True  # Keep frame for better height control
+            )
+            
+            # Apply height scaling by adjusting the legend's internal spacing
+            if hasattr(legend, '_legend_box'):
+                legend._legend_box.sep = legend._legend_box.sep * legend_height_factor
+        else:
+            # Default legend without height adjustment
+            legend = ax.legend(
+                handles[::-1],
+                reversed_labels,
+                title=r"$VEP_{REF}$" + "\n" + "percentile bin",
+                bbox_to_anchor=(-0.15, y_pos),
+                loc='upper right',
+                borderaxespad=0.0
+            )
     ax.yaxis.set_major_formatter(plt.FuncFormatter(lambda y, _: '{:.2f}'.format(y)))
     ax.set_xticklabels(ax.get_xticklabels(), rotation=0)
 
@@ -994,14 +1154,19 @@ def plot_ref_vep_percentile_stacked_bar(
     plt.tight_layout()
 
     # --- Add up/down arrows to the right of the barplot that align with the schematic ---
-    if show_schematic:
+    if show_schematic and show_vertical_arrows:
         # Get axis limits for y
         ymin, ymax = ax.get_ylim()
         ycenter = (ymin + ymax) / 2  # Center of the barplot
         
-        # Set the x position for the arrows just to the right of the plot
-        xlim = ax.get_xlim()
-        x_arrow = xlim[1] + 0.05
+        if legend_on_right:
+            # When legend is on right, arrows go between barplot and legend
+            xlim = ax.get_xlim()
+            x_arrow = xlim[1] + 0.05
+        else:
+            # Original behavior: arrows go between barplot and schematic
+            xlim = ax.get_xlim()
+            x_arrow = xlim[1] + 0.05
         
         # Length of arrows - extend almost to top and bottom with small gap in middle
         arrow_gap = (ymax - ymin) * 0.05  # Small gap in the middle
@@ -1027,45 +1192,75 @@ def plot_ref_vep_percentile_stacked_bar(
         )
         
         # Add horizontal dotted lines connecting schematics to barplot
-        # Get the schematic axis positions to draw connecting lines
         if show_schematic and schematic_ax is not None:
-            # Get the right edge of the barplot
-            barplot_right = ax.get_position().x1
-            
-            # Get the left edge of the schematic
-            schematic_left = schematic_ax.get_position().x0
-            
-            # Get the y-positions of the schematic subplots
-            schematic_pos = schematic_ax.get_position()
-            schematic_y0, schematic_height = schematic_pos.y0, schematic_pos.height
-            
-            # Calculate y-positions for the connecting lines
-            # Top schematic: connect from middle of top schematic to barplot
-            top_y = schematic_y0 + schematic_height * (1 - schematic_heights[0]/2)
-            # Bottom schematic: connect from middle of bottom schematic to barplot  
-            bottom_y = schematic_y0 + schematic_height * schematic_heights[2]/2
-            
-            # Draw horizontal dotted lines from barplot right edge to schematic left edge
-            # Use data coordinates for x-axis and transform y-positions to data coordinates
-            x_data_right = ax.get_xlim()[1]  # Right edge of barplot data
-            
-            # Transform the y-positions from display coordinates to data coordinates
-            # We want the lines to align with the title positions in each schematic
-            # Top schematic title is roughly at 75% of its height
-            top_title_y = schematic_y0 + schematic_height * (1 - schematic_heights[0] * 0.25)
-            # Bottom schematic title is roughly at 25% of its height  
-            bottom_title_y = schematic_y0 + schematic_height * schematic_heights[2] * 0.75
-            
-            # Convert these display coordinates to data coordinates for the barplot
-            top_data_y = ax.transData.inverted().transform((0, top_title_y))[1]
-            bottom_data_y = ax.transData.inverted().transform((0, bottom_title_y))[1]
-            
-            # Draw lines from barplot right edge to arrows
-            ax.plot([x_data_right, x_arrow], [top_data_y, top_data_y], color='gray', linestyle=':', alpha=0.7, linewidth=1.5)
-            ax.plot([x_data_right, x_arrow], [bottom_data_y, bottom_data_y], color='gray', linestyle=':', alpha=0.7, linewidth=1.5)
-        
-        # Expand the xlim to make sure arrows and labels are visible
-        ax.set_xlim(xlim[0], x_arrow + 0.6)
+            if legend_on_right:
+                # When legend is on right, lines go from barplot to legend area
+                # Get the right edge of the barplot
+                barplot_right = ax.get_position().x1
+                
+                # Get the y-positions of the schematic subplots for reference
+                schematic_pos = schematic_ax.get_position()
+                schematic_y0, schematic_height = schematic_pos.y0, schematic_pos.height
+                
+                # Calculate y-positions for the connecting lines
+                # Top schematic: connect from middle of top schematic to barplot
+                top_y = schematic_y0 + schematic_height * (1 - schematic_heights[0]/2)
+                # Bottom schematic: connect from middle of bottom schematic to barplot  
+                bottom_y = schematic_y0 + schematic_height * schematic_heights[2]/2
+                
+                # Transform the y-positions from display coordinates to data coordinates
+                top_title_y = schematic_y0 + schematic_height * (1 - schematic_heights[0] * 0.25)
+                bottom_title_y = schematic_y0 + schematic_height * schematic_heights[2] * 0.75
+                
+                # Convert these display coordinates to data coordinates for the barplot
+                top_data_y = ax.transData.inverted().transform((0, top_title_y))[1]
+                bottom_data_y = ax.transData.inverted().transform((0, bottom_title_y))[1]
+                
+                # Draw lines from barplot right edge to arrows (in legend area)
+                ax.plot([barplot_right, x_arrow], [top_data_y, top_data_y], color='gray', linestyle=':', alpha=0.7, linewidth=1.5)
+                ax.plot([barplot_right, x_arrow], [bottom_data_y, bottom_data_y], color='gray', linestyle=':', alpha=0.7, linewidth=1.5)
+                
+                # Expand the xlim to make sure arrows and labels are visible
+                ax.set_xlim(xlim[0], x_arrow + 0.6)
+            else:
+                # Original behavior for 2-column layout
+                # Get the right edge of the barplot
+                barplot_right = ax.get_position().x1
+                
+                # Get the left edge of the schematic
+                schematic_left = schematic_ax.get_position().x0
+                
+                # Get the y-positions of the schematic subplots
+                schematic_pos = schematic_ax.get_position()
+                schematic_y0, schematic_height = schematic_pos.y0, schematic_pos.height
+                
+                # Calculate y-positions for the connecting lines
+                # Top schematic: connect from middle of top schematic to barplot
+                top_y = schematic_y0 + schematic_height * (1 - schematic_heights[0]/2)
+                # Bottom schematic: connect from middle of bottom schematic to barplot  
+                bottom_y = schematic_y0 + schematic_height * schematic_heights[2]/2
+                
+                # Draw horizontal dotted lines from barplot right edge to schematic left edge
+                # Use data coordinates for x-axis and transform y-positions to data coordinates
+                x_data_right = ax.get_xlim()[1]  # Right edge of barplot data
+                
+                # Transform the y-positions from display coordinates to data coordinates
+                # We want the lines to align with the title positions in each schematic
+                # Top schematic title is roughly at 75% of its height
+                top_title_y = schematic_y0 + schematic_height * (1 - schematic_heights[0] * 0.25)
+                # Bottom schematic title is roughly at 25% of its height  
+                bottom_title_y = schematic_y0 + schematic_height * schematic_heights[2] * 0.75
+                
+                # Convert these display coordinates to data coordinates for the barplot
+                top_data_y = ax.transData.inverted().transform((0, top_title_y))[1]
+                bottom_data_y = ax.transData.inverted().transform((0, bottom_title_y))[1]
+                
+                # Draw lines from barplot right edge to arrows
+                ax.plot([x_data_right, x_arrow], [top_data_y, top_data_y], color='gray', linestyle=':', alpha=0.7, linewidth=1.5)
+                ax.plot([x_data_right, x_arrow], [bottom_data_y, bottom_data_y], color='gray', linestyle=':', alpha=0.7, linewidth=1.5)
+                
+                # Expand the xlim to make sure arrows and labels are visible
+                ax.set_xlim(xlim[0], x_arrow + 0.6)
 
     # --- Optionally add arrows and labels along the y-axis, outside the right margin ---
     if show_arrows:
@@ -1133,7 +1328,7 @@ def plot_ref_vep_percentile_stacked_bar(
             except Exception:
                 pass
         # Now, fill schematic_ax with the schematic, using the full vertical space
-        plot_ref_percentile_schematic(ax=schematic_ax, show=False, barplot_ylim=barplot_ylim, schematic_heights=schematic_heights)
+        plot_ref_percentile_schematic(ax=schematic_ax, show=False, barplot_ylim=barplot_ylim, schematic_heights=schematic_heights, title_loc=schematic_title_loc, show_xlabel=show_schematic_xlabel, show_ylabel=show_schematic_ylabel)
 
     plt.show()
     # Return both axes if schematic is shown

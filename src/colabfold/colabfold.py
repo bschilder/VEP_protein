@@ -283,6 +283,7 @@ def get_contact_map(structure,
 def import_contact_maps(
     pdb_files,
     return_distance_map=True,
+    return_raw_distance_map=False,
     continuous=True,
     as_dict=True,
     verbose=True,
@@ -298,6 +299,7 @@ def import_contact_maps(
     Args:
         pdb_files (list of str): List of paths to PDB files.
         return_distance_map (bool, optional): If True, return the normalized distance map instead of a contact map. Default is True.
+        return_raw_distance_map (bool, optional): If True, return the raw distance map instead of a contact map. Default is False.
         continuous (bool, optional): If True, use continuous scoring for contact map; otherwise, use binary scoring. Default is True.
         as_dict (bool, optional): If True, return a dictionary mapping each PDB file path to its corresponding contact map (numpy.ndarray). Default is True.
         verbose (bool, optional): If True, print progress and information. Default is True.
@@ -348,6 +350,7 @@ def import_contact_maps(
         contact_maps[pdb_file] = get_contact_map(
             structure,
             return_distance_map=return_distance_map,
+            return_raw_distance_map=return_raw_distance_map,
             continuous=continuous,
             verbose=verbose,
             **kwargs
@@ -2795,10 +2798,8 @@ def compute_highlight_scores(
 
 
 def plot_contact_map_subplots(
+    contact_maps=None, 
     axes=None,
-    contact_maps=None,
-    most_diff_contact_maps=None,
-    max_subplots=6,
     split_ref_haplotype=False,
     show_diag=False,
     bin_matrix=None,
@@ -2896,7 +2897,7 @@ def plot_contact_map_subplots(
     zoom_in_cfg = {**_default_zoom_in_params, **zoom_in_params}
 
     # --- Calculate grid shape robustly ---
-    n_plots = max_subplots
+    n_plots = len(contact_maps)
     if ncols is None or ncols < 1:
         ncols = 3
     nrows = math.ceil(n_plots / ncols)
@@ -2921,29 +2922,15 @@ def plot_contact_map_subplots(
         split_ref_haplotype = False
         highlight_diff_regions = False
         show_zoom_in = False
-
-    # Determine items to plot
-    if split_ref_haplotype and ref_map is not None:
-        items_to_plot = list(most_diff_contact_maps.items())
-    elif ref_map is not None:
-        items_to_plot = [(ref_key, ref_map)] + list(most_diff_contact_maps.items())
-    else:
-        # No reference: plot all available maps (from most_diff_contact_maps or contact_maps)
-        if most_diff_contact_maps is not None and len(most_diff_contact_maps) > 0:
-            items_to_plot = list(most_diff_contact_maps.items())
-        elif contact_maps is not None and len(contact_maps) > 0:
-            items_to_plot = list(contact_maps.items())
-        else:
-            items_to_plot = []
-    items_to_plot = items_to_plot[:max_subplots]
+ 
 
     highlight_boxes = []  # List of (color, [(x, y, w), ...])
 
     # For zoom-in: store the highlight region coordinates for each subplot
     # We will store the *first* highlight region for each subplot, matching the highlight box
-    zoom_in_regions = [None] * len(items_to_plot)
+    zoom_in_regions = [None] * len(contact_maps)
 
-    for i, (name, contact_map) in enumerate(tqdm(items_to_plot)):
+    for i, (name, contact_map) in enumerate(tqdm(contact_maps)):
         if i >= len(axes):
             break  # Prevent IndexError if more items than axes
         if not show_diag:
@@ -3030,7 +3017,7 @@ def plot_contact_map_subplots(
                 color = highlight_color
             else:
                 color_idx = i - 1  # i=0 is REF, so subtract 1
-                better_cmap = mpl.cm.get_cmap(highlight_palette, max(1, len(items_to_plot)-1))
+                better_cmap = mpl.cm.get_cmap(highlight_palette, max(1, len(contact_maps)-1))
                 color = mpl.colors.to_hex(better_cmap(color_idx % better_cmap.N))
 
             # Prepare the two matrices to compare
@@ -3198,7 +3185,7 @@ def plot_contact_map_subplots(
     # --- ZOOM-IN INSET: for each subplot, if requested and region available ---
     if show_zoom_in and ref_map is not None:
         import matplotlib.colors as mcolors
-        for i, (name, contact_map) in enumerate(items_to_plot):
+        for i, (name, contact_map) in enumerate(contact_maps):
             region = zoom_in_regions[i]
             if region is None:
                 continue
@@ -3353,7 +3340,7 @@ def plot_contact_map_subplots(
                 inset_ax.add_patch(rect_inset)
  
     # Hide any unused axes (if there are more axes than items_to_plot)
-    for j in range(len(items_to_plot), len(axes)):
+    for j in range(len(contact_maps), len(axes)):
         axes[j].set_visible(False)
 
     plt.subplots_adjust(hspace=hspace, wspace=wspace)
@@ -3572,9 +3559,7 @@ def plot_most_different_contact_maps(
     # Call the new function in place of the old code
     plot_contact_map_subplots(
         axes=axes,
-        contact_maps=contact_maps,
-        most_diff_contact_maps=most_diff_contact_maps,
-        max_subplots=max_subplots,
+        contact_maps=contact_maps, 
         split_ref_haplotype=split_ref_haplotype,
         show_diag=show_diag,
         bin_matrix=bin_matrix,

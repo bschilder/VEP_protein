@@ -35,6 +35,7 @@ def _get_default_save_dir(save_dir):
 
 def list_vep_files(save_dir = None,
                    scoring_strategy: Literal["wt-marginals", "masked-marginals", "pseudo-ppl"] = ["*"],
+                   model_location: Literal["esm2_t33_650M_UR50D", "esm2_t33_650M_UR50S"] = ["*"],
                    save_format = "parquet",
                    as_df=False,
                    verbose=True
@@ -61,7 +62,7 @@ def list_vep_files(save_dir = None,
     for ss in tqdm(scoring_strategy, 
                    desc="Finding VEP files"):
          all_files.extend(glob.glob(
-            os.path.join(save_dir, "**", f"{ss}.{save_format}"), 
+            os.path.join(save_dir,model_location, "**", f"{ss}.{save_format}"), 
                          recursive=True))
     if len(all_files) == 0:
         raise FileNotFoundError(f"No {save_format} files found in {save_dir}")
@@ -1142,7 +1143,7 @@ def compute_precision_recall(vep_df,
                                             ascending=[False, True])
     
     # Get unique combinations of model_location and scoring_strategy
-    model_combos = vep_df.groupby(groupby_cols).size().reset_index()[groupby_cols]
+    model_combos = vep_df.groupby(groupby_cols, observed=True).size().reset_index()[groupby_cols]
 
     if binarize:
         if verbose:
@@ -1207,7 +1208,7 @@ def compute_precision_recall(vep_df,
     if agg_cols is not None:
         agg_cols = utils.as_list(agg_cols)
         remaining_cols = list(set(groupby_cols) - set(agg_cols))
-        vep_pr = vep_pr.groupby(remaining_cols).agg({'accuracy':'mean','auc': 'mean','coef':'mean','intercept':'mean','n_samples':'sum'}).reset_index()
+        vep_pr = vep_pr.groupby(remaining_cols, observed=True).agg({'accuracy':'mean','auc': 'mean','coef':'mean','intercept':'mean','n_samples':'sum'}).reset_index()
 
     # Add back in extra cols
     if 'protein_sequence_len' not in vep_pr.columns and 'protein_sequence' in vep_pr.columns:
@@ -1931,7 +1932,7 @@ def compute_vep_mmr(df,
     mmr_results = {}
 
     # Get unique combinations of model_location and scoring_strategy
-    model_strategy_combos = df.loc[df['mutant_in_haplotype']==False].groupby(['model_location', 'scoring_strategy']).size().reset_index()[['model_location', 'scoring_strategy']]
+    model_strategy_combos = df.loc[df['mutant_in_haplotype']==False].groupby(['model_location', 'scoring_strategy'], observed=True).size().reset_index()[['model_location', 'scoring_strategy']]
 
     for _, row in tqdm(model_strategy_combos.iterrows(),
                        total=len(model_strategy_combos),
@@ -1979,7 +1980,7 @@ def compute_vep_mmr(df,
             mmr_results_df = pd.concat([mmr_results_df, new_row], ignore_index=True)
 
     # Compute mean rank for each mutant
-    mmr_results_df['mean_rank'] = mmr_results_df.groupby('mutant')['rank'].transform('mean')
+    mmr_results_df['mean_rank'] = mmr_results_df.groupby('mutant', observed=True)['rank'].transform('mean')
 
     # Sort by mean rank
     mmr_results_df = mmr_results_df.sort_values('mean_rank')
@@ -2351,7 +2352,7 @@ def plot_vep_by_superpop(
         plt.suptitle(
             f"Distribution of VEP scores by Super Population"
             f"\n• Haplotypes: {plot_df['haplotype'].nunique()}"
-            f"\n• Variants: {plot_df.groupby('clinsig')['mutant'].nunique().to_dict()}"
+            f"\n• Variants: {plot_df.groupby('clinsig', observed=True)['mutant'].nunique().to_dict()}"
             f"\n• Proteins (Genes): "
             f"{plot_df['protein'].iloc[0] if plot_df['protein'].nunique() == 1 else plot_df['protein'].nunique()} "
             f"({plot_df['GENEINFO'].iloc[0].split(':')[0] if plot_df['GENEINFO'].nunique() == 1 else plot_df['GENEINFO'].nunique()})"
@@ -2398,7 +2399,7 @@ def extract_id_cols(df,
         if verbose:
             print(f"Extracting {term} IDs.")
         # Get results for unique values
-        unique_results = extracted[i].groupby(level=0).agg(list)
+        unique_results = extracted[i].groupby(level=0, observed=True).agg(list)
         # Map back to original dataframe
         df.loc[:,term] = df[input_col].map(lambda x: unique_results.get(unique_indices[x], []))
         if verbose:
@@ -2423,7 +2424,7 @@ def filter_top_mutants(vep_df,
         within_site_var_sub = within_site_var.loc[within_site_var[search_col[1]].str.lower().str.contains("|".join(search_terms))]
 
     if mutants_per_group is not None:
-        top_mutants = within_site_var_sub.groupby(["clinsig"]).apply(lambda x: x.head(mutants_per_group))["mutant"]
+        top_mutants = within_site_var_sub.groupby(["clinsig"], observed=True).apply(lambda x: x.head(mutants_per_group))["mutant"]
     else:
         top_mutants = within_site_var_sub["mutant"].unique()[:top_n]
     print(top_mutants.shape[0],"top mutants selected")
@@ -2460,14 +2461,14 @@ def get_mondo_within_site_var(vep_df,
 
 
     groupby_cols = [group_col,split_col] + groupby_cols
-    within_site_var = vep_df.explode(split_col).reset_index(drop=True).groupby(groupby_cols).agg({"VEP":"var",  "haplotype":"nunique"} ).reset_index().sort_values(by="VEP", ascending=False)
+    within_site_var = vep_df.explode(split_col).reset_index(drop=True).groupby(groupby_cols, observed=True).agg({"VEP":"var",  "haplotype":"nunique"} ).reset_index().sort_values(by="VEP", ascending=False)
     
     onto = OWL.get_onto_mondo()
     id_map = OWL.get_id_map(onto)
     within_site_var.loc[:,label_col] = within_site_var.loc[:,split_col].map(id_map)
 
 
-    within_site_var_mean = within_site_var.groupby(["model_location",split_col,label_col]).agg({"VEP":"mean", 
+    within_site_var_mean = within_site_var.groupby(["model_location",split_col,label_col], observed=True).agg({"VEP":"mean", 
                                                                                                 "mutant":"nunique", 
                                                                                                 "haplotype":"unique"}
                                                                                                 ).sort_values(by="VEP", ascending=False).reset_index()
@@ -2601,7 +2602,7 @@ def plot_vep_dms_correlation(df,
     g.set_axis_labels('VEP Score', 'DMS Score')
 
     # Calculate and add statistics for each facet
-    for (row_val, col_val), facet_data in df.groupby([row, col]):
+    for (row_val, col_val), facet_data in df.groupby([row, col], observed=True):
         # Get the corresponding axes
         row_idx = list(df[row].unique()).index(row_val)
         col_idx = list(df[col].unique()).index(col_val)
@@ -2964,7 +2965,7 @@ def plot_dr_with_kde_topo(
  
     if cluster_col is not None and cluster_col in dr_df.columns:
         # For each cluster, pick a representative point (e.g., the centroid)
-        cluster_groups = dr_df.groupby(cluster_col)
+        cluster_groups = dr_df.groupby(cluster_col, observed=True)
         cluster_label_traces = []
         for cluster_id, group in cluster_groups:
             if cluster_id in ['-1', -1]:
@@ -3302,13 +3303,13 @@ def merge_vep_and_samples(vep_df,
             print("Checking for potential causes:")
             
             # Check if some haplotypes are creating too many combinations
-            haplotype_sample_counts = vep_samples.groupby('haplotype')['sample'].nunique()
+            haplotype_sample_counts = vep_samples.groupby('haplotype', observed=True)['sample'].nunique()
             print(f"Haplotypes appearing in >10 samples: {(haplotype_sample_counts > 10).sum()}")
             if haplotype_sample_counts.max() > 50:
                 print(f"Most frequent haplotype appears in {haplotype_sample_counts.max()} samples")
             
             # Check for duplicate combinations
-            duplicate_check = vep_samples.groupby(['haplotype', 'site', 'sample']).size()
+            duplicate_check = vep_samples.groupby(['haplotype', 'site', 'sample'], observed=True).size()
             if duplicate_check.max() > 1:
                 print(f"WARNING: Found duplicate haplotype-site-sample combinations!")
                 print(f"Max duplicates: {duplicate_check.max()}")
@@ -3406,7 +3407,7 @@ def plot_top_diff_variants(
 
 
 
-    print(diff_df.groupby(["model_location", "scoring_strategy"]).agg({"mutant": pd.Series.nunique, "protein": pd.Series.nunique}))
+    print(diff_df.groupby(["model_location", "scoring_strategy"], observed=True).agg({"mutant": pd.Series.nunique, "protein": pd.Series.nunique}))
     
     diff_df["Gene"] = diff_df["GENEINFO"].str.split(":").str[0]
     diff_df["label"] = (
@@ -3660,13 +3661,13 @@ def variant_count_by_source_barplot(urls={'substitutions': "https://marks.hms.ha
     
     #### ProteinGym ####
     pg_subs = pd.concat([pd.read_csv(path, index_col=0) for path in tqdm(pg_subs_paths)])
-    sub_counts = pg_subs.groupby("DMS_bin_score").size().reset_index().rename(columns={"DMS_bin_score":"ClinSig", 0: "Count"})
+    sub_counts = pg_subs.groupby("DMS_bin_score", observed=True).size().reset_index().rename(columns={"DMS_bin_score":"ClinSig", 0: "Count"})
     sub_counts["Source"] = "ProteinGym"
     sub_counts["Consequence"] = "Missense"
     
     #### Splicing ####
     splice_variants = pd.read_csv(urls['splice_variants'])
-    splice_counts = splice_variants.groupby("CLNSIG_simplified").size().reset_index().rename(columns={"CLNSIG_simplified":"ClinSig", 0: "Count"})
+    splice_counts = splice_variants.groupby("CLNSIG_simplified", observed=True).size().reset_index().rename(columns={"CLNSIG_simplified":"ClinSig", 0: "Count"})
     splice_counts["Source"] = "SpliceVarDB"
     splice_counts["Consequence"] = "Splicing"
     
@@ -3680,7 +3681,7 @@ def variant_count_by_source_barplot(urls={'substitutions': "https://marks.hms.ha
                             "pathogenic": "pathogenic",
                             "path": "pathogenic",
                             "likely_benign": "benign"}
-    utr_counts = utr_variants.replace({"CLNSIG_simple": clnsig_map}).groupby("CLNSIG_simple").size().reset_index().rename(columns={"CLNSIG_simple":"ClinSig", 0: "Count"})
+    utr_counts = utr_variants.replace({"CLNSIG_simple": clnsig_map}).groupby("CLNSIG_simple", observed=True).size().reset_index().rename(columns={"CLNSIG_simple":"ClinSig", 0: "Count"})
 
     utr_counts["Source"] = "ClinVar"
     utr_counts["Consequence"] = "UTR"
@@ -3697,7 +3698,7 @@ def variant_count_by_source_barplot(urls={'substitutions': "https://marks.hms.ha
     fig, ax = plt.subplots(figsize=figsize)
 
     # Group data by Consequence (Source) and ClinSig
-    grouped = variant_counts.groupby(['Consequence (Source)', 'ClinSig'], sort=False)['Count'].sum().unstack()
+    grouped = variant_counts.groupby(['Consequence (Source)', 'ClinSig'], sort=False, observed=True)['Count'].sum().unstack()
 
     # Create stacked bar plot
     grouped.plot(kind='barh', 

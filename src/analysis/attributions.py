@@ -2605,6 +2605,8 @@ def plot_variant_sensitization_schematic(
     n_haplotypes=10,
     n_wt_variants=5,
     n_clinical_variants=5,
+    include_any_1_col=True, 
+    include_any_1_row=False,
     
     extra_space=0.06,
     big_arrow_width=0.2,
@@ -2641,7 +2643,11 @@ def plot_variant_sensitization_schematic(
     big_arrow_horizontal_offset=0.005,
     grey_box_outline_kwargs={'edgecolor': 'black', 'linewidth': 3, 'linestyle': ':'},
     title_pad=20,
-    xlabel_pad=10,       
+    xlabel_pad=10,
+    rotate_x_labels=False,
+    title_y_position=None,
+    heatmap_aspect='auto',
+    facecolor='none'
     
 ):
     """
@@ -2721,6 +2727,21 @@ def plot_variant_sensitization_schematic(
         Vertical padding/offset for all plot titles, default 20.
     xlabel_pad : float, optional
         Padding between x-axis tick labels and x-axis titles for all plots, default 4.
+    rotate_x_labels : bool, optional
+        Whether to rotate x-axis tick labels by 45 degrees and left-justify them, default False.
+    title_y_position : float or None, optional
+        Y-position for all plot titles in figure coordinates (0-1). If None, uses default title_pad.
+        Use this to ensure all titles align horizontally, default None.
+    heatmap_aspect : str, float, or tuple, optional
+        Aspect ratio for the heatmaps. If a single value (str or float), applies to all 3 heatmaps.
+        If a tuple of exactly 3 values, applies each value to its respective heatmap.
+        Valid values: 'auto', 'equal', or numeric values. Default 'auto'.
+        Examples:
+        - heatmap_aspect='equal'  # Square cells for all heatmaps
+        - heatmap_aspect=2.0      # Width 2x height for all heatmaps  
+        - heatmap_aspect=(1.0, 2.0, 0.5)  # Different ratios for each heatmap
+    facecolor : str, optional
+        Face color for the figure, default 'none'.
     
     Returns
     -------
@@ -2734,14 +2755,34 @@ def plot_variant_sensitization_schematic(
     from matplotlib.patches import FancyArrowPatch, Rectangle
     import pandas as pd
 
-    fig = plt.figure(figsize=figsize)
+    fig = plt.figure(figsize=figsize, facecolor='none')
     gs = gridspec.GridSpec(1, 3, width_ratios=[1, 1, 1], wspace=0.3)
     axes = [fig.add_subplot(gs[0, 0]), fig.add_subplot(gs[0, 1]), fig.add_subplot(gs[0, 2])]
+    
+    # Process heatmap_aspect parameter
+    if isinstance(heatmap_aspect, (list, tuple)):
+        if len(heatmap_aspect) != 3:
+            raise ValueError("heatmap_aspect tuple must contain exactly 3 values")
+        aspect_values = heatmap_aspect
+    else:
+        # Single value - apply to all 3 heatmaps
+        aspect_values = [heatmap_aspect, heatmap_aspect, heatmap_aspect]
 
     # First heatmap: Binarized WT Variant Matrix
-    Xwt = wtvariants_to_vep_linear_model_out['X_wt_clean'].iloc[0:n_haplotypes, :].copy()
-    cols_with_1 = Xwt.columns[(Xwt == 1).any(axis=0)]
-    Xwt = Xwt[cols_with_1].iloc[:, :n_wt_variants]
+    Xwt = wtvariants_to_vep_linear_model_out['X_wt_clean'].copy()
+   
+    Xwt, row_range, col_range = utils.find_dense_submatrix(Xwt, 
+                                                            window_height=n_haplotypes, 
+                                                            window_width=n_wt_variants, 
+                                                            include_any_1_col=include_any_1_col, 
+                                                            include_any_1_row=include_any_1_row,
+                                                            plot=False)
+    
+    # Get the haplotypes to plot
+    haplotypes_to_plot = Xwt.index.tolist()
+        
+
+    
     if replace_haplotype_prefix:
         Xwt.index = [f"Hap{i+1}"+":"+x.split(":")[-1] for i, x in enumerate(Xwt.index)]
 
@@ -2758,14 +2799,38 @@ def plot_variant_sensitization_schematic(
         linecolor=linecolor,
         **plot1_kwargs
     )
+    # Set aspect ratio for first heatmap
+    axes[0].set_aspect(aspect_values[0])
     axes[0].set_xlabel("WT Variant", fontsize=12, labelpad=xlabel_pad)
     axes[0].set_ylabel("Haplotype", fontsize=12)
-    axes[0].set_title(plot1_title, fontsize=14, pad=title_pad)
+    # Set title with consistent positioning
+    if title_y_position is not None:
+        # Calculate pad to achieve the desired y-position
+        # title_y_position is in figure coordinates (0-1), convert to points
+        desired_y_points = title_y_position * fig.get_figheight() * 72  # 72 points per inch
+        current_y_points = axes[0].get_position().y1 * fig.get_figheight() * 72
+        pad_points = desired_y_points - current_y_points
+        axes[0].set_title(plot1_title, fontsize=14, pad=pad_points)
+    else:
+        axes[0].set_title(plot1_title, fontsize=14, pad=title_pad)
     axes[0].xaxis.set_label_position('top')
     axes[0].xaxis.tick_top()
+    
+    # Rotate x-axis tick labels if requested
+    if rotate_x_labels:
+        axes[0].tick_params(axis='x', labelrotation=45)
+        # Get current tick labels and set horizontal alignment to left
+        labels = axes[0].get_xticklabels()
+        axes[0].set_xticklabels(labels, ha='left')
 
     # Second heatmap: VEP Matrix
-    Xvep = wtvariants_to_vep_linear_model_out['y_vep_clean'].iloc[0:n_haplotypes, 0:n_clinical_variants].round(1).copy()
+    interaction_df = wtvariants_to_vep_linear_model_out['interaction_df']
+    Xvep = wtvariants_to_vep_linear_model_out['y_vep_clean'].copy()
+    # Sort interaction_df by 'clinical_position'
+    interaction_df_sorted = interaction_df.sort_values('clinical_position')
+    # Take the top N clinical variants from the 'clinical_variant' column
+    selected_clinical_variants = interaction_df_sorted['site'].unique().tolist()[:n_clinical_variants]
+    Xvep = Xvep.loc[haplotypes_to_plot].loc[:, selected_clinical_variants].round(1)
     Xvep.columns = Xvep.columns.str.split(":").str[1]
     np.random.seed(random_seed)
     noise = np.random.normal(loc=0, scale=noise_scale, size=Xvep.shape)
@@ -2783,19 +2848,38 @@ def plot_variant_sensitization_schematic(
         ax=axes[1],
         linewidths=linewidths,
         linecolor=linecolor,
-        cmap=plot2_cmap,
+        cmap=plot2_cmap, 
         **plot2_kwargs
     )
+    # Set aspect ratio for second heatmap
+    axes[1].set_aspect(aspect_values[1])
     axes[1].set_xlabel("Clinical Variant", fontsize=12, labelpad=xlabel_pad)
     axes[1].set_ylabel(None, fontsize=12)
-    axes[1].set_title(plot2_title, fontsize=14, pad=title_pad)
+    # Set title with consistent positioning
+    if title_y_position is not None:
+        # Calculate pad to achieve the desired y-position
+        # title_y_position is in figure coordinates (0-1), convert to points
+        desired_y_points = title_y_position * fig.get_figheight() * 72  # 72 points per inch
+        current_y_points = axes[1].get_position().y1 * fig.get_figheight() * 72
+        pad_points = desired_y_points - current_y_points
+        axes[1].set_title(plot2_title, fontsize=14, pad=pad_points)
+    else:
+        axes[1].set_title(plot2_title, fontsize=14, pad=title_pad)
     axes[1].xaxis.set_label_position('top')
     axes[1].xaxis.tick_top()
+    
+    # Rotate x-axis tick labels if requested
+    if rotate_x_labels:
+        axes[1].tick_params(axis='x', labelrotation=45)
+        # Get current tick labels and set horizontal alignment to left
+        labels = axes[1].get_xticklabels()
+        axes[1].set_xticklabels(labels, ha='left')
+    
     axes[1].set_yticklabels([])
 
     # Third heatmap: WT x Clinical Variant Interaction Score Matrix
     coef_matrix_abs = wtvariants_to_vep_linear_model_out['coef_matrix_signed'].copy()
-    coef_matrix_abs = coef_matrix_abs.iloc[:n_wt_variants, :n_clinical_variants]
+    coef_matrix_abs = coef_matrix_abs.iloc[:n_wt_variants, :].loc[:, selected_clinical_variants]
     coef_matrix_abs.columns = coef_matrix_abs.columns.str.split(":").str[-1]
     coef_matrix_abs.index = coef_matrix_abs.index.str.split(":").str[-1]
     coef_matrix_abs *= coef_matrix_scale
@@ -2820,6 +2904,7 @@ def plot_variant_sensitization_schematic(
         annot_coef_numeric = annot_coef.apply(pd.to_numeric, errors='coerce')
     else:
         annot_coef_numeric = pd.to_numeric(annot_coef, errors='coerce')
+ 
 
     sns.heatmap(
         coef_matrix_abs_with_extra,
@@ -2828,14 +2913,32 @@ def plot_variant_sensitization_schematic(
         ax=axes[2],
         linewidths=linewidths,
         linecolor=linecolor,
-        cmap=plot3_cmap,
+        cmap=plot3_cmap, 
         **plot3_kwargs
     )
+    # Set aspect ratio for third heatmap
+    axes[2].set_aspect(aspect_values[2])
     axes[2].set_xlabel("Clinical Variant", fontsize=12, labelpad=xlabel_pad)
     axes[2].set_ylabel("WT Variant", fontsize=12)
-    axes[2].set_title(plot3_title, fontsize=14, pad=title_pad)
+    # Set title with consistent positioning
+    if title_y_position is not None:
+        # Calculate pad to achieve the desired y-position
+        # title_y_position is in figure coordinates (0-1), convert to points
+        desired_y_points = title_y_position * fig.get_figheight() * 72  # 72 points per inch
+        current_y_points = axes[2].get_position().y1 * fig.get_figheight() * 72
+        pad_points = desired_y_points - current_y_points
+        axes[2].set_title(plot3_title, fontsize=14, pad=pad_points)
+    else:
+        axes[2].set_title(plot3_title, fontsize=14, pad=title_pad)
     axes[2].xaxis.set_label_position('top')
     axes[2].xaxis.tick_top()
+    
+    # Rotate x-axis tick labels if requested
+    if rotate_x_labels:
+        axes[2].tick_params(axis='x', labelrotation=45)
+        # Get current tick labels and set horizontal alignment to left
+        labels = axes[2].get_xticklabels()
+        axes[2].set_xticklabels(labels, ha='left')
 
     # Remove yticklabels for the second plot for visual clarity
     axes[1].set_yticklabels([])
@@ -2883,9 +2986,11 @@ def plot_variant_sensitization_schematic(
         fig.patches.append(grey_box)
 
     # Add arrows between the first and second plots, aligned with each row
+    # Note: add_extra_row_col adds an extra spacer row, so total rows = n_haplotypes + 1
     fig.canvas.draw()
-    for i in range(n_haplotypes):
-        y_frac = (i + 0.5) / n_haplotypes
+    total_rows = len(haplotypes_to_plot) + 1
+    for i in range(total_rows):
+        y_frac = (i + 0.5) / total_rows
         x0_fig, y0_fig = axes[0].transAxes.transform((1.0, y_frac))
         x1_fig, y1_fig = axes[1].transAxes.transform((0.0, y_frac))
         inv = fig.transFigure.inverted()
@@ -2903,7 +3008,7 @@ def plot_variant_sensitization_schematic(
             clip_on=False
         )
         fig.patches.append(arrow)
-        if i == n_haplotypes - 1:
+        if i == total_rows - 1:
             label_y_offset = 0.02
             fig.text(
                 (x0_fig_frac + x1_fig_frac) / 2,

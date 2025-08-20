@@ -1904,7 +1904,7 @@ aa_3to1 = {
 
 def add_hgvsp_id(
     vep_prot,
-    variant_col="variant",
+    variant_col="wt_variant",
     position_col="wt_p.position",
     ref_col="wt_p.REF",
     alt_col="wt_p.ALT",
@@ -1962,3 +1962,118 @@ def add_hgvsp_id(
         + vep_prot[alt_col].map(aa_3to1)
     )
     return vep_prot
+
+
+
+def find_dense_submatrix(
+    Xwt, 
+    window_height=10, 
+    window_width=10, 
+    frac_min=0.2, 
+    frac_max=0.8, 
+    plot=True, 
+    verbose=True, 
+    include_any_1_col=False,
+    include_any_1_row=False,
+    **clustermap_kwargs
+):
+    """
+    Cluster the matrix, then slide a window to find a submatrix with a fraction of 1s between frac_min and frac_max.
+    Optionally plot the heatmap of the found submatrix.
+
+    Parameters
+    ----------
+    Xwt : pd.DataFrame
+        Binary matrix to search.
+    window_height : int
+        Height of the sliding window.
+    window_width : int
+        Width of the sliding window.
+    frac_min : float
+        Minimum fraction of 1s in the submatrix.
+    frac_max : float
+        Maximum fraction of 1s in the submatrix.
+    plot : bool
+        Whether to plot the heatmap of the found submatrix.
+    verbose : bool
+        Whether to print information about the found submatrix.
+    include_any_1_col : bool
+        If True, after finding the submatrix, include any columns from the original matrix where the value is 1 for at least one of the selected rows.
+    include_any_1_row : bool
+        If True, after finding the submatrix, include any rows from the original matrix where the value is 1 for at least one of the selected columns.
+    **clustermap_kwargs : dict
+        Additional arguments to pass to sns.clustermap.
+
+    Returns
+    -------
+    submatrix : pd.DataFrame or None
+        The found submatrix, or None if not found.
+    (row_start, row_end), (col_start, col_end) : tuple of ints or None
+        The indices of the found submatrix, or None if not found.
+
+    Examples
+    --------
+    >>> import pandas as pd
+    >>> import numpy as np
+    >>> # Create a 20x20 random binary matrix with a dense 1s block in the center
+    >>> np.random.seed(0)
+    >>> X = np.random.binomial(1, 0.1, size=(20, 20))
+    >>> X[5:10, 7:12] = 1  # Insert a dense block of 1s
+    >>> df = pd.DataFrame(X, index=[f"row{i}" for i in range(20)], columns=[f"col{j}" for j in range(20)])
+    >>> submatrix, row_idx, col_idx = find_dense_submatrix(df, window_height=5, window_width=5, frac_min=0.7, frac_max=1.0, plot=False)
+    Found 5x5 submatrix at rows 5-10, cols 7-12 with 100.0% 1s
+    >>> print(submatrix)
+           col7  col8  col9  col10  col11
+    row5      1     1     1      1      1
+    row6      1     1     1      1      1
+    row7      1     1     1      1      1
+    row8      1     1     1      1      1
+    row9      1     1     1      1      1
+    """
+    # Perform clustering and get the reordered matrix
+    if plot:
+        cg = sns.clustermap(Xwt, figsize=(10,10), cmap="viridis", **clustermap_kwargs)
+    else:
+        # Suppress plotting by using a dummy matplotlib backend and closing the figure
+        import matplotlib
+        import matplotlib.pyplot as plt
+        backend = matplotlib.get_backend()
+        matplotlib.use('Agg')
+        cg = sns.clustermap(Xwt, figsize=(10,10), cmap="viridis", **clustermap_kwargs)
+        plt.close('all')
+        matplotlib.use(backend)
+    Xwt_clustered = Xwt.iloc[cg.dendrogram_row.reordered_ind, cg.dendrogram_col.reordered_ind]
+
+    for i in range(Xwt_clustered.shape[0] - window_height + 1):
+        for j in range(Xwt_clustered.shape[1] - window_width + 1):
+            sub = Xwt_clustered.iloc[i:i+window_height, j:j+window_width]
+            frac_ones = sub.values.sum() / sub.size
+            if frac_min <= frac_ones <= frac_max:
+                if verbose:
+                    print(f"Found {window_height}x{window_width} submatrix at rows {i}-{i+window_height}, cols {j}-{j+window_width} with {frac_ones*100:.1f}% 1s")
+                # Handle both include_any_1_col and include_any_1_row
+                if include_any_1_col or include_any_1_row:
+                    selected_rows = sub.index
+                    selected_cols = sub.columns
+                    # Start with the submatrix
+                    rows_to_use = selected_rows
+                    cols_to_use = selected_cols
+                    if include_any_1_col:
+                        # Find all columns in the original matrix where at least one of these rows has a 1
+                        cols_with_1 = Xwt.loc[selected_rows].any(axis=0)
+                        cols_to_use = cols_with_1[cols_with_1].index
+                    if include_any_1_row:
+                        # Find all rows in the original matrix where at least one of these columns has a 1
+                        rows_with_1 = Xwt.loc[:, cols_to_use].any(axis=1)
+                        rows_to_use = rows_with_1[rows_with_1].index
+                    sub_expanded = Xwt.loc[rows_to_use, cols_to_use]
+                    if plot:
+                        sns.heatmap(sub_expanded, cmap="viridis", cbar=True)
+                    return sub_expanded, (i, i+window_height), (j, j+window_width)
+                else:
+                    if plot:
+                        sns.heatmap(sub, cmap="viridis", cbar=True)
+                    return sub, (i, i+window_height), (j, j+window_width)
+    if verbose:
+        print(f"No {window_height}x{window_width} submatrix found with {int(frac_min*100)}-{int(frac_max*100)}% 1s.")
+    return None, None, None
