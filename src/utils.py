@@ -925,7 +925,10 @@ def make_palette(values,
 
 def get_clinsig_palette(values=['path', 'likely_path', 'likely_benign', 'benign'],
                          palette='bwr_r'):
-    return make_palette(values, palette) 
+    palette = make_palette(values, palette) 
+    palette["VUS"] = "lightgray"
+    palette["vus"] = "lightgray"
+    return palette
 
 
 def get_superpop_palette(values=['AFR', 'AMR', 'EAS', 'EUR', 
@@ -1005,10 +1008,10 @@ def sort_by_reverse_string(df,
     """
     # Create temporary column with reversed strings
     df = df.copy()
-    df['_temp_rev'] = df[column].apply(lambda x: str(x)[::-1])
-    
-    # Sort by reversed strings and drop temp column
-    df = df.sort_values(['_temp_rev']+extra_sort_cols, ascending=ascending).drop('_temp_rev', axis=1)
+    if column in df.columns:
+        df['_temp_rev'] = df[column].apply(lambda x: str(x)[::-1])
+        # Sort by reversed strings and drop temp column
+        df = df.sort_values(['_temp_rev']+extra_sort_cols, ascending=ascending).drop('_temp_rev', axis=1)
     
     return df
 

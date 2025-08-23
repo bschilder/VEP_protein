@@ -1,7 +1,9 @@
 
+from re import T
 import matplotlib.pyplot as plt
 import seaborn as sns
 import pandas as pd
+import numpy as np
 import src.utils as utils
 
 
@@ -108,6 +110,14 @@ def run_clinvar_logreg_analysis(
     results_dict : dict
         Dictionary containing the detailed results for "REF" and "non-REF" analyses.
     """
+    
+    if vep_col not in vep_df.columns:
+        raise ValueError(f"VEP column {vep_col} not found in vep_df")
+    if clinsig_col not in vep_df.columns:
+        raise ValueError(f"CLNSIG column {clinsig_col} not found in vep_df. Please run simplify_clinsig() first.")
+    if site_col not in vep_df.columns:
+        raise ValueError(f"Site column {site_col} not found in vep_df")
+
     vep_df = vep_df.copy()
 
     if "is_ref" not in vep_df.columns:
@@ -256,7 +266,7 @@ def run_clinvar_logreg_analysis(
 
 def run_clinvar_logreg_analysis_by_group(
         vep_df,
-        group_by,
+        group_by="protein",
         vep_col="VEP",
         clinsig_col="CLNSIG_simplified",
         site_col="site",
@@ -464,8 +474,8 @@ def plot_logreg_results(
     return {"fig": fig, "axes": axes, 'data': {'barplot_df': barplot_df, 'pr_curves': pr_curves, 'labels': labels, 'auprcs': auprcs}}
 
 
-def agg_logreg_results(lr_df,
-                       lr_gene_df, 
+def agg_logreg_results(lr_gene_df, 
+                       lr_df=None,
                        group_by="protein",
                        support_threshold=0):
     """
@@ -488,24 +498,31 @@ def agg_logreg_results(lr_df,
     pd.DataFrame
         Aggregated results, merged with overall PR/AUPRC curves.
     """
+    lr_gene_df = lr_gene_df.copy()
     # Filter by support threshold
     filtered = lr_gene_df.loc[lr_gene_df["support"] >= support_threshold]
     # Find proteins present in both groups
     common_proteins = set(filtered.loc[filtered["group_id"] == "REF", group_by]).intersection(
         filtered.loc[filtered["group_id"] == "non-REF", group_by]
     )
+    filtered = filtered[filtered[group_by].isin(common_proteins)]
     # Only keep rows with those proteins
     lr_gene_grouped = (
-        filtered[filtered[group_by].isin(common_proteins)]
+        filtered
         .groupby("group_id")
         .mean(numeric_only=True)
         .reset_index()
     )
-    plot_data = lr_gene_grouped.drop(columns=["AUPRC"]).merge(
-        lr_df[["group_id", "pr_curve", "AUPRC"]],
-        on="group_id"
-    )
-    return plot_data
+    if lr_df is not None:
+        plot_data = lr_gene_grouped.drop(columns=["AUPRC"]).merge(
+            lr_df[["group_id", "pr_curve", "AUPRC"]],
+            on="group_id"
+        )
+        return plot_data 
+    else: 
+        # lr_gene_grouped["pr_array"] = interpolate_pr_curves_by_group(lr_gene_df)
+        return lr_gene_grouped
+
 
 
 def plot_logreg_results_subplots(
@@ -514,10 +531,10 @@ def plot_logreg_results_subplots(
     palette=utils.get_ref_nonref_palette(),
     figsize=(15, 5),
     gridspec_kw={'width_ratios': [1.5, 1]},
-    title1="Pathogenic/Benign Classification Results",
-    title2="Precision-Recall Curve",
+    title1_prefix="",
+    title2_prefix="",
     remove_macro_metrics=True,
-    auprc_fmt="{:.4f}",
+    auprc_fmt="{:.3f}",
     legend_kwargs={"loc": "upper center", "ncol": 2},
     bar_edge=True,
     bar_edgecolor="black",
@@ -620,7 +637,7 @@ def plot_logreg_results_subplots(
             [tick.get_text() for tick in axes[i, 0].get_xticklabels()],
             rotation=0
         )
-        axes[i, 0].set_title(f"{title1}: {model_name}")
+        axes[i, 0].set_title(f"{title1_prefix}{model_name}")
         axes[i, 0].legend(**legend_kwargs)
         axes[i, 0].spines['top'].set_visible(False)
         axes[i, 0].spines['right'].set_visible(False)
@@ -652,8 +669,8 @@ def plot_logreg_results_subplots(
         
         axes[i, 1].set_xlabel("Recall")
         axes[i, 1].set_ylabel("Precision")
-        axes[i, 1].set_title(f"{title2}: {model_name}")
-        axes[i, 1].legend()
+        axes[i, 1].set_title(f"{title2_prefix}{model_name}")
+        axes[i, 1].legend(loc="lower left")
         axes[i, 1].spines['top'].set_visible(False)
         axes[i, 1].spines['right'].set_visible(False)
 
@@ -662,3 +679,341 @@ def plot_logreg_results_subplots(
 
     return {"fig": fig, "axes": axes, "model_names": model_names}
 
+def plot_logreg_gene_subplots(
+    data_dict,
+    group_id="group_id",
+    gene_id="protein",
+    palette=utils.get_ref_nonref_palette(),
+    figsize=(15, 5), 
+    title1_prefix="",
+    title2_prefix="",
+    remove_macro_metrics=True,
+    auprc_fmt="{:.3f}",
+    legend_kwargs={"loc": "upper center", "ncol": 2},
+    bar_edge=True,
+    bar_edgecolor="black",
+    bar_linewidth=1,  
+    model_names=None,
+    subplots_kwargs={}
+):
+    """
+    Generate subplots for logistic regression results from multiple models.
+
+    Each row in the resulting figure corresponds to a model, with a barplot (left) showing summary metrics
+    and a PR curve plot (right) for each group (e.g., REF, non-REF).
+
+    Parameters
+    ----------
+    data_dict : dict
+        Dictionary mapping model names to their respective DataFrames containing logistic regression results.
+    group_id : str, optional
+        Column name for group labels (default: "group_id").
+    gene_id : str, optional
+        Column name for gene/protein identifier (default: "protein").
+    palette : dict, optional
+        Color palette mapping group labels to colors.
+    figsize : tuple, optional
+        Size of the figure (width, height per row). Default is (15, 5).
+    title1_prefix : str, optional
+        Prefix for the barplot title for each model.
+    title2_prefix : str, optional
+        Prefix for the PR curve plot title for each model.
+    remove_macro_metrics : bool, optional
+        If True, macro metrics (columns starting with "macro_") are excluded from the barplot. Default is True.
+    auprc_fmt : str, optional
+        Format string for displaying AUPRC in the legend. Default is "{:.3f}".
+    legend_kwargs : dict, optional
+        Keyword arguments for the legend in the barplot.
+    bar_edge : bool, optional
+        If True, draw edges around bars in the barplot. Default is True.
+    bar_edgecolor : str, optional
+        Color of the bar edges. Default is "black".
+    bar_linewidth : float, optional
+        Width of the bar edges. Default is 1.
+    model_names : list, optional
+        List of model names to plot in order. If None, uses keys from data_dict.
+    subplots_kwargs : dict, optional
+        Additional keyword arguments passed to plt.subplots().
+
+    Returns
+    -------
+    dict
+        Dictionary containing:
+            - "fig": The matplotlib Figure object.
+            - "axes": The array of Axes objects.
+            - "model_names": The list of model names plotted.
+
+    Notes
+    -----
+    - The left subplot in each row is a barplot of summary metrics (excluding macro metrics if specified).
+    - The right subplot in each row is a PR curve plot for each group, with mean and confidence intervals.
+    - The function calls `agg_logreg_results` to aggregate per-gene/protein results and
+      `interpolate_pr_curves_by_group` to compute mean PR curves.
+    - The function expects a utility function `plot_mean_pr_curve_by_group` to plot PR curves.
+    """
+    import matplotlib.pyplot as plt
+    import seaborn as sns  
+
+    if model_names is None:
+        model_names = list(data_dict.keys())
+    
+    n_models = len(model_names)
+    
+    # Create figure with subplots: n_models rows, 2 columns
+    fig, axes = plt.subplots(n_models, 2, 
+                             figsize=(figsize[0], figsize[1] * n_models),
+                             **subplots_kwargs)
+    
+    # Handle case where there's only one model (axes will be 1D)
+    if n_models == 1:
+        axes = axes.reshape(1, -1)
+    
+    # Plot each model in its own row
+    for i, k in enumerate(model_names):
+
+        # Compute mean results across all genes
+        plot_data = agg_logreg_results(
+            lr_gene_df=data_dict[k],
+            group_by=gene_id, 
+            support_threshold=0
+        )
+        
+        # Interpolate PR curves across all genes
+        interp_results = interpolate_pr_curves_by_group(data_dict[k])
+
+        # Barplot data preparation (vectorized)
+        barplot_df = plot_data.melt(
+            id_vars=[group_id, "support"], 
+            var_name="metric",
+            value_name="value"
+        )
+        if remove_macro_metrics:
+            barplot_df = barplot_df[~barplot_df["metric"].str.startswith("macro_")]
+        
+        barplot_df['metric'] = barplot_df['metric'].str.replace("_", "\n")
+
+        # Barplot (left column)
+        barplot = sns.barplot(
+            data=barplot_df,
+            x="metric",
+            y="value",
+            hue=group_id,
+            ax=axes[i, 0],
+            palette=palette,
+            edgecolor=bar_edgecolor if bar_edge else None,
+            linewidth=bar_linewidth if bar_edge else 0
+        )
+        axes[i, 0].set_ylim(0, 1)
+        axes[i, 0].set_xticks(range(len(axes[i, 0].get_xticklabels())))
+        axes[i, 0].set_xticklabels(
+            [tick.get_text() for tick in axes[i, 0].get_xticklabels()],
+            rotation=0
+        )
+        axes[i, 0].set_title(f"{title1_prefix}{k}")
+        axes[i, 0].legend(**legend_kwargs)
+        axes[i, 0].spines['top'].set_visible(False)
+        axes[i, 0].spines['right'].set_visible(False)
+
+        # If bar_edge is False, remove bar outlines after plotting
+        if not bar_edge:
+            for patch in axes[i, 0].patches:
+                patch.set_linewidth(0)
+
+        plot_mean_pr_curve_by_group(
+            interp_results, 
+            ax=axes[i, 1], 
+            palette=palette,
+            agg_stats=plot_data,
+            auprc_fmt=auprc_fmt,
+            title=f"{title2_prefix}{k}"
+        )
+
+    plt.tight_layout()
+    plt.show()
+
+    return {"fig": fig, "axes": axes, "model_names": model_names}
+
+def interpolate_pr_curves_by_group(
+    df,
+    group_col="group_id",
+    pr_curve_col="pr_curve",
+    n_interp_points=100,
+    sort_curves=True,
+):
+    """
+    Interpolate PR curves for each group in the DataFrame.
+
+    Parameters
+    ----------
+    df : pd.DataFrame
+        DataFrame containing at least columns [group_col, pr_curve_col].
+        pr_curve_col should contain (precision, recall) tuples/lists.
+    group_col : str
+        Column to group by (default: "group_id").
+    n_interp_points : int
+        Number of interpolation points for recall axis (default: 100).
+    sort_curves : bool, optional
+        Whether to sort recall/precision pairs by recall before interpolation (default: True).
+        - Pros: Sorting ensures that the recall values are monotonically increasing, which is required for correct interpolation and avoids issues if input PR curves are not sorted.
+        - Cons: If your PR curve tuples are already sorted and you want to preserve the original order (e.g., for debugging or for special PR curve conventions), you may set this to False for a slight speedup.
+
+    Returns
+    -------
+    dict
+        Dictionary mapping group names to dicts with keys:
+            - "recall_interp_points": np.ndarray
+            - "mean_precision": np.ndarray
+            - "std_precision": np.ndarray
+            - "lower": np.ndarray
+            - "upper": np.ndarray
+            - "all_curves": np.ndarray (n_curves, n_interp_points)
+    """  
+    recall_interp_points = np.linspace(0, 1, n_interp_points)
+    grouped = df.groupby(group_col)
+    result = {}
+
+    for group_name, group_df in grouped:
+        interpolated_curves = []
+        for pr_tuple in group_df[pr_curve_col]:
+            precision, recall = pr_tuple
+            precision = np.array(precision)
+            recall = np.array(recall)
+            if sort_curves:
+                # Sort recall and precision in increasing recall order
+                sort_idx = np.argsort(recall)
+                recall_sorted = recall[sort_idx]
+                precision_sorted = precision[sort_idx]
+            else:
+                recall_sorted = recall
+                precision_sorted = precision
+            # Remove duplicate recall values (keep last, as in PR curve convention)
+            _, unique_indices = np.unique(recall_sorted, return_index=True)
+            recall_unique = recall_sorted[unique_indices]
+            precision_unique = precision_sorted[unique_indices]
+            # Interpolate
+            interp_precision = np.interp(
+                recall_interp_points,
+                recall_unique,
+                precision_unique,
+                left=precision_unique[0],
+                right=precision_unique[-1],
+            )
+            interpolated_curves.append(interp_precision)
+        if not interpolated_curves:
+            continue
+        interpolated_array = np.vstack(interpolated_curves)
+        mean_precision = np.mean(interpolated_array, axis=0)
+        std_precision = np.std(interpolated_array, axis=0)
+        lower = mean_precision - std_precision
+        upper = mean_precision + std_precision
+        # Clip values to [0, 1] for axes and shading
+        mean_precision = np.clip(mean_precision, 0, 1)
+        lower = np.clip(lower, 0, 1)
+        upper = np.clip(upper, 0, 1)
+        result[group_name] = {
+            "recall_interp_points": recall_interp_points,
+            "mean_precision": mean_precision,
+            "std_precision": std_precision,
+            "lower": lower,
+            "upper": upper,
+            "all_curves": interpolated_array,
+        }
+    return result
+
+def plot_mean_pr_curve_by_group(
+    interp_results, 
+    agg_stats=None,
+    figsize=(10, 7), 
+    title="Precision-Recall Curve (Mean ± 1 SD)",
+    auprc_fmt="{:.3f}",
+    legend=True,
+    show=True,
+    show_sd=True, 
+    palette=utils.get_ref_nonref_palette(),
+    ax=None
+):
+    """
+    Plot mean precision-recall curve with optional ±1 SD shading for each group in a DataFrame.
+
+    Parameters
+    ----------
+    df : pd.DataFrame
+        DataFrame containing at least columns [group_col, pr_curve_col].
+        pr_curve_col should contain (precision, recall) tuples/lists.
+    group_col : str
+        Column to group by (default: "group_id").
+    pr_curve_col : str
+        Column containing (precision, recall) tuples (default: "pr_curve").
+    figsize : tuple
+        Figure size for matplotlib (default: (10, 7)).
+    n_interp_points : int
+        Number of interpolation points for recall axis (default: 100).
+    title : str
+        Title for the plot.
+    legend : bool
+        Whether to show legend.
+    show : bool
+        Whether to call plt.show().
+    show_sd : bool
+        Whether to show ±1 SD shading (default: True).
+    palette : dict or None
+        Optional. Dictionary mapping group names to colors. If None, use matplotlib default color cycle.
+    ax : matplotlib.axes.Axes, optional
+        Axes to plot on. If None, creates a new figure.
+    """
+    import matplotlib.pyplot as plt
+ 
+
+    if ax is None:
+        plt.figure(figsize=figsize)
+        current_ax = plt.gca()
+    else:
+        current_ax = ax
+
+    for i, (group_name, stats) in enumerate(interp_results.items()):
+        recall_interp_points = stats["recall_interp_points"]
+        mean_precision = stats["mean_precision"]
+        lower = stats["lower"]
+        upper = stats["upper"]
+
+        # Determine color
+        if palette is not None and group_name in palette:
+            color = palette[group_name]
+        else:
+            color = f"C{i}"
+        # Make REF group dashed
+        if str(group_name).upper() == "REF":
+            linestyle = "--"
+        else:
+            linestyle = "-"
+        current_ax.plot(
+            recall_interp_points,
+            mean_precision,
+            label=(
+                f"{group_name}" if agg_stats is None
+                else f"{group_name} (AUPRC={auprc_fmt.format(agg_stats.loc[agg_stats['group_id'] == group_name, 'AUPRC'].values[0])})"
+            ),
+            color=color,
+            linestyle=linestyle,
+        )
+        if show_sd:
+            current_ax.fill_between(
+                recall_interp_points,
+                lower,
+                upper,
+                color=color,
+                alpha=0.2,
+                label=f"{group_name} ±1 SD",
+            )
+
+    current_ax.set_xlabel("Recall")
+    current_ax.set_ylabel("Precision")
+    current_ax.set_title(title)
+    current_ax.set_xlim(0, 1)
+    current_ax.set_ylim(0, 1)
+    if legend:
+        current_ax.legend()
+    if ax is None:
+        plt.tight_layout()
+        if show:
+            plt.show()

@@ -33,9 +33,14 @@ def _get_default_save_dir(save_dir):
         print(f"No save_dir provided, using: {save_dir}")
     return save_dir
 
+
+def list_all_models(save_dir=None):
+    save_dir = _get_default_save_dir(save_dir)
+    return [os.path.basename(d) for d in glob.glob(os.path.join(save_dir, "*"))]
+
 def list_vep_files(save_dir = None,
                    scoring_strategy: Literal["wt-marginals", "masked-marginals", "pseudo-ppl"] = ["*"],
-                   model_location: Literal["esm2_t33_650M_UR50D", "esm2_t33_650M_UR50S"] = ["*"],
+                   model_location: Literal["esm2_t33_650M_UR50D", "esm2_t33_650M_UR50S"] = "*",
                    save_format = "parquet",
                    as_df=False,
                    verbose=True
@@ -808,6 +813,7 @@ def plot_vep_density(vep_df,
                      sharey=False,
                      verbose=True,
                      save_path=None,
+                     facetgrid_kwargs={},
                      **kwargs): 
     # Get filtered data
     vep_df = vep_df.copy()
@@ -820,10 +826,11 @@ def plot_vep_density(vep_df,
         model_location = _get_model_location(vep_df)
 
     # Sort by scoring strategy
+    vep_df = vep_df.sort_values(by='model_location')
     vep_df = utils.sort_by_reverse_string(vep_df, 
-                                          column='model_location', 
-                                          extra_sort_cols=['scoring_strategy', clinsig_col],
-                                          ascending=[False, True, True])
+                                          column='scoring_strategy', 
+                                          extra_sort_cols=[clinsig_col],
+                                          ascending=[True, True])
 
     vep_df = _filter_vep_df(vep_df, verbose=verbose) 
     # Create facet grid
@@ -834,7 +841,8 @@ def plot_vep_density(vep_df,
                     aspect=aspect,
                     sharex=sharex,
                     sharey=sharey, 
-                    margin_titles=True)
+                    margin_titles=True,
+                    **facetgrid_kwargs)
 
     # Plot KDE
     g.map_dataframe(plot_func, 
@@ -3677,10 +3685,10 @@ def variant_count_by_source_barplot(urls={'substitutions': "https://marks.hms.ha
     utr_variants = cv.read_bed(urls['utr_variants']).to_pandas()
 
     clnsig_map = {"likely_path": "pathogenic",
-                            "likely_pathogenic": "pathogenic",
-                            "pathogenic": "pathogenic",
-                            "path": "pathogenic",
-                            "likely_benign": "benign"}
+                    "likely_pathogenic": "pathogenic",
+                    "pathogenic": "pathogenic",
+                    "path": "pathogenic",
+                    "likely_benign": "benign"}
     utr_counts = utr_variants.replace({"CLNSIG_simple": clnsig_map}).groupby("CLNSIG_simple", observed=True).size().reset_index().rename(columns={"CLNSIG_simple":"ClinSig", 0: "Count"})
 
     utr_counts["Source"] = "ClinVar"
