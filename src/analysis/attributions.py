@@ -3083,3 +3083,151 @@ def plot_variant_sensitization_schematic(
                                                 'Xwt_with_extra': Xwt_with_extra,
                                                 'Xvep_with_extra': Xvep_with_extra,
                                                 'coef_matrix_abs_with_extra': coef_matrix_abs_with_extra}}
+
+def safe_int(val):
+    try:
+        if pd.isna(val):
+            return None
+        return int(val)
+    except Exception:
+        return None
+
+def get_contact_score(x, contact_map):
+    wt_pos = safe_int(x["wt_position"])
+    clin_pos = safe_int(x["clinical_position"])
+    if wt_pos is None or clin_pos is None:
+        return np.nan
+    return contact_map[wt_pos-1, clin_pos-1]
+
+
+
+def plot_wt_clinical_interaction_vs_angstroms(
+    ridge_df,
+    vep_prot,
+    N=5,
+    figsize=(10, 5),
+    x_var="Angstroms",
+    y_var="interaction_strength_signed",
+    hue_var="clinsig",
+    size_var="interaction_strength",
+    style_var="is_contact",
+    palette=None,
+    show=True,
+    adjust_text_kwargs={},
+):
+    """
+    Plot WT-Clinical Variant Interaction Strength vs. 3D Distance.
+
+    Parameters
+    ----------
+    ridge_df : pd.DataFrame
+        DataFrame containing ridge regression interaction results.
+    vep_prot : pd.DataFrame
+        DataFrame containing clinical variant annotations (must have 'mutant' and 'clinsig').
+    N : int
+        Number of top interactions to label.
+    figsize : tuple
+        Figure size.
+    x_var, y_var, hue_var, size_var, style_var : str
+        Column names for plot axes and aesthetics.
+    palette : dict or None
+        Color palette for clinical significance.
+    show : bool
+        Whether to call plt.show().
+    """
+    import matplotlib.pyplot as plt
+    from adjustText import adjust_text
+    import matplotlib as mpl
+
+    # Prepare DataFrame
+    ridge_df = ridge_df.copy()
+    ridge_df['protein'] = ridge_df['site'].str.split(":").str[0]
+    ridge_df = utils.add_hgvsp_id(ridge_df)
+    if "clinsig" not in ridge_df.columns:
+        ridge_df = ridge_df.merge(
+            vep_prot[["mutant", "clinsig"]].drop_duplicates(),
+            left_on="clinical_variant",
+            right_on="mutant",
+            how="left"
+        )
+        
+
+
+    top_interactions = ridge_df.reindex(
+        ridge_df["interaction_strength"].abs().sort_values(ascending=False).index
+    ).head(N)
+
+    ridge_df["Angstroms_inverted"] = ridge_df["Angstroms"].max() - ridge_df["Angstroms"]
+
+    if palette is None:
+        palette = utils.get_clinsig_palette()
+
+    plt.figure(figsize=figsize)
+
+    ax = sns.scatterplot(
+        data=ridge_df.sort_values(y_var, ascending=False),
+        x=x_var,
+        y=y_var,
+        hue=hue_var,
+        size=size_var,
+        style=style_var,
+        sizes=(0.001, 100),
+        alpha=0.75,
+        palette=palette,
+        edgecolor="grey",
+        linewidth=0.01,
+    )
+
+    plt.xlabel("3D Distance (Ångstroms)")
+    plt.ylabel("Interaction Strength")
+    plt.title("WT-Clinical Variant Interaction Strength vs. 3D Distance")
+
+    # Move legend outside the plot (to the right)
+    legend = ax.legend(bbox_to_anchor=(1.05, 1), loc='upper left', borderaxespad=0.)
+    for leg in legend.get_texts():
+        if "contact_score" in leg.get_text().lower() or "size" in leg.get_text().lower():
+            leg.set_text("Contact Score")
+        if "interaction_strength" in leg.get_text().lower():
+            leg.set_text("Interaction Strength")
+        if "is_contact" in leg.get_text().lower():
+            leg.set_text("Contact")
+        if "Angstroms_inverted" in leg.get_text().lower():
+            leg.set_text(r"Angstroms")
+        if "clinsig" in leg.get_text().lower():
+            leg.set_text("Clinical Significance")
+
+    # Prepare label texts for top N points
+    texts = []
+    for _, row in top_interactions.iterrows():
+        label = (
+            f"{row['wt_variant']} | {row['clinical_variant_fmt']}\n"
+            + f"Interaction: {row['interaction_strength_signed']:.2f}\n"
+            + f"$\\mathrm{{\\AA}}$: {row['Angstroms']:.2f}\n"
+        )
+        texts.append(
+            plt.text(
+                row[x_var],
+                row[y_var],
+                label,
+                fontsize=8,
+                color='black',
+                bbox=dict(facecolor='white', alpha=0.1, edgecolor='none', boxstyle='round,pad=0.2'),
+            )
+        )
+    # Remove top and right spines (margin lines)
+    ax.spines['top'].set_visible(False)
+    ax.spines['right'].set_visible(False)
+
+    # Adjust text to avoid overlap
+    adjust_text(
+        texts,
+        arrowprops=dict(arrowstyle='->', color='black', lw=0.5),
+        ax=ax,
+        **adjust_text_kwargs
+    )
+
+    plt.tight_layout()  # To make room for the legend outside the plot
+    if show:
+        plt.show()
+    return {'fig': plt.gcf(), 'ax': ax, 'data': top_interactions}
+
