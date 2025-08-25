@@ -57,7 +57,7 @@ from typing import Optional
 import pooch
 import numpy as np
 import pandas as pd
-import matplotlib.pyplot as plt
+import matplotlib.pyplot as plt 
 import seaborn as sns
 import io 
 from PIL import Image
@@ -67,6 +67,7 @@ import glob
 import math
 
 import src.utils as utils
+import src.analysis.matrices as mc
 
 AFDB_CACHE = pooch.os_cache("alphafold_db")
 
@@ -503,105 +504,6 @@ def get_plddt_all(protein_ids,
         print(f"plddt_df.shape: {plddt_df.shape}") 
     return plddt_df
 
-def bin_matrix(X, bin_size=10, agg_func=np.nanmax):
-    """
-    Bin a matrix by aggregating values within bins of specified size.
-    
-    Args:
-        X (np.ndarray): Input matrix to be binned
-        bin_size (int, optional): Size of each bin. Defaults to 10.
-        agg_func (callable, optional): Aggregation function to apply to each bin. Defaults to np.nanmax.
-        
-    Returns:
-        np.ndarray: Binned matrix with dimensions reduced by bin_size
-        
-    Example:
-        >>> X = np.random.rand(10, 10)
-        >>> binned = bin_matrix(X, bin_size=2)
-        >>> print(binned.shape)  # (5, 5)
-    """
-    if bin_size == 1 or bin_size is None:
-        return X
-    if isinstance(X, pd.DataFrame):
-        X = X.values
-        
-    # Calculate number of bins that fit in the matrix
-    n_bins = X.shape[0] // bin_size
-    
-    # Reshape into 4D array of bins, then aggregate along bin dimensions
-    return agg_func(
-        X[:n_bins*bin_size, :n_bins*bin_size].reshape(n_bins, bin_size, n_bins, bin_size), 
-        axis=(1,3)
-    )
-
-def expand_matrix(X, target_size=None,
-                  verbose=False):
-    """
-    Expand a binned matrix back to original dimensions by repeating values.
-    
-    Args:
-        X (np.ndarray): Input binned matrix
-        target_size (int): Target size for the expanded matrix (default: 1863)
-        verbose (bool): Whether to print verbose output (default: True).
-        
-    Returns:
-        np.ndarray: Expanded matrix with dimensions (target_size, target_size)
-    """
-    if target_size is None:
-        target_size = X.shape[0]
-        if verbose:
-            print(f"No target size specified, using input size {target_size}")
-
-    if X.shape[0] == target_size and X.shape[1] == target_size:
-        if verbose:
-            print(f"Matrix already has target size {target_size}x{target_size}")
-        return X
-    
-    # Calculate expansion factor based on input and target sizes
-    input_size = X.shape[0]
-    expansion_factor = target_size // input_size
-
-    # Expand the binned matrix back to original dimensions by repeating values
-    expanded_matrix = np.repeat(np.repeat(X, expansion_factor, axis=0), expansion_factor, axis=1)
-
-    # Ensure final dimensions are target_size x target_size by padding or truncating if necessary
-    current_size = expanded_matrix.shape[0]
-
-    if current_size < target_size:
-        # Pad with zeros if too small
-        if verbose:
-            print(f"Expanding x-axis by {target_size - current_size}")
-            print(f"Expanding y-axis by {target_size - current_size}")
-        expanded_matrix = np.pad(expanded_matrix, 
-                               ((0, target_size - current_size), 
-                                (0, target_size - current_size)), 
-                               mode='constant')
-    elif current_size > target_size:
-        # Truncate if too large
-        expanded_matrix = expanded_matrix[:target_size, :target_size]
-
-    return expanded_matrix
-
-def label_bins(bin_size, n_bins, max_labels=10):
-    """
-    Create and set bin labels for a contact map plot based on residue positions.
-    
-    Args:
-        bin_size (int): Size of each bin in residues
-        n_bins (int): Number of bins in the contact map
-        max_labels (int, optional): Maximum number of labels to show. Defaults to 10.
-        
-    Returns:
-        None: Modifies the current matplotlib plot's axis labels
-    """
-    # Calculate optimal spacing between labels to show max_labels
-    spacing = max(1, n_bins // max_labels)
-    
-    # Generate labels with optimal spacing
-    bin_labels = [f"{i*bin_size + 1}" if i % spacing == 0 else "" for i in range(n_bins)]
-    
-    plt.xticks(range(n_bins), bin_labels, rotation=90)
-    plt.yticks(range(n_bins), bin_labels)
 
 def plot_contact_map(contact_map,  
                      bin_size=2, 
@@ -651,7 +553,7 @@ def plot_contact_map(contact_map,
         vep_matrix = np.nanmax(vep_matrix) - vep_matrix
  
     ### Bin the matrix   
-    contact_map_binned = bin_matrix(X=contact_map, 
+    contact_map_binned = mc.bin_matrix(X=contact_map, 
                                     bin_size=bin_size, 
                                     agg_func=agg_func)
     n_bins = contact_map_binned.shape[0]
@@ -672,132 +574,14 @@ def plot_contact_map(contact_map,
                                  rotation=270, 
                                  va="bottom") 
 
-    label_bins(bin_size, n_bins, max_labels=max_labels)
+    mc.label_bins(bin_size, n_bins, max_labels=max_labels)
 
     plt.xlabel(x_label)
     plt.ylabel(y_label)
     plt.title(title)
     plt.show()
 
-    return contact_map, contact_map_binned
-
-
-
-def pad_matrices_to_max_shape(matrices,
-                              pad_value=np.nan):
-    """
-    Pad all matrices in the list to the maximum shape among them using np.nan.
-    """
-    max_shape = np.array([m.shape for m in matrices]).max(axis=0)
-    padded_matrices = []
-    for m in matrices:
-        pad_height = max_shape[0] - m.shape[0]
-        pad_width = max_shape[1] - m.shape[1]
-        if pad_height > 0 or pad_width > 0:
-            pad_widths = ((0, pad_height), (0, pad_width))
-            m_padded = np.pad(m, pad_widths, 
-                                mode='constant', 
-                                constant_values=pad_value)
-            padded_matrices.append(m_padded)
-        else:
-            padded_matrices.append(m)
-    return padded_matrices
-
-def average_matrices(matrices, 
-                     weights=None, 
-                     scale_multipliers=None,
-                     normalize_scale=True, 
-                     normalize_rows=False, 
-                     
-                     use_max=False):
-    """
-    Average a list of matrices with different weights.
-    
-    Parameters
-    ----------
-    matrices : list of numpy.ndarray
-        List of matrices to average
-    weights : list of float, optional
-        Weights for each matrix. If None, equal weights are used.
-    normalize_scale : bool or list of bool, default=True
-        Whether to normalize each matrix to [0,1] scale before averaging.
-        If a list, each boolean corresponds to the matrix at the same index.
-    normalize_rows : bool or list of bool, default=False
-        Whether to normalize each row of each matrix to sum to 1 before averaging.
-        If a list, each boolean corresponds to the matrix at the same index.
-        
-    Returns
-    -------
-    numpy.ndarray
-        Weighted average of the input matrices
-    """
-
-    if isinstance(matrices, dict):
-        matrices = list(matrices.values()) 
-
-    # Subset to matrices that are the same size as the REF
-    # If matrices are not all the same size, pad the smaller matrices to match the size of the largest
-    matrices = pad_matrices_to_max_shape(matrices)
-
-    if weights is None:
-        weights = [1] * len(matrices)
-
-    # Convert single boolean to list if needed
-    if isinstance(normalize_scale, bool):
-        normalize_scale = [normalize_scale] * len(matrices)
-    
-    # Apply scale normalization only to matrices where normalize_scale is True
-    for i, (matrix, should_normalize) in enumerate(zip(matrices, normalize_scale)):
-        if should_normalize:
-            matrices[i] = (matrix - np.nanmin(matrix)) / (np.nanmax(matrix) - np.nanmin(matrix))
-    
-    # Convert single boolean to list if needed
-    if isinstance(normalize_rows, bool):
-        normalize_rows = [normalize_rows] * len(matrices)
-    
-    # Apply row normalization only to matrices where normalize_rows is True
-    for i, (matrix, should_normalize) in enumerate(zip(matrices, normalize_rows)):
-        if should_normalize:
-            row_sums = np.nansum(matrix, axis=1, keepdims=True)
-            matrices[i] = np.divide(matrix, row_sums, 
-                                  where=(row_sums!=0) & (row_sums!=np.nan))
-
-    if scale_multipliers is not None:
-        for i, (matrix, multiplier) in enumerate(zip(matrices, scale_multipliers)):
-            matrices[i] = matrix * multiplier
-
-    if use_max:
-        return np.maximum.reduce([weights[i] * matrices[i] for i in range(len(matrices))])
-    else:
-        return sum(weights[i] * matrices[i] for i in range(len(matrices))) / sum(weights)
-    
-
-def normalize_rows(X: np.ndarray, 
-                   keep_nan: bool = False) -> np.ndarray:
-    """Normalize rows of a matrix to sum to 1.
-    
-    Parameters
-    ----------
-    X : numpy.ndarray
-        Input matrix to normalize
-    keep_nan : bool, default=False
-        If True, keep NaN values in the output. If False, replace NaN values with 0.
-    retain_row_weights : bool, default=False
-        If True, multiply the normalized values by the original row sums to retain the original weights.
-        
-    Returns
-    -------
-    numpy.ndarray
-        Matrix with normalized rows
-    """
-    row_sums = np.nansum(X.copy(), axis=1, keepdims=True)
-    if keep_nan:
-        X = np.divide(X, row_sums)
-    else:
-        X = np.divide(X, row_sums, 
-                      where=(row_sums!=0) & (row_sums!=np.nan))
-        
-    return X
+    return contact_map, contact_map_binned 
 
 
 def get_haplotype_ids(names, revert_naming=True, as_dict=False):
@@ -835,394 +619,6 @@ def get_haplotype_ids(names, revert_naming=True, as_dict=False):
         return {haplotype_id: name for name, haplotype_id in zip(names, haplotype_ids)}
     else:
         return haplotype_ids
-
-def animate_contact_maps_variation(contact_maps, 
-                                 n_frames=None,
-                                 bin_size=10,
-                                 pow=4,
-                                 cmap="gnuplot2",
-                                 figsize=(8, 6),
-                                 dpi=100,
-                                 duration=500,
-                                 output_path='results/plots/contact_maps_animation.gif'):
-    """
-    Create an animated GIF showing contact maps from different structures.
-    
-    Parameters
-    ----------
-    contact_maps : dict
-        Dictionary mapping names to contact map arrays
-    n_frames : int, optional
-        Number of frames to include (None for all)
-    bin_size : int, default=10
-        Size of bins for matrix binning
-    pow : int, default=4
-        Power to raise contact maps to
-    cmap : str, default="gnuplot2"
-        Colormap for visualization
-    figsize : tuple, default=(8, 6)
-        Figure size
-    dpi : int, default=100
-        DPI for saved images
-    duration : int, default=500
-        Duration per frame in milliseconds
-    output_path : str, default='results/plots/contact_maps_animation.gif'
-        Path to save the GIF
-        
-    Returns
-    -------
-    list
-        List of PIL Image objects (frames)
-    """
-    import matplotlib.animation as animation
-    from PIL import Image
-    import io
-    
-    frames = []
-    contact_maps_subset = list(contact_maps.items())[:n_frames]
-    
-    for i, (name, contact_map) in enumerate(tqdm(contact_maps_subset)):
-        # Bin the matrix   
-        contact_map_binned = bin_matrix(X=contact_map**pow, 
-                                           bin_size=bin_size)
-         
-        # Create a single plot for each frame
-        fig, ax = plt.subplots(figsize=figsize)
-        im = ax.imshow(contact_map_binned, 
-                        cmap=cmap, 
-                        interpolation="nearest")
-        
-        haplotype_id = get_haplotype_ids(name)[0]
-        
-        # Set haplotype ID left justified
-        ax.set_title(f"{haplotype_id}", fontsize=12, loc='left', pad=10)
-        
-        # Add frame counter right justified
-        ax.text(0.98, 0.98, f"({i+1} / {len(contact_maps_subset)})", 
-                transform=ax.transAxes, fontsize=12, ha='right', va='top', color='white')
-        
-        ax.axis('off')
-        
-        # Convert plot to image
-        buf = io.BytesIO()
-        plt.savefig(buf, format='png', dpi=dpi, bbox_inches='tight')
-        buf.seek(0)
-        img = Image.open(buf)
-        frames.append(img)
-        plt.close()
-
-    # Save as GIF
-    if frames:
-        frames[0].save(output_path, 
-                       save_all=True, 
-                       append_images=frames[1:], 
-                       duration=duration,
-                       loop=0)
-        from IPython.display import display, HTML
-        abs_path = os.path.abspath(output_path)
-        display(HTML(f'<a href="file://{abs_path}" target="_blank">GIF saved as \'{abs_path}\'</a>'))
-    
-    return frames
-
-
-
-
-def animate_contact_map_interpolation(map1, 
-                                    map2, 
-                                    num_frames=30, 
-                                    duration=200, # 200ms per frame
-                                    loop=0,
-                                    pow=1,
-                                    figsize=(8, 6),
-                                    dpi=100,
-                                    format="png",
-                                    cmap="gnuplot2",
-                                    save_path="results/plots/contact_map_interpolation.gif",
-                                    ):
-    """
-    Create a smooth animation transitioning between two contact maps using the trained autoencoder.
-    
-    Args:
-        map1: First contact map (numpy array)
-        map2: Second contact map (numpy array) 
-        model: Trained autoencoder model
-        num_frames: Number of frames in the animation
-        pow: Power to raise the contact map to
-        output_path: Path to save the GIF
-    """
-    
-    # Ensure maps have the same shape
-    if map1.shape != map2.shape:
-        # Resize map2 to match map1's shape
-        from scipy.ndimage import zoom
-        zoom_factors = (map1.shape[0] / map2.shape[0], map1.shape[1] / map2.shape[1])
-        map2 = zoom(map2, zoom_factors, order=1) 
-
-        map1 = np.power(map1, pow)
-        map2 = np.power(map2, pow)
-        # Fallback: simple linear interpolation without autoencoder
-        frames = []
-        for i in range(num_frames):
-            alpha = i / (num_frames - 1)
-            interpolated_map = alpha * map2 + (1 - alpha) * map1
-            
-            # Create frame
-            fig, ax = plt.subplots(figsize=figsize)
-            im = ax.imshow(interpolated_map, cmap=cmap, interpolation='nearest')
-            ax.set_title(f'Linear Interpolation Frame {i+1}/{num_frames} (α={alpha:.2f})')
-            ax.axis('off')
-            
-            # Add colorbar
-            cbar = plt.colorbar(im, ax=ax, shrink=0.8)
-            cbar.set_label('Contact Probability')
-            
-            # Convert plot to image
-            buf = io.BytesIO()
-            plt.savefig(buf, format=format, dpi=dpi, bbox_inches='tight')
-            buf.seek(0)
-            frame = Image.open(buf)
-            frames.append(frame)
-            plt.close()
-        
-        # Save as GIF
-        if frames:
-            frames[0].save(
-                save_path,
-                save_all=True,
-                append_images=frames[1:],
-                duration=duration,
-                loop=loop
-            )
-            print(f"Linear interpolation animation saved to {save_path}")
-        
-        return frames
-    
-import matplotlib.pyplot as plt
-import matplotlib.animation as animation 
-import numpy as np
-from scipy.spatial.distance import pdist, squareform
-import os
-
-def find_nearest_neighbor_path(distance_matrix, start_idx=0):
-    """Find path through all points using nearest neighbor algorithm"""
-    n = len(distance_matrix)
-    unvisited = set(range(n))
-    path = [start_idx]
-    unvisited.remove(start_idx)
-    
-    current = start_idx
-    while unvisited:
-        # Find nearest unvisited neighbor
-        min_dist = float('inf')
-        nearest = None
-        
-        for neighbor in unvisited:
-            dist = distance_matrix[current, neighbor]
-            if dist < min_dist:
-                min_dist = dist
-                nearest = neighbor
-        
-        path.append(nearest)
-        unvisited.remove(nearest)
-        current = nearest
-    
-    return path
-
-def animate_contact_map_morphing(
-    contact_maps, 
-    pow=4,
-    n_frames_per_transition=15,
-    bin_size=1,
-    random_order=True,
-    gif_filename='results/plots/contact_map_interpolation.gif',
-    interval=50,
-    fps=10,
-    dpi=100,
-):
-    """
-    Create and save an animation morphing between contact maps.
-
-    Parameters:
-        contact_maps (dict): Dictionary of contact maps.
-        cf: Object with bin_matrix and get_ref_key methods.
-        pow (int): Power to raise contact maps before binning.
-        n_frames_per_transition (int): Frames per transition.
-        bin_size (int): Bin size for bin_matrix.
-        random_order (bool): If True, use random order; else, nearest neighbor path.
-        gif_filename (str): Output GIF filename.
-        interval (int): Interval between frames in milliseconds.
-        fps (int): Frames per second for GIF.
-        dpi (int): DPI for saved images.    
-
-    Example:
-        >>> # Suppose you have a dictionary of contact maps (numpy arrays) keyed by sample names:
-        >>> contact_maps = {
-        ...     "sample1": np.random.rand(50, 50),
-        ...     "sample2": np.random.rand(50, 50),
-        ...     "sample3": np.random.rand(50, 50),
-        ... }
-        >>> # And a cf object with a bin_matrix method:
-        >>> class DummyCF:
-        ...     def bin_matrix(self, X, bin_size):
-        ...         # Simple binning: just return X for demonstration
-        ...         return X
-        ...     def get_ref_key(self):
-        ...         return "sample1"
-        >>> cf = DummyCF()
-        >>> animate_contact_map_morphing(
-        ...     contact_maps,
-        ...     cf,
-        ...     pow=2,
-        ...     n_frames_per_transition=10,
-        ...     bin_size=1,
-        ...     random_order=True,
-        ...     gif_filename='contact_map_demo.gif',
-        ...     fps=5
-        ... )
-        # This will display the animation and save it as 'contact_map_demo.gif'
-    """ 
-    import matplotlib.animation as animation  
-    from scipy.spatial.distance import pdist, squareform 
-
-    # Bin and power contact maps
-    contact_maps_binned = {k: bin_matrix(X=v**pow, bin_size=bin_size) for k, v in contact_maps.items()}
-    sample_ids = list(contact_maps_binned.keys())
-    first_sample = sample_ids[0]
-    first_contact_map = contact_maps_binned[first_sample]**pow
-
-    # Prepare arrays for distance calculation
-    print("Computing similarity matrix between contact maps...")
-    contact_map_arrays = []
-    valid_samples = []
-    for sample in sample_ids:
-        cm = contact_maps_binned[sample]
-        if cm is not None:
-            contact_map_arrays.append(cm.flatten())
-            valid_samples.append(sample)
-    contact_map_arrays = np.array(contact_map_arrays)
-
-    # Compute pairwise distances
-    distances = pdist(contact_map_arrays, metric='euclidean')
-    distance_matrix = squareform(distances)
-
-    # Find the optimal path
-    if random_order:
-        np.random.seed(42)
-        optimal_path = np.random.permutation(len(valid_samples))
-    else:
-        optimal_path = find_nearest_neighbor_path(distance_matrix)
-
-    # Set up the animation figure
-    fig, ax = plt.subplots()
-    ax.set_title("Contact Map Morphing Animation", fontsize=16)
-
-    # Normalize all contact maps to same range for consistent visualization
-    all_maps = [contact_maps_binned[valid_samples[i]] for i in optimal_path]
-    vmin = min(np.min(cm) for cm in all_maps)
-    vmax = max(np.max(cm) for cm in all_maps)
-
-    # Create initial image
-    img = ax.imshow(first_contact_map, cmap='gnuplot2', vmin=vmin, vmax=vmax)
-    plt.colorbar(img, ax=ax, label='Contact Probability')
-
-    # Add text annotation
-    text_annotation = ax.text(
-        0.02, 0.98,
-        f'Sample: {os.path.basename(valid_samples[optimal_path[0]]).split(".")[0]}',
-        transform=ax.transAxes, fontsize=12,
-        verticalalignment='top',
-        bbox=dict(boxstyle='round', facecolor='white', alpha=0.8)
-    )
-
-    def animate(frame, n_frames_per_transition=n_frames_per_transition):
-        """Animate function for smooth morphing between contact maps"""
-        n_maps = len(optimal_path)
-        total_frames = (n_maps - 1) * n_frames_per_transition
-
-        if frame >= total_frames:
-            frame = total_frames - 1
-
-        map_idx = frame // n_frames_per_transition
-        transition_progress = (frame % n_frames_per_transition) / n_frames_per_transition
-
-        # Get the two maps to interpolate between
-        map1_idx = optimal_path[map_idx]
-        map2_idx = optimal_path[map_idx + 1]
-
-        map1 = contact_maps_binned[valid_samples[map1_idx]]
-        map2 = contact_maps_binned[valid_samples[map2_idx]]
-
-        # Linear interpolation between the two maps
-        interpolated_map = (1 - transition_progress) * map1 + transition_progress * map2
-
-        # Update the image
-        img.set_array(interpolated_map)
-
-        # Update the text annotation
-        def get_sample_name(sample):
-            # Try to extract a meaningful sample name
-            base = os.path.basename(sample)
-            if "_unrelaxed" in base:
-                base = base.split("_unrelaxed")[0]
-            parts = base.split("_")
-            if len(parts) > 1:
-                return parts[1]
-            return base.split(".")[0]
-
-        sample1_name = get_sample_name(valid_samples[map1_idx])
-        sample2_name = get_sample_name(valid_samples[map2_idx])
-        text_annotation.set_text(
-            f'Transition: {sample1_name} → {sample2_name}\nProgress: {map_idx}/{n_maps} ({transition_progress:.1%})'
-        )
-        text_annotation.set_position((0.98, 0.98))  # Position at top-right corner
-        text_annotation.set_horizontalalignment('right')  # Anchor text to the right
-
-        return [img, text_annotation]
-
-    # Create animation
-    n_maps = len(optimal_path)
-    total_frames = (n_maps - 1) * n_frames_per_transition
-
-    print(f"Creating animation with {total_frames} frames...")
-    print(f"Transitioning through {n_maps} contact maps")
-
-    anim = animation.FuncAnimation(
-        fig, animate, frames=total_frames,
-        interval=interval, blit=True, repeat=True
-    )
-
-    plt.tight_layout()
-    plt.show()
-
-    # Save the animation as GIF
-    print("Saving animation as GIF...")
-    os.makedirs(os.path.dirname(gif_filename), exist_ok=True)
-    anim.save(gif_filename, writer='pillow', fps=fps, dpi=dpi)
-    print(f"Animation saved as '{gif_filename}'")
-
-    # Display some statistics about the path
-    print(f"\nAnimation Statistics:")
-    print(f"Number of contact maps: {n_maps}")
-    print(f"Total animation frames: {total_frames}")
-    print(f"Frames per transition: {n_frames_per_transition}")
-    print(f"Animation duration: {total_frames * 0.1:.1f} seconds")
-    print(f"GIF saved with {fps} FPS")
-
-    # Show the path taken
-    print(f"\nPath taken through contact maps:")
-    for i, idx in enumerate(optimal_path):
-        sample_name = os.path.basename(valid_samples[idx]).split(".")[0]
-        print(f"{i+1:2d}. {sample_name}")
-    
-    return {
-        "anim": anim,
-        "path": optimal_path,
-        "valid_samples": valid_samples,
-        "contact_maps_binned": contact_maps_binned,
-        "contact_map_arrays": contact_map_arrays,
-        "distances": distances,
-        "distance_matrix": distance_matrix,
-    }
 
 
 def standardize_id(id, 
@@ -1534,7 +930,7 @@ def process_contact_map_for_display(contact_map, bin_size=2, pow=4,
     
     # Bin the matrix
     if bin_size > 1:
-        contact_map = bin_matrix(contact_map, bin_size=bin_size, agg_func=np.nanmax)
+        contact_map = mc.bin_matrix(contact_map, bin_size=bin_size, agg_func=np.nanmax)
     
     return contact_map
 
@@ -2233,8 +1629,8 @@ def plot_contact_map_entropy(
     print("Entropy map shape:", entropy_map_np.shape)
 
     if bin_size is not None:
-        entropy_map_np = bin_matrix(entropy_map_np, bin_size=bin_size, agg_func=agg_func)
-        entropy_map_np = expand_matrix(entropy_map_np, target_size=ref_map.shape[0])
+        entropy_map_np = mc.bin_matrix(entropy_map_np, bin_size=bin_size, agg_func=agg_func)
+        entropy_map_np = mc.expand_matrix(entropy_map_np, target_size=ref_map.shape[0])
 
     plt.figure(figsize=figsize, dpi=dpi)
     im = plt.imshow(entropy_map_np, cmap=cmap, interpolation='nearest')
@@ -2247,35 +1643,6 @@ def plot_contact_map_entropy(
 
     return entropy_map_np
 
-
-def nonzero_mean(arr, axis=None):
-    """
-    Compute the mean of nonzero elements in an array, optionally along a given axis.
-
-    Args:
-        arr (array-like): Input array.
-        axis (int or None): Axis along which to compute the mean. If None, compute over the flattened array.
-
-    Returns:
-        float or np.ndarray: Mean of nonzero elements (np.nan if all are zero).
-    """
-    arr = np.array(arr)
-    mask = arr != 0
-    # If axis is None, just flatten
-    if axis is None:
-        if np.any(mask):
-            return np.nanmean(arr[mask])
-        else:
-            return np.nan
-    else:
-        # Compute mean only over nonzero elements along the given axis
-        # To avoid broadcasting issues, use masked arrays
-        arr_masked = np.ma.masked_where(~mask, arr)
-        mean = arr_masked.mean(axis=axis)
-        # Convert masked means to np.nan where all values were masked
-        return mean.filled(np.nan)
-
-
 def plot_contact_map_diff(
     contact_maps,
     ref_key=None,
@@ -2283,7 +1650,7 @@ def plot_contact_map_diff(
     cmap="seismic_r",
     figsize=None,
     dpi=100,
-    agg_func=nonzero_mean,
+    agg_func=mc.nonzero_mean,
     title="Gained/Lost Contacts Relative to REF",
     xlabel="Residue Position",
     ylabel="Residue Position",
@@ -2383,8 +1750,8 @@ def plot_contact_map_diff(
     if verbose:
         print("Difference-vs-REF map shape:", diff_vs_ref.shape)
 
-    diff_vs_ref_binned = bin_matrix(diff_vs_ref, bin_size=bin_size, agg_func=agg_func)
-    diff_vs_ref_binned = expand_matrix(diff_vs_ref_binned, target_size=ref_map.shape[0],
+    diff_vs_ref_binned = mc.bin_matrix(diff_vs_ref, bin_size=bin_size, agg_func=agg_func)
+    diff_vs_ref_binned = mc.expand_matrix(diff_vs_ref_binned, target_size=ref_map.shape[0],
                                        verbose=verbose)
 
     fig, ax = plt.subplots(figsize=figsize, dpi=dpi)
@@ -2801,8 +2168,7 @@ def plot_contact_map_subplots(
     contact_maps=None, 
     axes=None,
     split_ref_haplotype=False,
-    show_diag=False,
-    bin_matrix=None,
+    show_diag=False, 
     pow=4,
     bin_size=10,
     cmap="gnuplot2",
@@ -2841,8 +2207,7 @@ def plot_contact_map_subplots(
         most_diff_contact_maps (dict): Dictionary of the most different contact maps to plot.
         max_subplots (int): Maximum number of subplots to display.
         split_ref_haplotype (bool): If True, each subplot is split along the diagonal (bottom=REF, top=haplotype).
-        show_diag (bool): Whether to display the diagonal in the contact maps.
-        bin_matrix (callable): Function to bin the contact map.
+        show_diag (bool): Whether to display the diagonal in the contact maps. 
         pow (int or float): Power to raise the contact map values before binning.
         bin_size (int): Bin size for binning the contact map.
         cmap (str or Colormap): Colormap to use for imshow.
@@ -2881,9 +2246,7 @@ def plot_contact_map_subplots(
     import matplotlib.patches as patches
     import matplotlib as mpl
     import torch     
-    import math
-
-    from matplotlib.transforms import Bbox
+    import math  
 
     # --- Set up zoom-in parameters ---
     _default_zoom_in_params = {
@@ -2936,9 +2299,9 @@ def plot_contact_map_subplots(
         if not show_diag:
             np.fill_diagonal(contact_map, np.nan)
         # Prepare binned maps for both haplotype and REF
-        contact_map_binned = bin_matrix(X=contact_map**pow, bin_size=bin_size, agg_func=agg_func)
+        contact_map_binned = mc.bin_matrix(X=contact_map**pow, bin_size=bin_size, agg_func=agg_func)
         if ref_map is not None:
-            ref_map_binned = bin_matrix(X=ref_map**pow, bin_size=bin_size, agg_func=agg_func)
+            ref_map_binned = mc.bin_matrix(X=ref_map**pow, bin_size=bin_size, agg_func=agg_func)
         if normalize:
             contact_map_binned = utils.minmax_normalize_numpy(contact_map_binned)
             if ref_map is not None:
@@ -3022,8 +2385,8 @@ def plot_contact_map_subplots(
 
             # Prepare the two matrices to compare
             if highlight_postprocessed:
-                mat1 = np.nan_to_num(expand_matrix(contact_map_binned, target_size=contact_map.shape[0]))
-                mat2 = np.nan_to_num(expand_matrix(ref_map_binned, target_size=ref_map.shape[0]))
+                mat1 = np.nan_to_num(mc.expand_matrix(contact_map_binned, target_size=contact_map.shape[0]))
+                mat2 = np.nan_to_num(mc.expand_matrix(ref_map_binned, target_size=ref_map.shape[0]))
             else:
                 mat1 = np.nan_to_num(contact_map)
                 mat2 = np.nan_to_num(ref_map)
@@ -3164,7 +2527,7 @@ def plot_contact_map_subplots(
     # --- Add a grey border around the entire first subplot (REF) ---
     # Only if not using split_ref_haplotype, since there is no dedicated REF plot in split mode
     if not split_ref_haplotype and ref_map is not None:
-        ref_binned_shape = bin_matrix(X=ref_map**pow, bin_size=bin_size, agg_func=agg_func).shape[0]
+        ref_binned_shape = mc.bin_matrix(X=ref_map**pow, bin_size=bin_size, agg_func=agg_func).shape[0]
         border_color = "#888888"
         border_linewidth = 14  # You can adjust this for visibility
         border_shift_up = -8  # You can adjust this value as needed
@@ -3207,8 +2570,8 @@ def plot_contact_map_subplots(
 
             # Clamp to map size
             if split_ref_haplotype and ref_map is not None:
-                contact_map_binned = bin_matrix(X=contact_maps[name]**pow, bin_size=bin_size, agg_func=agg_func)
-                ref_map_binned = bin_matrix(X=ref_map**pow, bin_size=bin_size, agg_func=agg_func)
+                contact_map_binned = mc.bin_matrix(X=contact_maps[name]**pow, bin_size=bin_size, agg_func=agg_func)
+                ref_map_binned = mc.bin_matrix(X=ref_map**pow, bin_size=bin_size, agg_func=agg_func)
                 if normalize:
                     contact_map_binned = utils.minmax_normalize_numpy(contact_map_binned)
                     ref_map_binned = utils.minmax_normalize_numpy(ref_map_binned)
@@ -3230,7 +2593,7 @@ def plot_contact_map_subplots(
                 zoom_img[tril_idx] = ref_region[tril_idx]
                 zoom_cmap = zoom_in_cfg["cmap"] if zoom_in_cfg["cmap"] is not None else cmap
             else:
-                contact_map_binned = bin_matrix(X=contact_map**pow, bin_size=bin_size, agg_func=agg_func)
+                contact_map_binned = mc.bin_matrix(X=contact_map**pow, bin_size=bin_size, agg_func=agg_func)
                 if normalize:
                     contact_map_binned = utils.minmax_normalize_numpy(contact_map_binned)
                 binned_shape = contact_map_binned.shape[0]
@@ -3497,8 +2860,8 @@ def plot_most_different_contact_maps(
 
             # Bin the maps if requested
             if highlight_postprocessed:
-                v_clean = bin_matrix(X=v_clean**pow, bin_size=bin_size, agg_func=agg_func)
-                ref_clean = bin_matrix(X=ref_clean**pow, bin_size=bin_size, agg_func=agg_func)
+                v_clean = mc.bin_matrix(X=v_clean**pow, bin_size=bin_size, agg_func=agg_func)
+                ref_clean = mc.bin_matrix(X=ref_clean**pow, bin_size=bin_size, agg_func=agg_func)
 
             if normalize:
                 v_clean = utils.minmax_normalize_numpy(v_clean)
@@ -3561,8 +2924,7 @@ def plot_most_different_contact_maps(
         axes=axes,
         contact_maps=contact_maps, 
         split_ref_haplotype=split_ref_haplotype,
-        show_diag=show_diag,
-        bin_matrix=bin_matrix,
+        show_diag=show_diag, 
         pow=pow,
         bin_size=bin_size,
         cmap=cmap,
@@ -3592,8 +2954,7 @@ def get_ref_size(contact_maps):
     ref_map = contact_maps[ref_key]
     return ref_map.shape[0]
 
-import matplotlib.pyplot as plt
-import math
+
 
 def plot_stacked_contact_maps(
     contact_maps, 
@@ -3758,7 +3119,7 @@ def plot_stacked_contact_maps(
             x0 += stack_x_shift
             y0 += stack_y_shift
 
-            m = bin_matrix(m**pow, bin_size=bin_size)
+            m = mc.bin_matrix(m**pow, bin_size=bin_size)
 
             # Prevent flipping: set origin='upper' so (0,0) is top-left, and do not swap y-limits
             ax.imshow(
@@ -4070,7 +3431,7 @@ def plot_superpopulation_maps(contact_maps, pow=1, nrows=2, cmap='viridis', bin_
 
     axes_flat = axes.flatten()
     for ax, (pop, m) in zip(axes_flat, contact_maps.items()):
-        m_binned = bin_matrix(m, bin_size=bin_size)
+        m_binned = mc.bin_matrix(m, bin_size=bin_size)
         im = ax.imshow(m_binned**pow, cmap=cmap)
         ax.set_title(pop)
         ax.axis('off')
@@ -4255,7 +3616,7 @@ def compute_population_specific_contact_maps(
         df = df.loc[[k for k in pop_map_keys if k in df.index]]
 
         # Compute weight average population contact map
-        specific_maps[pop] = average_matrices(pop_maps, 
+        specific_maps[pop] = mc.average_matrices(pop_maps, 
                                                 weights=df[col].values,
                                                 normalize_scale=False)  
         # Compute absolute difference, then mean
