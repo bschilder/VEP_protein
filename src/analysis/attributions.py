@@ -14,6 +14,7 @@ import src.vep_analysis as va
 import src.haplosaurus as hs
 import src.onekg as og
 import src.colabfold.colabfold as cf
+import src.analysis.matrices as mc
 
 def wtvariants_to_clusters_xgboost(dr_df, 
                                    target = "cluster",
@@ -898,7 +899,7 @@ def compute_enrichment_vs_threshold(
     results = []
     for threshold in tqdm(thresholds): 
         df_thresh = df[df[interaction_col] > threshold]
-        Xoutliers_all = utils.fill_coordinates(
+        Xoutliers_all = mc.fill_coordinates(
             df_thresh, 
             x_id_col=x_id_col,
             y_id_col=y_id_col,
@@ -1242,7 +1243,7 @@ def plot_enrichment_vs_interactions(
     if show:
         plt.show()
 
-    return {"fig": fig, "axs": [ax1, ax2], "data": results_df}
+    return {"fig": fig, "axes": [ax1, ax2], "data": results_df}
 
 
 
@@ -2285,7 +2286,7 @@ def plot_sensitization_maps(
     plt.tight_layout() 
 
 
-    return {'fig': fig, 'axs': (ax1, ax2), 
+    return {'fig': fig, 'axes': (ax1, ax2), 
             'data': {'Xs': Xs,
                      'outlier_df': outlier_df, 
                      'outlier_sig': outlier_sig}}
@@ -2346,7 +2347,7 @@ def plot_contact_and_sensitization_maps(
 
     outlier_sig = outlier_sig.copy()
     
-    contact_map_unbinned = cf.expand_matrix(contact_map_binned)
+    contact_map_unbinned = mc.expand_matrix(contact_map_binned)
     print(contact_map_unbinned.shape)
 
     if save_path is None:
@@ -2378,7 +2379,7 @@ def plot_contact_and_sensitization_maps(
         plt.xlabel(xlabel)
         plt.ylabel(ylabel)
         plt.title(title)
-        cf.label_bins(bin_size=bin_size, n_bins=n_bins)
+        mc.label_bins(bin_size=bin_size, n_bins=n_bins)
 
     def color_mask(g, mask_color = None):
         # Set the color for masked values 
@@ -2390,7 +2391,7 @@ def plot_contact_and_sensitization_maps(
 
     ##### PLOT 1 #####
     if show_plot[0]:
-        plt.figure(dpi=dpi, figsize=figsize)
+        fig1, ax1 = plt.subplots(dpi=dpi, figsize=figsize)
         g1 = sns.heatmap(contact_map_unbinned,
                         cmap=cmap,
                         mask=mask,
@@ -2402,10 +2403,12 @@ def plot_contact_and_sensitization_maps(
                         ylabel="Residue Position",
                         title=title)
         color_mask(g1, mask_color=mask_color)
+    else:
+        fig1, ax1 = None, None
 
     ##### PLOT 2 #####
     if show_plot[1]:
-        plt.figure(dpi=dpi, figsize=figsize)
+        fig2, ax2 = plt.subplots(dpi=dpi, figsize=figsize)
         # masking_threshold_2 = np.percentile(contact_map_unbinned[~np.isnan(contact_map_unbinned)], q=masking_percentile2)
         # mask_2 = contact_map_unbinned < masking_threshold_2
         g2 = sns.heatmap(contact_map_unbinned,
@@ -2420,7 +2423,7 @@ def plot_contact_and_sensitization_maps(
                         ylabel="Residue Position",
                         title=title)
         color_mask(g2, mask_color=mask_color)
-
+        
         # Add rectangles around high-confidence sensitization variants
         if add_rect:    
             add_rectangles(
@@ -2435,13 +2438,18 @@ def plot_contact_and_sensitization_maps(
                 color_col="outlier_type",
                 cmap=rectangles_cmap
             )
+    else:
+        fig2, ax2 = None, None
+
+        
 
     if save_fig:
         plt.savefig(save_path, dpi=dpi, bbox_inches='tight')
     if any(show_plot):
         plt.show()
 
-    return {'fig': [g1, g2], 'axs': None, 
+    return {'fig': {'subplot1': fig1, 'subplot2': fig2}, 
+            'axes': {'subplot1': ax1, 'subplot2': ax2}, 
             'data': {'contact_map_unbinned': contact_map_unbinned, 
                      'outlier_sig': outlier_sig}}
 
@@ -2449,7 +2457,8 @@ def plot_contact_and_sensitization_maps(
 
 def plot_clinsig_interaction_strength(
     ridge_df,
-    vep_prot,
+    annot_df=None,
+    site_col="mutant",
     agg_func="mean",
     x="clinsig",    
     y="interaction_strength",
@@ -2475,9 +2484,14 @@ def plot_clinsig_interaction_strength(
         annotator_kwargs = {}
 
     # Prepare bar_df
-    bar_df = ridge_df.groupby("clinical_variant")[y].agg(agg_func).reset_index().merge(
-        vep_prot[["mutant", x]].drop_duplicates().rename(columns={"mutant": "clinical_variant"})
-    )
+    if x in ridge_df.columns:
+        bar_df = ridge_df.groupby(["clinical_variant",x])[y].agg(agg_func).reset_index()
+    else:
+        if annot_df is None:
+            raise ValueError("annot_df is required when x is not in ridge_df.columns")
+        bar_df = ridge_df.groupby("clinical_variant")[y].agg(agg_func).reset_index().merge(
+            annot_df[[site_col, x]].drop_duplicates().rename(columns={site_col: "clinical_variant"})
+        )
 
     # Standardize clinsig labels: replace underscores with spaces, expand "path" and "likely_path"
     def clean_clinsig(clinsig):
@@ -2555,6 +2569,7 @@ def plot_clinsig_interaction_strength(
     ax.spines['right'].set_visible(False)
 
     return {'fig': plt.gcf(), 'ax': ax, 'data': bar_df}
+
 
 
 def add_extra_row_col(df, 
@@ -2771,7 +2786,7 @@ def plot_variant_sensitization_schematic(
     # First heatmap: Binarized WT Variant Matrix
     Xwt = wtvariants_to_vep_linear_model_out['X_wt_clean'].copy()
    
-    Xwt, row_range, col_range = utils.find_dense_submatrix(Xwt, 
+    Xwt, row_range, col_range = mc.find_dense_submatrix(Xwt, 
                                                             window_height=n_haplotypes, 
                                                             window_width=n_wt_variants, 
                                                             include_any_1_col=include_any_1_col, 

@@ -507,6 +507,7 @@ def get_plddt_all(protein_ids,
 
 def plot_contact_map(contact_map,  
                      bin_size=2, 
+                     figsize=None,
                      reverse_sign=False,
                      normalize_rows=False,
                      normalize_scale=False,
@@ -567,6 +568,7 @@ def plot_contact_map(contact_map,
         contact_map_binned = contact_map_binned**pow
 
     # Create the plot 
+    fig, ax = plt.subplots(figsize=figsize)
     plt.imshow(contact_map_binned, 
                 cmap=cmap, 
                 interpolation="nearest")
@@ -581,7 +583,7 @@ def plot_contact_map(contact_map,
     plt.title(title)
     plt.show()
 
-    return contact_map, contact_map_binned 
+    return {"fig": fig, 'axes': ax, 'data':{'contact_map': contact_map, 'contact_map_binned': contact_map_binned}} 
 
 
 def get_haplotype_ids(names, revert_naming=True, as_dict=False):

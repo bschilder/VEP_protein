@@ -1811,7 +1811,33 @@ def plot_vep_percentiles(vep_df,
 
     return {'fig':g, 'axes':ax, 'data':pct_df}
 
+def fix_clinsig_labels(df, 
+                       palette=None, 
+                       clinsig_col="clinsig", 
+                       mutant_col="mutant"):
+    
+    # Normalize 'clinsig' column
+    df[clinsig_col] = df[clinsig_col].str.replace("path$", "pathogenic", regex=True).str.replace("_", " ")
 
+    # Get palette and normalize its keys
+    if palette is None:
+        palette = utils.get_clinsig_palette()
+    palette = {k.replace("path$", "pathogenic").replace("_", " "): v for k, v in palette.items()}
+
+    # Recompute mutant counts after normalization
+    if mutant_col is not None and mutant_col in df.columns:
+        mutant_counts = df.groupby(clinsig_col)[mutant_col].nunique()
+    else:
+        mutant_counts = None
+        
+    clinsig_label_map = {
+        clinsig: f"{clinsig} ({mutant_counts.get(clinsig, 0)} variants)" if mutant_counts is not None else clinsig
+        for clinsig in df[clinsig_col].unique()
+    }
+    df[clinsig_col+"_label"] = df[clinsig_col].map(clinsig_label_map)
+    palette = {clinsig_label_map.get(k, k): v for k, v in palette.items()}
+
+    return df, palette
 
 def plot_vep_histogram_with_arrows(
     vep_df,
@@ -1819,6 +1845,7 @@ def plot_vep_histogram_with_arrows(
     min_haplotype_seq_len_pct=None,
     figsize=(9, 4),
     add_arrows=True,
+    palette=utils.get_clinsig_palette(),
     arrow_y=-0.25,
     arrow_length=0.25,
     arrow_head_width=0.012,
@@ -1890,25 +1917,10 @@ def plot_vep_histogram_with_arrows(
         .agg({"VEP": "mean", "haplotype": "count"}).reset_index()
 
     # Normalize 'clinsig' column
-    hist_df["clinsig"] = hist_df["clinsig"].str.replace("path", "pathogenic", regex=False).str.replace("_", " ")
-
-    # Get palette and normalize its keys
-    palette = utils.get_clinsig_palette()
-    palette = {k.replace("path", "pathogenic").replace("_", " "): v for k, v in palette.items()}
-
-    # Recompute mutant counts after normalization
-    mutant_counts = hist_df.groupby('clinsig')['mutant'].nunique()
-
-    # Add mutant counts to clinsig labels
-    clinsig_label_map = {
-        clinsig: f"{clinsig} ({mutant_counts.get(clinsig, 0)} variants)"
-        for clinsig in hist_df["clinsig"].unique()
-    }
-    hist_df["clinsig_label"] = hist_df["clinsig"].map(clinsig_label_map)
-    palette = {clinsig_label_map.get(k, k): v for k, v in palette.items()}
+    hist_df, palette_labels = fix_clinsig_labels(hist_df, clinsig_col="clinsig", mutant_col="mutant")
 
     # Ensure 'clinsig' is a categorical with the palette order
-    clinsig_order = list(palette.keys())
+    clinsig_order = list(palette_labels.keys())
     hist_df['clinsig'] = pd.Categorical(hist_df['clinsig'], categories=clinsig_order, ordered=True)
     hist_df = hist_df.sort_values('clinsig')
 
@@ -1919,7 +1931,7 @@ def plot_vep_histogram_with_arrows(
         hue='clinsig_label',
         multiple='layer',
         stat="probability",
-        palette=palette,
+        palette=palette_labels,
         ax=ax
     )
 
@@ -1969,75 +1981,19 @@ def plot_vep_histogram_with_arrows(
     else:
         plt.tight_layout()
     
-    if add_arrows:
-        # ---- Add arrows underneath the plot ----
-        fig.subplots_adjust(bottom=0.22)  # Make room for arrows
-
-        # Helper to convert data coordinate x to axes fraction
-        def data_to_axes(x, ax):
-            x0, x1 = ax.get_xlim()
-            return (x - x0) / (x1 - x0)
-
-        zero_axes = data_to_axes(0, ax)
-
-        # Use original palette for arrows
-        orig_palette = utils.get_clinsig_palette()
-
-        # Adjust arrow parameters when external legend is enabled to prevent overlap
-        if external_legend_annotation:
-            # Keep arrows visible but adjust positioning for smaller plot area
-            adjusted_arrow_length = arrow_length * 0.8  # Moderate reduction
-            adjusted_head_width = arrow_head_width * 0.85  # Keep heads visible
-            adjusted_head_length = arrow_head_length * 0.85  # Keep heads visible
-            arrow_spacing = 0.008  # Reduced spacing to prevent overlap
-        else:
-            # Use original arrow parameters
-            adjusted_arrow_length = arrow_length
-            adjusted_head_width = arrow_head_width
-            adjusted_head_length = arrow_head_length
-            arrow_spacing = 0.02
-
-        # Pathogenic (left) arrow
-        left_arrow_start = zero_axes - adjusted_head_width * 2
-        left_arrow_end = left_arrow_start - adjusted_arrow_length
-        left_arrow = mpatches.FancyArrowPatch(
-            (left_arrow_start, arrow_y), (left_arrow_end, arrow_y),
-            mutation_scale=25,
-            arrowstyle=f'-|>,head_length={int(adjusted_head_length*100)},head_width={int(adjusted_head_width*100)}',
-            color=orig_palette.get("path", "#d62728"),
-            linewidth=arrow_linewidth,
-            transform=ax.transAxes,
-            zorder=10,
-            clip_on=False
-        )
-        ax.add_patch(left_arrow)
-        left_label_x = (left_arrow_start + left_arrow_end) / 2
-        ax.text(
-            left_label_x - .04, arrow_y, "pathogenic",
-            color="white", fontsize=arrow_text_fontsize, fontweight='bold', ha='left', va='center',
-            transform=ax.transAxes, zorder=11
-        )
-
-        # Benign (right) arrow
-        right_arrow_start = zero_axes + arrow_spacing
-        right_arrow_end = right_arrow_start + adjusted_arrow_length
-        right_arrow = mpatches.FancyArrowPatch(
-            (right_arrow_start, arrow_y), (right_arrow_end, arrow_y),
-            mutation_scale=25,
-            arrowstyle=f'-|>,head_length={int(adjusted_head_length*100)},head_width={int(adjusted_head_width*100)}',
-            color=orig_palette.get("benign", "#2ca02c"),
-            linewidth=arrow_linewidth,
-            transform=ax.transAxes,
-            zorder=10,
-            clip_on=False
-        )
-        ax.add_patch(right_arrow)
-        right_label_x = (right_arrow_start + right_arrow_end) / 2
-        ax.text(
-            right_label_x, arrow_y, "benign",
-            color="white", fontsize=arrow_text_fontsize, fontweight='bold', ha='right', va='center',
-            transform=ax.transAxes, zorder=11
-        )
+    if add_arrows:  
+        # _draw_vep_direction_arrows_chunky(
+        #     ax=ax,
+        #     fig=fig,
+        #     arrow_y=arrow_y,
+        #     arrow_length=arrow_length,
+        #     arrow_head_width=arrow_head_width,
+        #     arrow_head_length=arrow_head_length,
+        #     arrow_linewidth=arrow_linewidth,
+        #     arrow_text_fontsize=arrow_text_fontsize,
+        #     external_legend_annotation=external_legend_annotation
+        # )
+        _draw_vep_direction_arrows(ax, palette, reverse=True) 
 
     plt.show()
     return {'fig':fig, 'axes':ax, 'data':hist_df}
@@ -2110,3 +2066,229 @@ def plot_vep_variance(vep_df,
     if return_df:
         return vep_variance
     
+
+def _draw_vep_direction_arrows(ax, palette, reverse=False):
+    """
+    Draws arrows and labels underneath the x-axis to indicate 'Pathogenic' and 'Benign' directions.
+    If reverse=True, swaps the directions and sides of 'Pathogenic' and 'Benign'.
+    """
+    # Get axis limits
+    xmin, xmax = ax.get_xlim()
+    ymin, ymax = ax.get_ylim()
+
+    # Move arrows and text further down
+    arrow_y = ymin - 0.12 * (ymax - ymin)
+    label_y = arrow_y - 0.04 * (ymax - ymin)
+
+    # Compute center and spacing for arrows
+    center_x = (xmin + xmax) / 2
+    arrow_inner_offset = 0.10 * (xmax - xmin)  # distance from center to inner end of each arrow
+    arrow_length = 0.20 * (xmax - xmin)        # length of each arrow
+
+    # Use palette keys, fallback to "path" for "pathogenic"
+    path_color = palette.get("pathogenic", palette.get("path", "#d62728"))
+    benign_color = palette.get("benign", "#1f77b4")
+
+    if not reverse:
+        # Red right arrow for "Pathogenic"
+        right_arrow_start = center_x + arrow_inner_offset
+        right_arrow_end = right_arrow_start + arrow_length
+        ax.annotate(
+            '',
+            xy=(right_arrow_end, arrow_y),
+            xytext=(right_arrow_start, arrow_y),
+            arrowprops=dict(facecolor=path_color, edgecolor=path_color, arrowstyle='->', lw=2),
+            annotation_clip=False
+        )
+        ax.text(
+            (right_arrow_start + right_arrow_end) / 2, label_y, "Pathogenic", 
+            color=path_color, ha='center', va='top', fontsize=12, fontweight='bold'
+        )
+
+        # Blue left arrow for "Benign"
+        left_arrow_start = center_x - arrow_inner_offset
+        left_arrow_end = left_arrow_start - arrow_length
+        ax.annotate(
+            '',
+            xy=(left_arrow_end, arrow_y),    # arrow tip (left)
+            xytext=(left_arrow_start, arrow_y),  # arrow tail (right, closer to center)
+            arrowprops=dict(facecolor=benign_color, edgecolor=benign_color, arrowstyle='-|>', lw=2),
+            annotation_clip=False
+        )
+        ax.text(
+            (left_arrow_start + left_arrow_end) / 2, label_y, "Benign", 
+            color=benign_color, ha='center', va='top', fontsize=12, fontweight='bold'
+        )
+    else:
+        # Red left arrow for "Pathogenic" (now on the left)
+        left_arrow_start = center_x - arrow_inner_offset
+        left_arrow_end = left_arrow_start - arrow_length
+        ax.annotate(
+            '',
+            xy=(left_arrow_end, arrow_y),
+            xytext=(left_arrow_start, arrow_y),
+            arrowprops=dict(facecolor=path_color, edgecolor=path_color, arrowstyle='-|>', lw=2),
+            annotation_clip=False
+        )
+        ax.text(
+            (left_arrow_start + left_arrow_end) / 2, label_y, "Pathogenic", 
+            color=path_color, ha='center', va='top', fontsize=12, fontweight='bold'
+        )
+
+        # Blue right arrow for "Benign" (now on the right)
+        right_arrow_start = center_x + arrow_inner_offset
+        right_arrow_end = right_arrow_start + arrow_length
+        ax.annotate(
+            '',
+            xy=(right_arrow_end, arrow_y),    # arrow tip (right)
+            xytext=(right_arrow_start, arrow_y),  # arrow tail (left, closer to center)
+            arrowprops=dict(facecolor=benign_color, edgecolor=benign_color, arrowstyle='->', lw=2),
+            annotation_clip=False
+        )
+        ax.text(
+            (right_arrow_start + right_arrow_end) / 2, label_y, "Benign", 
+            color=benign_color, ha='center', va='top', fontsize=12, fontweight='bold'
+        )
+
+def _draw_vep_direction_arrows_chunky(ax, fig, 
+                                      subplots_adjust_kwargs={"bottom":.2},
+                                      arrow_y=-0.25, 
+                                      arrow_length=0.25, 
+                                      arrow_head_width=0.012, 
+                                      arrow_head_length=0.065, 
+                                      arrow_linewidth=0, 
+                                      arrow_text_fontsize=11, 
+                                      palette=utils.get_clinsig_palette(),
+                                      external_legend_annotation=False):
+        """
+        Add pathogenic and benign arrows underneath the plot.
+        """
+        import matplotlib.patches as mpatches
+
+        fig.subplots_adjust(**subplots_adjust_kwargs)  # Make room for arrows
+
+        # Helper to convert data coordinate x to axes fraction
+        def data_to_axes(x, ax):
+            x0, x1 = ax.get_xlim()
+            return (x - x0) / (x1 - x0)
+
+        zero_axes = data_to_axes(0, ax) 
+
+        # Adjust arrow parameters when external legend is enabled to prevent overlap
+        if external_legend_annotation:
+            # Keep arrows visible but adjust positioning for smaller plot area
+            adjusted_arrow_length = arrow_length * 0.8  # Moderate reduction
+            adjusted_head_width = arrow_head_width * 0.85  # Keep heads visible
+            adjusted_head_length = arrow_head_length * 0.85  # Keep heads visible
+            arrow_spacing = 0.008  # Reduced spacing to prevent overlap
+        else:
+            # Use original arrow parameters
+            adjusted_arrow_length = arrow_length
+            adjusted_head_width = arrow_head_width
+            adjusted_head_length = arrow_head_length
+            arrow_spacing = 0.02
+
+        # Pathogenic (left) arrow
+        left_arrow_start = zero_axes - adjusted_head_width * 2
+        left_arrow_end = left_arrow_start - adjusted_arrow_length
+        left_arrow = mpatches.FancyArrowPatch(
+            (left_arrow_start, arrow_y), (left_arrow_end, arrow_y),
+            mutation_scale=25,
+            arrowstyle=f'-|>,head_length={int(adjusted_head_length*100)},head_width={int(adjusted_head_width*100)}',
+            color=palette.get("path", "#d62728"),
+            linewidth=arrow_linewidth,
+            transform=ax.transAxes,
+            zorder=10,
+            clip_on=False
+        )
+        ax.add_patch(left_arrow)
+        left_label_x = (left_arrow_start + left_arrow_end) / 2
+        ax.text(
+            left_label_x - .04, arrow_y, "pathogenic",
+            color="white", fontsize=arrow_text_fontsize, fontweight='bold', ha='left', va='center',
+            transform=ax.transAxes, zorder=11
+        )
+
+        # Benign (right) arrow
+        right_arrow_start = zero_axes + arrow_spacing
+        right_arrow_end = right_arrow_start + adjusted_arrow_length
+        right_arrow = mpatches.FancyArrowPatch(
+            (right_arrow_start, arrow_y), (right_arrow_end, arrow_y),
+            mutation_scale=25,
+            arrowstyle=f'-|>,head_length={int(adjusted_head_length*100)},head_width={int(adjusted_head_width*100)}',
+            color=palette.get("benign", "#2ca02c"),
+            linewidth=arrow_linewidth,
+            transform=ax.transAxes,
+            zorder=10,
+            clip_on=False
+        )
+        ax.add_patch(right_arrow)
+        right_label_x = (right_arrow_start + right_arrow_end) / 2
+        ax.text(
+            right_label_x, arrow_y, "benign",
+            color="white", fontsize=arrow_text_fontsize, fontweight='bold', ha='right', va='center',
+            transform=ax.transAxes, zorder=11
+        )
+    
+def plot_vep_kde_with_arrows(vep_df, 
+                                    vep_col="VEP",
+                                    clinsig_col="clinsig",
+                                    site_col="site", 
+                                    title="VEP Distributions by Clinical Significance",
+                                    x_label=r"$VEP_{mean}$",
+                                    y_label="Density",  
+                                    palette = utils.get_clinsig_palette(),
+                                    figsize=(8, 5),
+                                    save_path=None,
+                                    dpi=300,
+                                    plot_kwargs={},
+                                    save_kwargs={},
+                                    ):
+    """
+    Plot VEP distributions stratified by clinical significance categories,
+    with annotated arrows for 'Pathogenic' and 'Benign' directions.
+
+    Parameters
+    ----------
+    vep_df : pd.DataFrame
+        DataFrame with columns ["clinsig", "site", "VEP"] (and possibly "clinsig_label").
+    save_path : str
+        Path to save the output figure.
+    dpi : int
+        DPI of the output figure.
+    plot_kwargs : dict
+        Keyword arguments for the plot.
+    save_kwargs : dict
+        Keyword arguments for the save function.
+    """
+    import matplotlib.pyplot as plt
+    import seaborn as sns
+
+    plt.figure(figsize=figsize)
+    vep_df = vep_df.dropna(subset=[vep_col,clinsig_col]).groupby([clinsig_col,site_col], observed=True)[vep_col].mean().reset_index(name=vep_col)
+
+    vep_df, palette_labeled = fix_clinsig_labels(vep_df, clinsig_col=clinsig_col, mutant_col=site_col)
+
+    ax = sns.kdeplot(
+        data=vep_df,
+        x=vep_col,
+        hue=clinsig_col+"_label",
+        multiple="fill",
+        fill=True,
+        cut=0, 
+        palette=palette_labeled,
+        **plot_kwargs
+    )
+    plt.axvline(x=0.2, color='white', linestyle='--', linewidth=2, alpha=1)
+    plt.xlabel(x_label)
+    plt.ylabel(y_label)
+    plt.title(title) 
+
+    _draw_vep_direction_arrows(ax, palette)
+
+    if save_path is not None:
+        plt.savefig(save_path, dpi=dpi, bbox_inches="tight", **save_kwargs)
+
+    plt.show()
+
+    return {'fig':ax, 'axes':ax, 'data':vep_df}

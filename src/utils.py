@@ -928,6 +928,8 @@ def get_clinsig_palette(values=['path', 'likely_path', 'likely_benign', 'benign'
     palette = make_palette(values, palette) 
     palette["VUS"] = "lightgray"
     palette["vus"] = "lightgray"
+    palette["pathogenic"] = palette["path"]
+    palette["likely_pathogenic"] = palette["likely_path"]
     return palette
 
 
@@ -1357,123 +1359,7 @@ def add_variant_name(df,
     if was_pandas:
         result = result.to_pandas()
     
-    return result
-
-
-
-def minmax_normalize(X, procedure=["rows", "cols"], verbose=True):
-    """
-    Min-max normalize a matrix by columns and/or rows in a specified order.
-    Args:
-        X: Matrix to normalize (pd.DataFrame or np.ndarray)
-        procedure: List of procedures to apply. Can be "rows" or "cols".
-    Returns:
-        Normalized matrix
-    """
-
-    if not isinstance(X, pd.DataFrame) and isinstance(X, np.ndarray):
-        X = pd.DataFrame(X)    
-
-    def normalize_rows(X):
-        X = X.sub(X.min(axis=1), axis=0)
-        X = X.div(X.max(axis=1), axis=0)
-        return X
-    
-    def normalize_cols(X):
-        X = X.sub(X.min(axis=0), axis=1)
-        X = X.div(X.max(axis=0), axis=1)
-        return X
-    
-    for proc in procedure:
-        if proc == "rows":
-            if verbose:
-                print("Normalizing rows")
-            X = normalize_rows(X)
-        elif proc == "cols":
-            if verbose:
-                print("Normalizing columns")
-            X = normalize_cols(X)
-        else:
-            raise ValueError(f"Invalid procedure: {proc}")
-    return X
-
-
-def minmax_normalize_numpy(X):
-    """
-    Min-max normalize a matrix by columns and/or rows in a specified order.
-    Args:
-        X: Matrix to normalize (pd.DataFrame or np.ndarray)
-    Returns:
-        Normalized matrix
-    """
-    X_min = np.nanmin(X, axis=1, keepdims=True)
-    X_max = np.nanmax(X, axis=1, keepdims=True)
-    X = (X - X_min) / (X_max - X_min + 1e-8)
-    return X
-
-
-def fill_coordinates(df, 
-                     full_length,
-                     x_id_col='variant',
-                     y_id_col='mutant',
-                     x_pos_col='variant_position',
-                     y_pos_col='mutant_position',
-                     value_col='VEP',
-                     aggfunc='mean', 
-                     dropna=False,
-                     **kwargs):
-    """
-    Fill a coordinate matrix with values from a DataFrame, creating a complete grid of positions.
-    
-    Args:
-        df (pd.DataFrame): Input DataFrame containing the data in long format (one row per x-y coordinate)
-        x_id_col (str): Column name for x-axis identifiers
-        y_id_col (str): Column name for y-axis identifiers
-        x_pos_col (str): Column name for x-axis positions
-        y_pos_col (str): Column name for y-axis positions
-        value_col (str): Column name for the values to fill in the matrix
-        full_length (int): Length of the complete position range
-        aggfunc (str): Aggregation function to use for duplicate values
-        dropna (bool): Whether to drop NaN values
-        **kwargs: Additional arguments passed to pd.pivot_table
-        
-    Returns:
-        pd.DataFrame: Pivoted matrix with filled coordinates
-    """
-    # Select and deduplicate relevant columns
-    dat = df[[x_id_col, y_id_col, x_pos_col, y_pos_col, value_col]].drop_duplicates().copy()
-    
-    # Convert position columns to integers, handling NaN values
-    dat[x_pos_col] = dat[x_pos_col].astype('Int64')
-    dat[y_pos_col] = dat[y_pos_col].astype('Int64')
-
-    # Drop rows with NaN values in x_pos_col or y_pos_col
-    dat.dropna(subset=[x_pos_col, y_pos_col], inplace=True)
-
-    # Create complete range of positions
-    all_positions = pd.DataFrame({
-        y_pos_col: range(1, full_length + 1),
-        x_pos_col: range(1, full_length + 1)
-    })
-
-    # Merge with original data to include all positions
-    dat = pd.merge(
-        dat,
-        all_positions,
-        on=[y_pos_col, x_pos_col],
-        how='outer'
-    )
-
-    # Create pivoted matrix
-    X = dat.pivot_table(
-        index=x_pos_col, 
-        columns=y_pos_col, 
-        values=value_col, 
-        aggfunc=aggfunc, 
-        dropna=dropna,
-        **kwargs
-    )
-    return X
+    return result  
 
 def vep_to_matrix(
     vep_df,
@@ -1531,6 +1417,7 @@ def vep_to_matrix(
     A  0.1  0.2
     B  0.3  0.4
     """
+    import src.analysis.matrices as mc
     vep_df = vep_df.copy()
     
     # Add ploid column if it exists
@@ -1561,14 +1448,14 @@ def vep_to_matrix(
     vep_df[value_col] = vep_df[value_col].astype(float)
 
     if verbose:
-        calc_percent_nas(vep_df)
+        mc.calc_percent_nas(vep_df)
 
     # Use much faster groupby.unstack with built-in mean (skipna by default)
     # takes 4.7s, as opposed to pivot_table which takes 90 seconds!
     X = vep_df.groupby([sample_col, site_col], sort=False, observed=True
                        )[value_col].mean().unstack()
 
-    X = fill_na(X, fillna_method)
+    X = mc.fill_na(X, fillna_method)
 
     # Ensure index and columns are sorted for consistency
     if sort_index:
@@ -1576,50 +1463,6 @@ def vep_to_matrix(
 
     return X
 
-def calc_percent_nas(df):
-    percent_nas = df.isna().sum().sum() / df.size * 100
-    print(f"Percent of cells in df that are NaN: {percent_nas:.2f}%") 
-
-def fill_na(X, 
-            fillna_method=None,
-            verbose=True):
-
-    if verbose:
-        calc_percent_nas(X)
-        print(f"Filling NaNs with {fillna_method}")
-
-
-
-    # Compute fill value for missing data
-    if fillna_method == "colmean":
-        # Fill NaNs in each column with the column mean
-        col_means = X.mean(axis=0, skipna=True)
-        X = X.fillna(col_means)
-    elif fillna_method == "colmedian":
-        # Fill NaNs in each column with the column median
-        col_medians = X.median(axis=0, skipna=True)
-        X = X.fillna(col_medians)
-    elif fillna_method == "rowmean":
-        # Fill NaNs in each row with the row mean
-        row_means = X.mean(axis=1, skipna=True)
-        X = X.T.fillna(row_means).T
-    elif fillna_method == "rowmedian":
-        # Fill NaNs in each row with the row median
-        row_medians = X.median(axis=1, skipna=True)
-        X = X.T.fillna(row_medians).T
-    elif isinstance(fillna_method, (int, float)):
-        X = X.fillna(fillna_method)
-    elif fillna_method is None or fillna_method is False:
-        # Do not fill NaNs, just return as is
-        pass
-    else:
-        raise ValueError(f"Invalid fillna_method: {fillna_method}")
-    
-    if verbose:
-        calc_percent_nas(X)
-        print(f"Final matrix shape: {X.shape}")
-    
-    return X
 
 
 def vep_to_matrix_torch(vep_samples,
@@ -1967,116 +1810,10 @@ def add_hgvsp_id(
     return vep_prot
 
 
-
-def find_dense_submatrix(
-    Xwt, 
-    window_height=10, 
-    window_width=10, 
-    frac_min=0.2, 
-    frac_max=0.8, 
-    plot=True, 
-    verbose=True, 
-    include_any_1_col=False,
-    include_any_1_row=False,
-    **clustermap_kwargs
-):
-    """
-    Cluster the matrix, then slide a window to find a submatrix with a fraction of 1s between frac_min and frac_max.
-    Optionally plot the heatmap of the found submatrix.
-
-    Parameters
-    ----------
-    Xwt : pd.DataFrame
-        Binary matrix to search.
-    window_height : int
-        Height of the sliding window.
-    window_width : int
-        Width of the sliding window.
-    frac_min : float
-        Minimum fraction of 1s in the submatrix.
-    frac_max : float
-        Maximum fraction of 1s in the submatrix.
-    plot : bool
-        Whether to plot the heatmap of the found submatrix.
-    verbose : bool
-        Whether to print information about the found submatrix.
-    include_any_1_col : bool
-        If True, after finding the submatrix, include any columns from the original matrix where the value is 1 for at least one of the selected rows.
-    include_any_1_row : bool
-        If True, after finding the submatrix, include any rows from the original matrix where the value is 1 for at least one of the selected columns.
-    **clustermap_kwargs : dict
-        Additional arguments to pass to sns.clustermap.
-
-    Returns
-    -------
-    submatrix : pd.DataFrame or None
-        The found submatrix, or None if not found.
-    (row_start, row_end), (col_start, col_end) : tuple of ints or None
-        The indices of the found submatrix, or None if not found.
-
-    Examples
-    --------
-    >>> import pandas as pd
-    >>> import numpy as np
-    >>> # Create a 20x20 random binary matrix with a dense 1s block in the center
-    >>> np.random.seed(0)
-    >>> X = np.random.binomial(1, 0.1, size=(20, 20))
-    >>> X[5:10, 7:12] = 1  # Insert a dense block of 1s
-    >>> df = pd.DataFrame(X, index=[f"row{i}" for i in range(20)], columns=[f"col{j}" for j in range(20)])
-    >>> submatrix, row_idx, col_idx = find_dense_submatrix(df, window_height=5, window_width=5, frac_min=0.7, frac_max=1.0, plot=False)
-    Found 5x5 submatrix at rows 5-10, cols 7-12 with 100.0% 1s
-    >>> print(submatrix)
-           col7  col8  col9  col10  col11
-    row5      1     1     1      1      1
-    row6      1     1     1      1      1
-    row7      1     1     1      1      1
-    row8      1     1     1      1      1
-    row9      1     1     1      1      1
-    """
-    # Perform clustering and get the reordered matrix
-    if plot:
-        cg = sns.clustermap(Xwt, figsize=(10,10), cmap="viridis", **clustermap_kwargs)
-    else:
-        # Suppress plotting by using a dummy matplotlib backend and closing the figure
-        import matplotlib
-        import matplotlib.pyplot as plt
-        backend = matplotlib.get_backend()
-        matplotlib.use('Agg')
-        cg = sns.clustermap(Xwt, figsize=(10,10), cmap="viridis", **clustermap_kwargs)
-        plt.close('all')
-        matplotlib.use(backend)
-    Xwt_clustered = Xwt.iloc[cg.dendrogram_row.reordered_ind, cg.dendrogram_col.reordered_ind]
-
-    for i in range(Xwt_clustered.shape[0] - window_height + 1):
-        for j in range(Xwt_clustered.shape[1] - window_width + 1):
-            sub = Xwt_clustered.iloc[i:i+window_height, j:j+window_width]
-            frac_ones = sub.values.sum() / sub.size
-            if frac_min <= frac_ones <= frac_max:
-                if verbose:
-                    print(f"Found {window_height}x{window_width} submatrix at rows {i}-{i+window_height}, cols {j}-{j+window_width} with {frac_ones*100:.1f}% 1s")
-                # Handle both include_any_1_col and include_any_1_row
-                if include_any_1_col or include_any_1_row:
-                    selected_rows = sub.index
-                    selected_cols = sub.columns
-                    # Start with the submatrix
-                    rows_to_use = selected_rows
-                    cols_to_use = selected_cols
-                    if include_any_1_col:
-                        # Find all columns in the original matrix where at least one of these rows has a 1
-                        cols_with_1 = Xwt.loc[selected_rows].any(axis=0)
-                        cols_to_use = cols_with_1[cols_with_1].index
-                    if include_any_1_row:
-                        # Find all rows in the original matrix where at least one of these columns has a 1
-                        rows_with_1 = Xwt.loc[:, cols_to_use].any(axis=1)
-                        rows_to_use = rows_with_1[rows_with_1].index
-                    sub_expanded = Xwt.loc[rows_to_use, cols_to_use]
-                    if plot:
-                        sns.heatmap(sub_expanded, cmap="viridis", cbar=True)
-                    return sub_expanded, (i, i+window_height), (j, j+window_width)
-                else:
-                    if plot:
-                        sns.heatmap(sub, cmap="viridis", cbar=True)
-                    return sub, (i, i+window_height), (j, j+window_width)
-    if verbose:
-        print(f"No {window_height}x{window_width} submatrix found with {int(frac_min*100)}-{int(frac_max*100)}% 1s.")
-    return None, None, None
+FIG_SAVE_KWARGS = {
+    "dpi":300, 
+    "bbox_inches":"tight", 
+    "transparent":True, 
+    "pad_inches":0.1, 
+    "facecolor":"None", 
+}

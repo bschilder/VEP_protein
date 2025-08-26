@@ -3048,6 +3048,8 @@ def plot_haplotypes_summary(
     verbose=True,
     show_median=True,  # New argument to control median annotation
     median_line_kwargs=None,  # Optional kwargs for the median line
+    save_path=None,
+    fig_save_kwargs=utils.FIG_SAVE_KWARGS,
 ):
     """
     Plot the number of haplotypes per protein (subplot1) and 
@@ -3135,6 +3137,9 @@ def plot_haplotypes_summary(
     ax2.set_title(title[1])
 
     plt.tight_layout()
+    if save_path is not None:
+        plt.savefig(save_path, **fig_save_kwargs)
+    
     plt.show()
 
     return {'fig':fig, 
@@ -3233,10 +3238,10 @@ def plot_haplotypes_by_superpop_specificity(
         }
 
     if ax is None:
-        fig, ax = plt.subplots(figsize=(10, 6))
+        fig, ax = plt.subplots(figsize=(10, 6)) 
     # Add black outline to each bar using edgecolor and linewidth
-    sns.barplot(
-        data=haplotype_counts,
+    fig  = sns.barplot( 
+        data=haplotype_counts,  
         x='category',
         y='haplotype',
         palette=palette,
@@ -3251,7 +3256,7 @@ def plot_haplotypes_by_superpop_specificity(
     if show and ax is None:
         plt.tight_layout()
         plt.show()
-    return ax, haplotype_counts
+    return {'fig':fig, 'axes':ax, 'data':haplotype_counts}
 
 def plot_superpopulation_bar(haplotypes,
                              ax=None, 
@@ -3298,6 +3303,7 @@ def plot_superpopulation_bar(haplotypes,
         fig, ax = plt.subplots(figsize=(2, 5), dpi=dpi, facecolor='none')
         fig.patch.set_alpha(0.0)  # Make figure background transparent
     else:
+        fig = ax.figure
         # Make the axis background transparent
         ax.patch.set_alpha(0.0)
         # Also make the figure background transparent if we have access to it
@@ -3406,7 +3412,7 @@ def plot_superpopulation_bar(haplotypes,
     if ax is None:                                  # if no Axes object is provided, use tight layout and show plot
         plt.tight_layout()
         plt.show()
-    return ax, superpop_counts                          # return DataFrame with superpopulation counts
+    return {'fig':fig, 'axes':ax, 'data':superpop_counts}                         # return DataFrame with superpopulation counts
 
  
 def plot_haplotypes_and_superpop_bar(
@@ -3439,13 +3445,17 @@ def plot_haplotypes_and_superpop_bar(
     if use_upset:
         # Create a single figure for the left plot
         fig, ax1 = plt.subplots(1, 1, figsize=(figsize[0] * width_ratios[0] / sum(width_ratios), figsize[1]), facecolor='none')
+        outputs["fig"] = fig
+        outputs["axes"] = ax1
         
-        # Left: superpopulation bar
-        ax, haplotype_counts = plot_superpopulation_bar(
+        # Left: superpopulation bar 
+        plot_superpopulation_bar_out = plot_superpopulation_bar(
             haplotypes, ax=ax1
         )
-        outputs["subplot1"] = ax
-        outputs["subplot1_data"] = haplotype_counts
+        ax = plot_superpopulation_bar_out["axes"]
+        haplotype_counts = plot_superpopulation_bar_out["data"]
+
+        outputs["subplot1"] = plot_superpopulation_bar_out
         
         # Right: UpSet plot - create it separately
         upset, counts_df = plot_superpop_upset(
@@ -3453,8 +3463,7 @@ def plot_haplotypes_and_superpop_bar(
             ax=None,  # Let UpSet create its own figure
             **upset_kwargs
         )
-        outputs["subplot2"] = upset
-        outputs["subplot2_data"] = counts_df
+        outputs["subplot2"] = {'fig':upset, 'axes':None, 'data':counts_df}
         
         # Try to get the UpSet figure and adjust its size
         try:
@@ -3478,8 +3487,7 @@ def plot_haplotypes_and_superpop_bar(
         ax, haplotype_counts = plot_superpopulation_bar(
             haplotypes, ax=axes[0]
         )
-        outputs["subplot1"] = ax
-        outputs["subplot1_data"] = haplotype_counts
+        outputs["subplot1"] = {'fig':fig, 'axes':ax, 'data':haplotype_counts}
 
         # Right: haplotypes by superpop specificity
         ax, haplotype_counts = plot_haplotypes_by_superpop_specificity(
@@ -3487,13 +3495,10 @@ def plot_haplotypes_and_superpop_bar(
             ax=axes[1], 
             show=False
         )
-        outputs["subplot2"] = ax
-        outputs["subplot2_data"] = haplotype_counts
+        outputs["subplot2"] = {'fig':fig, 'axes':ax, 'data':haplotype_counts}
 
         # Adjust layout to prevent overlap
         plt.subplots_adjust(wspace=0.3)  # Add space between subplots
-    
-    outputs["fig"] = fig
     
     if show:
         plt.show()
