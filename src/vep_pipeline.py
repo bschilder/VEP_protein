@@ -1,4 +1,5 @@
 import os
+from re import S
 import pandas as pd
 import argparse
 import pathlib 
@@ -38,14 +39,11 @@ def list_models(as_list=True):
     """
     models = []
     # ESM models
-    try:
+    if esm_old:
         models += ESM.list_models(return_list=True)
-    except:
-        pass
-    try:
+    else:
         models += ESM3.list_models()
-    except:
-        pass
+ 
     # Other models TBD...
     # ....
     if as_list:
@@ -314,7 +312,7 @@ def vep_pipeline(prot_df: pd.DataFrame = None,
                         # Run VEP
                         ## ESM1/2 models
                         model_run = False
-                        try:
+                        if esm_old:
                             if model_location in ESM.list_models(return_list=True):
                                 ESMp.main(
                                     dms_input=variants_path,
@@ -329,29 +327,25 @@ def vep_pipeline(prot_df: pd.DataFrame = None,
                                     enable_data_parallel=enable_data_parallel,
                                     verbose=verbose
                                 )
-                            model_run = True
-                        except:
-                            pass
+                            model_run = True 
+                        
                         ## ESM3/C models
-                        # try:
-                        if model_location in ESM3.list_models():
-                            ESMp.main(
-                                dms_input=variants_path,
-                                dms_output=save_path,
-                                model_location=[(model, alphabet)],
-                                sequence=msa,
-                                mutation_col=mutation_col,
-                                offset_idx=1,
-                                scoring_strategy=ss,
-                                is_ref=is_ref, 
-                                force=force,
-                                enable_data_parallel=enable_data_parallel,
-                                verbose=verbose
-                            )
-                            model_run = True
-                        # except Exception as e:
-                        #     print(f"Error running model: {e}")
-                        #     pass 
+                        if not esm_old:
+                            if model_location in ESM3.list_models():
+                                ESMp.main(
+                                    dms_input=variants_path,
+                                    dms_output=save_path,
+                                    model_location=[(model, alphabet)],
+                                    sequence=msa,
+                                    mutation_col=mutation_col,
+                                    offset_idx=1,
+                                    scoring_strategy=ss,
+                                    is_ref=is_ref, 
+                                    force=force,
+                                    enable_data_parallel=enable_data_parallel,
+                                    verbose=verbose
+                                )
+                                model_run = True 
                         if not model_run:
                             raise ValueError(f"Model failed to run: {model_location}")
                         

@@ -1,0 +1,11 @@
+﻿Group,Parameters,References
+ESM1,"43M, 670M",Rives et al. (2021)
+ESM1v,650M,Meier et al. (2021)
+ESM1b,650M,Rives et al. (2021)
+ESM2,"35M, 650M, 15B",Lin et al. (2022)
+ESM3,1.4B,Hayes et al. (2025)
+ESMC,600M,Hayes et al. (2025)
+AlphaFold2,93M,Jumper et al. (2021)
+AlphaFold3,?,Abramson et al. (2024)
+Flashzoi,197M,Hingerl et al. (2024)
+SpliceAI,699K,Jaganathan et al. (2019)

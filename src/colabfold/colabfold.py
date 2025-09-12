@@ -27,14 +27,17 @@
 
 ##### Example usage: #####
 ## If using Elzar HPC:
-# module load CUDA/12.3.0 GCC 
+# module load EBModules CUDA/12.6.0 GCC 
 #
 # export PATH="/home/schilder/projects/localcolabfold/colabfold-conda/bin:$PATH"
 # export CUDA_VISIBLE_DEVICES=1,3
 #
 # python: 
+# >> import pandas as pd; import os
+# >> if 'NOTEBOOK_INITIALIZED' not in globals():
+# >>     os.chdir(os.path.dirname(os.path.abspath('.')))
+# >>     NOTEBOOK_INITIALIZED = True
 # >> import src.haplosaurus as hs;
-# >> import os
 # >> haplotypes = hs.get_haplotypes(tx_ids=["ENST00000357654"], cache_only=True)
 # >> hs.haplotypes_to_fasta(haplotypes=haplotypes,  
 # >>                       save_dir=os.path.expanduser("~/projects/data/colabfold/ENST00000357654"), 
@@ -48,6 +51,7 @@
 #### OR using custom MSA (constructed using the same MSA template for all sequences using the create_haplotype_msas() function)
 # colabfold_batch --save-single-representations --save-pair-representations af2_sameMSA/ af2_sameMSA/
 
+from re import M
 from Bio.PDB import PDBParser, Selection
 from Bio.PDB.MMCIFParser import MMCIFParser
 from Bio.PDB import alphafold_db as afdb
@@ -2295,7 +2299,9 @@ def plot_contact_map_subplots(
     # We will store the *first* highlight region for each subplot, matching the highlight box
     zoom_in_regions = [None] * len(contact_maps)
 
-    for i, (name, contact_map) in enumerate(tqdm(contact_maps)):
+    for i, (name, contact_map) in enumerate(contact_maps.items()):
+        if name == ref_key:
+            continue
         if i >= len(axes):
             break  # Prevent IndexError if more items than axes
         if not show_diag:
@@ -2305,9 +2311,9 @@ def plot_contact_map_subplots(
         if ref_map is not None:
             ref_map_binned = mc.bin_matrix(X=ref_map**pow, bin_size=bin_size, agg_func=agg_func)
         if normalize:
-            contact_map_binned = utils.minmax_normalize_numpy(contact_map_binned)
+            contact_map_binned = mc.minmax_normalize_numpy(contact_map_binned)
             if ref_map is not None:
-                ref_map_binned = utils.minmax_normalize_numpy(ref_map_binned)
+                ref_map_binned = mc.minmax_normalize_numpy(ref_map_binned)
         binned_shape = contact_map_binned.shape[0]
 
         # Compose the split image if requested and possible
@@ -2575,8 +2581,8 @@ def plot_contact_map_subplots(
                 contact_map_binned = mc.bin_matrix(X=contact_maps[name]**pow, bin_size=bin_size, agg_func=agg_func)
                 ref_map_binned = mc.bin_matrix(X=ref_map**pow, bin_size=bin_size, agg_func=agg_func)
                 if normalize:
-                    contact_map_binned = utils.minmax_normalize_numpy(contact_map_binned)
-                    ref_map_binned = utils.minmax_normalize_numpy(ref_map_binned)
+                    contact_map_binned = mc.minmax_normalize_numpy(contact_map_binned)
+                    ref_map_binned = mc.minmax_normalize_numpy(ref_map_binned)
                 binned_shape = contact_map_binned.shape[0]
                 x_binned = max(0, x_binned)
                 y_binned = max(0, y_binned)
@@ -2597,7 +2603,7 @@ def plot_contact_map_subplots(
             else:
                 contact_map_binned = mc.bin_matrix(X=contact_map**pow, bin_size=bin_size, agg_func=agg_func)
                 if normalize:
-                    contact_map_binned = utils.minmax_normalize_numpy(contact_map_binned)
+                    contact_map_binned = mc.minmax_normalize_numpy(contact_map_binned)
                 binned_shape = contact_map_binned.shape[0]
                 x_binned = max(0, x_binned)
                 y_binned = max(0, y_binned)
@@ -2866,8 +2872,8 @@ def plot_most_different_contact_maps(
                 ref_clean = mc.bin_matrix(X=ref_clean**pow, bin_size=bin_size, agg_func=agg_func)
 
             if normalize:
-                v_clean = utils.minmax_normalize_numpy(v_clean)
-                ref_clean = utils.minmax_normalize_numpy(ref_clean)
+                v_clean = mc.minmax_normalize_numpy(v_clean)
+                ref_clean = mc.minmax_normalize_numpy(ref_clean)
 
             # Use compute_highlight_scores to get a difference score
             # Use highlight_min_size and highlight_n_regions for window/region parameters
@@ -3660,3 +3666,203 @@ def compute_population_specific_contact_maps(
         "specific_binary_diff_maps": specific_binary_diff_maps,
         "specific_binary_diff_figs": specific_binary_diff_figs,
     }
+
+
+
+def plot_contact_map_and_zooms(
+    contact_maps_wt,
+    ridge_df,
+    target_gene, 
+    main_plot_above=False,
+    max_highlights=12,
+    highlight_size=100,
+    zoom_nrows = 6,
+    zoom_ncols=None,
+    zoom_subplot_size = 2,
+    main_nrows = 2,
+    main_ncols = 2,
+    pow=4,
+    main_padding=0.25,
+    save_path=None
+):
+    import matplotlib.pyplot as plt
+    import matplotlib.patches as patches
+    import numpy as np
+
+    half_size = highlight_size // 2
+
+    if zoom_ncols is None:
+        zoom_ncols = int(np.ceil(max_highlights / zoom_nrows))
+    
+
+    ref_key = get_ref_key(contact_maps_wt)
+
+    def plot_contact_map_and_zooms_i(v, hap_id, main_plot_above=main_plot_above, main_padding=0.25):
+        # Set up figure and gridspec
+        if main_plot_above:
+            # Add an extra row for padding under the main plot
+            fig = plt.figure(
+                figsize=(max(6, zoom_subplot_size * zoom_ncols), 6 + zoom_subplot_size * zoom_nrows + 0.5)
+            )
+            # Add a padding row (height_ratios: [main, pad, zoom, zoom, zoom])
+            height_ratios = [6, main_padding] + [zoom_subplot_size] * zoom_nrows
+            gs = fig.add_gridspec(
+                zoom_nrows + 2, zoom_ncols,
+                height_ratios=height_ratios,
+                hspace=0.25
+            )
+            ax_main = fig.add_subplot(gs[0, :])
+            # The padding axis (not shown) is gs[1, :]
+            zoom_subplot_indices = []
+            for i in range(max_highlights):
+                row_idx = (i // zoom_ncols) + 2  # +2 because row 0 is main, row 1 is padding
+                col_idx = i % zoom_ncols
+                if row_idx <= zoom_nrows + 1 and col_idx < zoom_ncols:
+                    zoom_subplot_indices.append((row_idx, col_idx))
+        else:
+            # Main plot takes up the 4 subplot positions in the upper left (2x2)
+            # The rest of the subplots are filled with zoomed-in subplots
+            # We'll use a (zoom_nrows, zoom_ncols + 2) grid, with the main plot in (0:2, 0:2)
+            # and zooms in the remaining positions
+
+            # FIX: Make all zoomed-in subplots the same size by using a uniform grid for zooms
+            # Place main plot in (0:main_nrows, 0:main_ncols), zooms in (0:zoom_nrows, main_ncols:main_ncols+zoom_ncols)
+            
+            total_nrows = max(zoom_nrows, main_nrows)
+            total_ncols = main_ncols + zoom_ncols
+            fig = plt.figure(
+                figsize=(main_ncols * 3 + zoom_subplot_size * zoom_ncols, total_nrows * zoom_subplot_size)
+            )
+            # Build width_ratios: main_ncols for main plot, then zoom_ncols for zooms
+            width_ratios = [3] * main_ncols + [zoom_subplot_size] * zoom_ncols
+            height_ratios = [zoom_subplot_size] * total_nrows
+            gs = fig.add_gridspec(
+                total_nrows, total_ncols,
+                width_ratios=width_ratios,
+                height_ratios=height_ratios,
+                hspace=0.275, wspace=0.25
+            )
+            # Main plot occupies (0:main_nrows, 0:main_ncols)
+            ax_main = fig.add_subplot(gs[0:main_nrows, 0:main_ncols])
+            # Prepare zoom subplot indices: fill left-to-right, top-to-bottom, skipping main plot area
+            zoom_subplot_indices = []
+            for i in range(max_highlights):
+                # Linear index among zoom subplots
+                zoom_idx = i
+                # Compute row and col in the zoom grid (excluding main plot area)
+                # We fill left-to-right, top-to-bottom, starting at (0, main_ncols)
+                row = zoom_idx // zoom_ncols
+                col = zoom_idx % zoom_ncols + main_ncols
+                if row < total_nrows and col < total_ncols:
+                    zoom_subplot_indices.append((row, col))
+
+        im = ax_main.imshow(v**pow, cmap='gnuplot2', origin='upper')
+
+        for i, (idx, row) in enumerate(ridge_df.iloc[:max_highlights].iterrows()):
+            x = int(row['clinical_position'])
+            y = int(row['wt_position'])
+            rect = patches.Rectangle(
+                (x - half_size, y - half_size),
+                highlight_size, highlight_size,
+                linewidth=1, edgecolor='lime', facecolor='none'
+            )
+            ax_main.add_patch(rect)
+            # Draw crosshairs: horizontal through rectangle, vertical from bottom to rectangle
+            # Horizontal line: from left edge to right edge of rectangle (crosses through highlight)
+            ax_main.plot(
+                [0, x - half_size + highlight_size - 1],
+                [y, y],
+                color='lime', linewidth=1, linestyle='-'
+            )
+            # Vertical line (from bottom edge to bottom side of rectangle)
+            ax_main.plot(
+                [x, x],
+                [v.shape[0] - 1, y - half_size],
+                color='lime', linewidth=1, linestyle='-'
+            )
+            ax_main.spines['top'].set_visible(False)
+            ax_main.spines['bottom'].set_visible(False)
+            ax_main.spines['left'].set_visible(False)
+            ax_main.spines['right'].set_visible(False)
+
+            # Always extract a zoom of the same size, padding with zeros if needed
+            x_start = x - half_size
+            x_end = x + half_size + 1
+            y_start = y - half_size
+            y_end = y + half_size + 1
+
+            # Pad the array if the window goes out of bounds
+            pad_left = max(0, -x_start)
+            pad_right = max(0, x_end - v.shape[1])
+            pad_top = max(0, -y_start)
+            pad_bottom = max(0, y_end - v.shape[0])
+
+            # Compute the valid region in the original array
+            x_start_valid = max(x_start, 0)
+            x_end_valid = min(x_end, v.shape[1])
+            y_start_valid = max(y_start, 0)
+            y_end_valid = min(y_end, v.shape[0])
+
+            zoomed = v[y_start_valid:y_end_valid, x_start_valid:x_end_valid] ** pow
+
+            # Pad as needed to get to (highlight_size, highlight_size)
+            zoomed = np.pad(
+                zoomed,
+                ((pad_top, pad_bottom), (pad_left, pad_right)),
+                mode='constant',
+                constant_values=0
+            )
+
+            # Place zoomed subplot
+            if i < len(zoom_subplot_indices):
+                gs_idx = zoom_subplot_indices[i]
+                ax_zoom = fig.add_subplot(gs[gs_idx])
+                ax_zoom.imshow(zoomed, cmap='gnuplot2', origin='upper')
+                ax_zoom.set_title(
+                    f"{row['wt_variant']} | {row['clinical_variant']}\n(Interaction: {row['interaction_strength_signed']:.2f})",
+                    fontsize=8
+                )
+                center_x = highlight_size // 2
+                center_y = highlight_size // 2
+                ax_zoom.scatter([center_x], [center_y], facecolors='none', edgecolors='lime', marker='s', s=200, linewidths=3)
+                ax_zoom.set_xticks([])
+                ax_zoom.set_yticks([])
+
+        ax_main.set_title(f"{target_gene}: {hap_id} Contact Map")
+        plt.colorbar(im, ax=ax_main, fraction=0.046, pad=0.04)
+        ax_main.set_xlabel("Clinical Variant Position")
+        ax_main.set_ylabel("WT Variant Position")
+
+        # Prevent x-axis and y-axis tick labels from going beyond the max coordinates of the original data
+        # Set the limits to the shape of the data
+        ax_main.set_xlim(-0.5, v.shape[1] - 0.5)
+        ax_main.set_ylim(v.shape[0] - 0.5, -0.5)
+
+        # Set x and y ticks to be within the data range
+        # Only show ticks that are within the data shape
+        xticks = ax_main.get_xticks()
+        yticks = ax_main.get_yticks()
+        xticks = [tick for tick in xticks if 0 <= tick < v.shape[1]]
+        yticks = [tick for tick in yticks if 0 <= tick < v.shape[0]]
+        ax_main.set_xticks(xticks)
+        ax_main.set_yticks(yticks)
+
+        # Hide the padding axis if main_plot_above
+        if main_plot_above:
+            for col in range(zoom_ncols):
+                ax_pad = fig.add_subplot(gs[1, col])
+                ax_pad.axis('off')
+
+        plt.tight_layout()
+        if save_path is not None:
+            plt.savefig(save_path, **utils.FIG_SAVE_KWARGS)
+        plt.show()
+        return {'fig':fig, 'axes':ax_main, 'data':{'contact_map':v}}
+
+    results = {}
+    for k, v in contact_maps_wt.items():
+        if k == ref_key:
+            hap_id = get_haplotype_ids(k)[0]
+            results[k] = plot_contact_map_and_zooms_i(v, hap_id, main_plot_above=main_plot_above, main_padding=main_padding)
+
+    return results

@@ -881,6 +881,7 @@ def plot_vep_density(vep_df,
     #                   color='black', 
     #                   linestyle='--', 
     #                   alpha=0.5)
+    return {'fig': g.fig, 'axes': g.axes, 'data': vep_df}
 
 def rm_subplot_prefixes(g):
     g.set_titles(row_template='{row_name}', 
@@ -3719,6 +3720,11 @@ def variant_count_by_source_barplot(urls={'substitutions': "https://marks.hms.ha
     plt.xlabel('Variant Count')
     plt.ylabel('Consequence (Source)')
     plt.tight_layout()
+
+    # Remove the top and right spines (margin lines) for a cleaner look
+    ax.spines['top'].set_visible(False)
+    ax.spines['right'].set_visible(False)
+    
     if show_plot:
         plt.show()
     return {'fig': fig, 'ax': ax, 'data': grouped}

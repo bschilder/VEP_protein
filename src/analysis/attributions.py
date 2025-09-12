@@ -841,6 +841,8 @@ def compute_enrichment_vs_threshold(
     y_id_col="clinical_variant",
     x_pos_col="wt_position",
     y_pos_col="clinical_position",
+    min_val=None,
+    max_val=None,
     thresholds=None,
 ):
     """
@@ -881,8 +883,8 @@ def compute_enrichment_vs_threshold(
     if thresholds is not None:
         thresholds = np.array(thresholds)
     else:
-        min_val = df[interaction_col].min()
-        max_val = df[interaction_col].max() * max_percentage
+        min_val = df[interaction_col].min() if min_val is None else min_val
+        max_val = df[interaction_col].max() * max_percentage if max_val is None else max_val
 
         if linear_sampling: 
             thresholds = np.linspace(min_val, max_val, num=num_thresholds)
@@ -921,6 +923,7 @@ def compute_enrichment_vs_threshold(
         res_interaction["n_interactions"] = df_thresh.shape[0]
         results.append(res_interaction)
     return pd.DataFrame(results)
+
 
 
 def plot_enrichment_vs_interactions(
@@ -2503,6 +2506,8 @@ def plot_clinsig_interaction_strength(
         return clinsig
 
     bar_df[x] = bar_df[x].astype(str).apply(clean_clinsig)
+
+    bar_df = utils.sort_by_clinsig(bar_df, clinsig_col=x)
  
     # Remap palette keys to match cleaned clinsig labels
     palette_cleaned = {}
@@ -2516,14 +2521,17 @@ def plot_clinsig_interaction_strength(
 
     plt.figure(figsize=figsize)
 
-    # Draw the boxplot
+    # Draw the boxplot, keeping the same order as the DataFrame
+    clinsig_order = list(bar_df[x].unique())
     ax = sns.boxplot(
         data=bar_df,
         x=x,
         y=y,
         hue=x,
         palette=palette_cleaned,
-        showfliers=False
+        showfliers=False,
+        order=clinsig_order,
+        hue_order=clinsig_order
     )
 
     # Set title and labels
@@ -2568,7 +2576,7 @@ def plot_clinsig_interaction_strength(
     ax.spines['top'].set_visible(False)
     ax.spines['right'].set_visible(False)
 
-    return {'fig': plt.gcf(), 'ax': ax, 'data': bar_df}
+    return {'fig': ax.figure, 'ax': ax, 'data': bar_df}
 
 
 
@@ -3244,5 +3252,5 @@ def plot_wt_clinical_interaction_vs_angstroms(
     plt.tight_layout()  # To make room for the legend outside the plot
     if show:
         plt.show()
-    return {'fig': plt.gcf(), 'ax': ax, 'data': top_interactions}
+    return {'fig': ax.figure, 'ax': ax, 'data': top_interactions}
 

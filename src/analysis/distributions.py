@@ -31,12 +31,14 @@ Example
 >>> plot_test_normality(results, utils)
 """
 
+import os
 from scipy.stats import normaltest
 from tqdm.auto import tqdm
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
 import seaborn as sns
+from sklearn.mixture import BayesianGaussianMixture
 
 import src.utils as utils
 import src.vep_analysis as va
@@ -134,11 +136,14 @@ def get_ecdf(x,
              return_df=False,
              plot=False, 
              grid_points=100,
+             max_components=20,
+             random_state=42,
              title=None,
              error=True):
     """
     Get the Empirical Cumulative Distribution Function of a list of values.
     """
+    from KDEpy import FFTKDE
     
     try:
         x_array = np.array(x) # Get the number of peaks in the KDE
@@ -147,10 +152,16 @@ def get_ecdf(x,
         assert len(x_array) > 1, "Only one data point, cannot calculate density"
 
        
+       #### KDE + scipy.signal method ####
         # Create a grid that extends beyond the data points to avoid the "Every data point must be inside of the grid" error
-        from KDEpy import FFTKDE
         kde_x, kde_y = FFTKDE(bw='ISJ').fit(x_array).evaluate(grid_points=grid_points)
-        n_peaks = get_peaks(kde_y)
+        # n_peaks = get_peaks(kde_y)
+
+        #### Bayesian Gaussian Mixture Model method ####
+        bgm = BayesianGaussianMixture(n_components=max_components, 
+                                      random_state=random_state).fit(x_array.reshape(-1, 1))
+        component_labels = bgm.predict(x_array.reshape(-1, 1))
+        n_peaks = len(np.unique(component_labels)) 
 
         # Get the ECDF as a dataframe
         ecdf_res = ecdf(x_array)
@@ -225,6 +236,162 @@ def get_ecdf(x,
             raise e
         else:
             return None
+        
+
+def estimate_modality(
+    vep_df,
+    groupby_cols=['model_location', 'protein', 'scoring_strategy', 'mutant', 'site', 'clinsig'],
+    min_haplotypes=None,
+    vep_col='VEP',
+    save_path='results/vep_ecdf.parquet',
+    max_components=50,
+    error=False,
+    force=False
+):
+    """
+    Estimate the modality (number of modes) of VEP score distributions for grouped data.
+
+    This function computes the empirical cumulative distribution function (ECDF) and related
+    statistics for VEP scores, grouped by the specified columns. It also estimates the number
+    of modes (peaks) in each group's distribution. Results can be cached to disk for faster
+    subsequent loading.
+
+    Parameters
+    ----------
+    vep_df : pd.DataFrame
+        DataFrame containing VEP scores and associated metadata.
+    vep_col : str, optional
+        Column name containing VEP scores. Default is 'VEP'.
+    groupby_cols : list of str, optional
+        Columns to group by when estimating modality. Default is
+        ['model_location', 'protein', 'scoring_strategy', 'mutant', 'site', 'clinsig'].
+    save_path : str or None, optional
+        Path to save or load the cached ECDF and modality results. If None, results are not cached.
+        Default is 'results/vep_ecdf.parquet'.
+    error : bool, optional
+        If True, raise an error if get_ecdf() fails. If False, return None. Default is False.
+    force : bool, optional
+        If True, force recalculation even if a cached file exists. If False and the file exists,
+        load the cached results. Default is False.
+
+    Returns
+    -------
+    vep_ecdf : pd.DataFrame
+        DataFrame containing ECDF values, modality estimates, and group identifiers for each group.
+
+    Notes
+    -----
+    - The function uses `get_ecdf` to compute ECDF and modality for each group.
+    - The number of unique haplotypes per group is also calculated and included.
+    - If `save_path` is provided, results are cached as a parquet file for future use.
+    """
+    
+    if save_path is not None and os.path.exists(save_path) and not force:
+        print("Loading cached ECDF data")
+        vep_ecdf = pd.read_parquet(save_path)
+    else:
+        vep_df = vep_df.copy()
+        # Calculate the number of unique haplotypes per group
+        vep_df['n_haplotypes'] = vep_df.groupby(groupby_cols)['haplotype'].transform('nunique')
+
+        if min_haplotypes is not None:
+            vep_df = vep_df[vep_df['n_haplotypes'] >= min_haplotypes]
+
+        tqdm.pandas(desc="Estimating modality")
+        vep_ecdf = (
+            vep_df
+            .dropna(subset=[vep_col])
+            .sort_values([vep_col])
+            .groupby(groupby_cols + ['n_haplotypes'])[vep_col]
+            .progress_apply(
+                get_ecdf,
+                return_df=True,
+                max_components=max_components,
+                error=error
+            )
+            .reset_index()
+        )
+        # Rename the automatically generated index column for grid points
+        vep_ecdf.rename(columns={f'level_{len(groupby_cols)+1}': 'grid_index'}, inplace=True)
+        # Create a unique identifier for each group
+        vep_ecdf['id'] = vep_ecdf[groupby_cols].astype(str).agg('_'.join, axis=1)
+
+        if save_path is not None:
+            print("Caching results ==>", save_path)
+            vep_ecdf.to_parquet(save_path)
+
+    # Report
+    print(vep_ecdf.shape)
+    return vep_ecdf
+
+
+def plot_estimate_modality(vep_ecdf,
+                           x="n_peaks", 
+                           site_col="site",
+                           hue_col="clinsig",
+                           figsize=(8, 6),
+                           min_haplotypes=20, 
+                           title="VEP Modality",
+                           x_label="Peaks",
+                           y_label="Clinical Variants",
+                           palette=utils.get_clinsig_palette(),
+                           **kwargs):
+    """
+    Plot the estimate modality of VEP scores as a stacked barplot.
+    """
+    import matplotlib.ticker as mticker
+
+    fig, ax = plt.subplots(figsize=figsize)
+    plot_df = vep_ecdf.loc[vep_ecdf['n_haplotypes'] >= min_haplotypes]
+    # Get one row per "site"
+    plot_df = plot_df.drop_duplicates(subset=[site_col])
+    
+    numerator = plot_df.loc[(plot_df['n_haplotypes'] >= min_haplotypes) & (plot_df['n_peaks'] > 1), site_col].nunique()
+    denominator = plot_df.loc[plot_df['n_haplotypes'] >= min_haplotypes, site_col].nunique()
+    percent = numerator / denominator * 100
+    print(f"Remaining sites @ n_haplotypes >= {min_haplotypes}: {numerator} / {denominator} = {percent:.10f}%")
+    
+    # Prepare data for stacked barplot
+    stacked_data = (
+        plot_df
+        .groupby([x, hue_col])[site_col]
+        .nunique()
+        .unstack(fill_value=0)
+        .sort_index()
+    )
+    stacked_data['total'] = stacked_data.sum(axis=1)
+
+    # Plot stacked barplot with outlined bars
+    bottom = None
+    for idx, clinsig in enumerate([x for x in stacked_data.columns if x != 'total']):
+        values = stacked_data[clinsig]
+        ax.bar(
+            stacked_data.index,
+            values,
+            bottom=bottom,
+            label=clinsig,
+            color=palette[clinsig] if palette and clinsig in palette else None,
+            edgecolor='grey',  # Outline bars
+            linewidth=0.8,      # Set outline thickness
+            **kwargs
+        )
+        if bottom is None:
+            bottom = values
+        else:
+            bottom = bottom + values
+
+    # Set y-axis to not use scientific notation
+    ax.yaxis.set_major_formatter(mticker.StrMethodFormatter('{x:,.0f}'))
+    if title:
+        plt.title(title)
+    if x_label:
+        plt.xlabel(x_label)
+    if y_label:
+        plt.ylabel(y_label)
+
+    ax.legend(title=hue_col)
+    plt.show()
+    return {'fig': fig, 'axes': ax, "data": stacked_data}
 
 def prepare_umap_data(vep_df, 
                       groupby_cols=['model_location', 'protein', 'scoring_strategy', 'mutant', 'clinsig'],
@@ -267,165 +434,469 @@ def prepare_umap_data(vep_df,
     for col in stats_cols:
         pivot_df[col] = combined_df.groupby(groupby_cols)[col].first()
     
-    return pivot_df
+    return pivot_df 
 
 
-import matplotlib.pyplot as plt
-import seaborn as sns
-import numpy as np
-import pandas as pd
-from matplotlib.patches import ConnectionPatch
-from scipy.spatial import distance
-import math
+def cluster_and_annotate_umap(
+    ecdf_umap_df, 
+    vep_ecdf_pivot, 
+    groupby_cols=['model_location', 'protein', 'scoring_strategy', 'mutant', 'n_haplotypes', 'n_peaks'],
+    n_clusters=30, 
+    n_samples=None, 
+    show_dendrogram=True,
+    method="dbscan",
+    random_state=42,
+    cluster_kwargs={},
+    cluster_on_umap=False
+):
+    """
+    Cluster the provided VEP ECDF pivot table or UMAP embedding, assign cluster labels,
+    and annotate the UMAP embedding DataFrame with these cluster assignments.
 
-def create_cluster_distribution_plot(ecdf_umap_df, 
-                                     vep_ecdf, 
-                                     vep_ecdf_pivot, 
-                                     num_subplots=16, 
-                                     min_distance=0.8, 
-                                     connector_alpha=0.7,
-                                     label_font_size=12, 
-                                     clusters=None,
-                                     palette='gist_rainbow'):
+    Args:
+        vep_ecdf_pivot (pd.DataFrame): Pivot table containing ECDF and summary statistics for VEP data.
+        ecdf_umap_df (pd.DataFrame): DataFrame containing UMAP embedding coordinates and associated metadata.
+        n_clusters (int): Number of clusters to form (if applicable).
+        n_samples (int): Maximum number of samples to use for clustering (for efficiency).
+        show_dendrogram (bool): Whether to display a dendrogram of the hierarchical clustering (if applicable).
+        method (str): Clustering method to use. Options: "kmeans", "dbscan". Default is "dbscan".
+        cluster_on_umap (bool): If True, cluster on UMAP coordinates instead of ECDF features.
+
+    Returns:
+        Tuple[pd.DataFrame, pd.DataFrame]:
+            - ecdf_umap_df: The input UMAP DataFrame with an added 'cluster' column.
+            - vep_ecdf_pivot: The input pivot table with an added 'cluster' column (if clustering on ECDF features).
+    """
+    import numpy as np
+    import pandas as pd
+    import matplotlib.pyplot as plt
+
+    if cluster_on_umap:
+        # Cluster directly on UMAP coordinates
+        umap_cols = [col for col in ecdf_umap_df.columns if col.startswith("UMAP_")]
+        data_for_clustering = ecdf_umap_df[umap_cols].copy()
+        # Optionally subsample for efficiency
+        if n_samples is None or n_samples >= len(data_for_clustering):
+            data_sample = data_for_clustering.reset_index(drop=True)
+            n_samples = len(data_for_clustering)
+        else:
+            n_samples = min(n_samples, len(data_for_clustering))
+            sampled_indices = np.random.choice(
+                len(data_for_clustering), 
+                size=n_samples, 
+                replace=False
+            )
+            data_sample = data_for_clustering.iloc[sampled_indices].reset_index(drop=True)
+        
+        if 'cluster' in ecdf_umap_df.columns:
+            ecdf_umap_df = ecdf_umap_df.drop(columns=['cluster'])
+
+        if method.lower() == "kmeans":
+            from sklearn.cluster import KMeans
+            kmeans = KMeans(n_clusters=n_clusters, random_state=random_state)
+            if len(data_for_clustering) > n_samples:
+                kmeans.fit(data_sample)
+                clusters = kmeans.predict(data_for_clustering)
+            else:
+                clusters = kmeans.fit_predict(data_for_clustering)
+            ecdf_umap_df['cluster'] = clusters + 1  # 1-based cluster labels
+            if show_dendrogram:
+                print("Dendrogram not available for kmeans clustering.")
+            print(f"Number of clusters (kmeans, UMAP): {n_clusters}")
+
+        elif method.lower() == "dbscan":
+            from sklearn.cluster import DBSCAN
+            dbscan = DBSCAN(**cluster_kwargs)
+            if len(data_for_clustering) > n_samples:
+                dbscan.fit(data_sample)
+                mask = dbscan.labels_ != -1
+                if np.any(mask):
+                    from sklearn.neighbors import KNeighborsClassifier
+                    knn = KNeighborsClassifier()
+                    knn.fit(data_sample[mask], dbscan.labels_[mask])
+                    clusters = knn.predict(data_for_clustering)
+                else:
+                    dbscan_full = DBSCAN(**cluster_kwargs)
+                    clusters = dbscan_full.fit_predict(data_for_clustering)
+            else:
+                clusters = dbscan.fit_predict(data_for_clustering)
+            ecdf_umap_df['cluster'] = np.where(clusters == -1, 0, clusters + 1)
+            n_found = len(set(ecdf_umap_df['cluster'])) - (1 if 0 in ecdf_umap_df['cluster'].values else 0)
+            print(f"Number of clusters (dbscan, UMAP): {n_found} (noise labeled as 0)")
+            if show_dendrogram:
+                print("Dendrogram not available for DBSCAN clustering.")
+        else:
+            raise ValueError("Invalid method. Choose 'kmeans' or 'dbscan'.")
+
+        print("Cluster distribution (UMAP):")
+        print(pd.Series(ecdf_umap_df['cluster']).value_counts().sort_index())
+
+        # Optionally, propagate cluster labels to vep_ecdf_pivot if possible
+        # (not always possible if indices do not match)
+        return ecdf_umap_df, vep_ecdf_pivot
+
+    else:
+        # Prepare data for clustering: only columns with numeric names
+        numeric_cols = [col for col in vep_ecdf_pivot.columns if isinstance(col, (int, float))]
+        data_for_clustering = vep_ecdf_pivot[numeric_cols].copy()
+
+        # Optionally subsample for efficiency
+        if n_samples is None or n_samples >= len(data_for_clustering):
+            data_sample = data_for_clustering.reset_index(drop=True)
+            n_samples = len(data_for_clustering)
+        else:
+            n_samples = min(n_samples, len(data_for_clustering))
+            sampled_indices = np.random.choice(
+                len(data_for_clustering), 
+                size=n_samples, 
+                replace=False
+            )
+            data_sample = data_for_clustering.iloc[sampled_indices].reset_index(drop=True)
+
+        # Clustering
+        if method.lower() == "kmeans":
+            from sklearn.cluster import KMeans
+            kmeans = KMeans(n_clusters=n_clusters, random_state=random_state)
+            if len(data_for_clustering) > n_samples:
+                kmeans.fit(data_sample)
+                clusters = kmeans.predict(data_for_clustering)
+            else:
+                clusters = kmeans.fit_predict(data_for_clustering)
+            vep_ecdf_pivot['cluster'] = clusters + 1  # 1-based cluster labels for consistency
+            if show_dendrogram:
+                print("Dendrogram not available for kmeans clustering.")
+            print(f"Number of clusters (kmeans): {n_clusters}")
+
+        elif method.lower() == "dbscan":
+            from sklearn.cluster import DBSCAN
+            dbscan = DBSCAN(**cluster_kwargs)
+            if len(data_for_clustering) > n_samples:
+                dbscan.fit(data_sample)
+                mask = dbscan.labels_ != -1
+                if np.any(mask):
+                    from sklearn.neighbors import KNeighborsClassifier
+                    knn = KNeighborsClassifier()
+                    knn.fit(data_sample[mask], dbscan.labels_[mask])
+                    clusters = knn.predict(data_for_clustering)
+                else:
+                    dbscan_full = DBSCAN(**cluster_kwargs)
+                    clusters = dbscan_full.fit_predict(data_for_clustering)
+            else:
+                clusters = dbscan.fit_predict(data_for_clustering)
+            vep_ecdf_pivot['cluster'] = np.where(clusters == -1, 0, clusters + 1)
+            n_found = len(set(vep_ecdf_pivot['cluster'])) - (1 if 0 in vep_ecdf_pivot['cluster'].values else 0)
+            print(f"Number of clusters (dbscan): {n_found} (noise labeled as 0)")
+            if show_dendrogram:
+                print("Dendrogram not available for DBSCAN clustering.")
+        else:
+            raise ValueError("Invalid method. Choose 'kmeans' or 'dbscan'.")
+
+        print("Cluster distribution:")
+        print(pd.Series(vep_ecdf_pivot['cluster']).value_counts().sort_index())
+
+        # Map cluster assignments to the UMAP DataFrame using groupby columns as keys
+        ecdf_umap_df['cluster'] = ecdf_umap_df.set_index(groupby_cols).index.map(
+            vep_ecdf_pivot.reset_index().set_index(groupby_cols)['cluster']
+        )
+
+        # Compute and display summary statistics for each cluster (if columns exist)
+        cluster_stats = None
+        if 'n_peaks' in vep_ecdf_pivot.columns and 'n_haplotypes' in vep_ecdf_pivot.columns:
+            cluster_stats = vep_ecdf_pivot.reset_index().groupby('cluster').agg({
+                'n_peaks': ['mean', 'median', 'min', 'max', 'count'],
+                'n_haplotypes': ['mean', 'median', 'min', 'max']
+            })
+            print("Cluster statistics:")
+            print(cluster_stats)
+
+        return ecdf_umap_df, vep_ecdf_pivot
+
+def run_rescale_ecdf(vep_ecdf_pivot):
+    """
+    Rescale the ECDF values in the input DataFrame to the range for each row,
+    based on the 'x_min' and 'x_max' index levels.
+    This adds back information about the scale of the ECDF values.
+
+    Parameters
+    ----------
+    vep_ecdf_pivot : pd.DataFrame
+        A DataFrame with a MultiIndex that includes 'x_min' and 'x_max' as levels,
+        and numeric columns representing ECDF values at different grid points.
+
+    Returns
+    -------
+    vep_ecdf_pivot_rescaled : pd.DataFrame
+        A DataFrame of the same shape as the input, with numeric columns rescaled
+        to the range of the ECDF values for each row according to its 'x_min' and 'x_max' index values.
+    """
+    x_min = vep_ecdf_pivot.index.get_level_values('x_min')
+    x_max = vep_ecdf_pivot.index.get_level_values('x_max')
+    num_cols = vep_ecdf_pivot.select_dtypes(include='number').columns
+    vep_ecdf_pivot_rescaled = vep_ecdf_pivot.copy()
+    vep_ecdf_pivot_rescaled[num_cols] = (
+        vep_ecdf_pivot[num_cols].subtract(x_min.values, axis=0)
+        .div((x_max - x_min).values, axis=0)
+    )
+    return vep_ecdf_pivot_rescaled
+
+
+def ecdf_to_umap(vep_ecdf, 
+                 rescale_ecdf=False,
+                 columns="grid_index",
+                 values="ecdf",
+                 groupby_cols=['model_location', 'protein', 'scoring_strategy', 'mutant', 'clinsig']
+                 ):
+    
+    # Create a matrix with both ECDF values and VEP statistics
+    vep_ecdf_pivot = vep_ecdf.pivot_table(
+        index=['id',]+groupby_cols+['n_haplotypes', 'n_peaks',
+            'x_min', 'x_max','x_range', 'x_std', 'x_var'],
+        columns=columns,
+        values=values
+    )
+
+    if rescale_ecdf:
+        vep_ecdf_pivot = run_rescale_ecdf(vep_ecdf_pivot)
+
+    # Run UMAP
+    model, embedding, nan_indices = utils.run_umap(vep_ecdf_pivot, 
+                                                filter=False) 
+    # Create a dataframe with the UMAP embedding
+    ecdf_umap_df = pd.DataFrame(embedding, 
+                                index=vep_ecdf_pivot.index, 
+                                columns=[f'UMAP_{i+1}' for i in range(embedding.shape[1])]
+                                ).reset_index()
+    ecdf_umap_df['x_range_log'] = np.log2(ecdf_umap_df['x_range'])  
+    return ecdf_umap_df, vep_ecdf_pivot
+
+def plot_cluster_umap(ecdf_umap_df,
+                      x="UMAP_1",
+                      y="UMAP_2",
+                      hue_var="n_peaks",
+                      size_var="n_haplotypes",
+                      style_var="scoring_strategy",
+                      palette="gnuplot2", 
+                      alpha=1,
+                      sizes=(.0001, 15),
+                      figsize=None,
+                       **kwargs): 
+
+    fig = plt.figure(figsize=figsize)
+    ax = plt.gca()
+    sns.scatterplot(data=ecdf_umap_df,
+                    x=x,
+                    y=y,
+                    size=size_var,
+                    sizes=sizes,
+                    alpha=1,
+                    hue=hue_var,
+                    palette=palette,
+                    style=style_var,
+                    **kwargs
+                    )
+    plt.legend(bbox_to_anchor=(1.05, 1), loc='upper left', borderaxespad=0)
+    ax.spines['top'].set_visible(False)
+    ax.spines['right'].set_visible(False)
+    ax.spines['left'].set_visible(False)
+    ax.spines['bottom'].set_visible(False)
+    ax.set_xticklabels([])
+    ax.set_yticklabels([])
+    return {'fig':fig, 'axes':ax, 'data':ecdf_umap_df}
+
+
+
+
+def plot_cluster_umap_with_distribution_plots(
+    ecdf_umap_df, 
+    vep_ecdf,  
+    vep_ecdf_pivot,
+    x='UMAP_1',
+    y='UMAP_2',
+    hue='cluster',
+    sizes=(1, 30),
+    size='n_haplotypes',
+    style='scoring_strategy',
+    max_subplots=None, 
+    min_distance=0.8, 
+    connector_alpha=0.7,
+    label_font_size=12, 
+    figsize=(20, 15),
+    clusters=None,
+    palette='gist_rainbow',
+    line_color=None,
+    subplot_kwargs={"ecdf": {"color": "blue", "label": "ECDF"}, 
+                    "kde": {"color": "red", "label": "VEP"}},
+    subplot_x="grid_index",
+):
+    """
+    Plot UMAP clusters with distribution plots arranged to minimize connector line crossings.
+    """
+    from matplotlib.patches import ConnectionPatch
+    from scipy.optimize import linear_sum_assignment
+
+    if max_subplots is None:
+        max_subplots = len(ecdf_umap_df['cluster'].unique())
+
     # Create the main figure
-    fig = plt.figure(figsize=(20, 15))
-    
-    # Create the main UMAP scatter plot in the center
+    fig = plt.figure(figsize=figsize)
     ax_main = plt.subplot2grid((1, 1), (0, 0))
-    scatter = sns.scatterplot(data=ecdf_umap_df,
-                            x='UMAP_1',
-                            y='UMAP_2',
-                            hue='cluster',
-                            sizes=(1, 30),
-                            size='n_haplotypes',
-                            style='scoring_strategy',
-                            palette=palette,
-                            ax=ax_main)
-    
+    scatter = sns.scatterplot(
+        data=ecdf_umap_df,
+        x=x,
+        y=y,
+        hue=hue,
+        sizes=sizes,
+        size=size,
+        style=style,
+        palette=palette,
+        ax=ax_main
+    )
+    # Remove all margin lines and x-axis tick labels from the main UMAP plot
+    ax_main.spines['top'].set_visible(False)
+    ax_main.spines['right'].set_visible(False)
+    ax_main.spines['left'].set_visible(False)
+    ax_main.spines['bottom'].set_visible(False)
+    ax_main.set_xticklabels([])
+    ax_main.set_yticklabels([])
+
     # Calculate cluster centers
-    cluster_centers = ecdf_umap_df.groupby('cluster')[['UMAP_1', 'UMAP_2']].mean()
-    
+    cluster_centers = ecdf_umap_df.groupby('cluster')[[x, y]].mean()
+
     # Get clusters sorted by their centers
     if clusters is None:
         clusters = sorted(cluster_centers.index)
-        clusters = clusters[:min(num_subplots, len(clusters))]
-    
+        clusters = clusters[:min(max_subplots, len(clusters))]
+
     # Get the limits of the main plot
     x_min, x_max = ax_main.get_xlim()
     y_min, y_max = ax_main.get_ylim()
-    
-    # Calculate positions around the border of the main plot
-    # We'll place subplots outside the main plot area to avoid overlap
+
+    # Calculate positions around the border of the main plot (in normalized coordinates)
+    n_clusters = len(clusters)
+    angles = np.linspace(0, 2 * np.pi, n_clusters, endpoint=False)
+    # Use min_distance to control how far plots are from the center (in normalized [-0.5, 0.5])
     positions = []
-    
-    # Calculate angles around the center
-    angles = np.linspace(0, 2*np.pi, num_subplots, endpoint=False)
-    
-    # Calculate positions outside the edge of the main plot
-    # Using min_distance parameter to control how far plots are from the center
     for angle in angles:
-        # Use angle to determine position (x, y) outside the main plot
-        x = min_distance * np.cos(angle)  # Normalized to [-min_distance, min_distance]
-        y = min_distance * np.sin(angle)  # Normalized to [-min_distance, min_distance]
-        positions.append((x, y))
-    
+        pos_x = min_distance * np.cos(angle)
+        pos_y = min_distance * np.sin(angle)
+        positions.append((pos_x, pos_y))
+
     # Get the color map used in the scatter plot
-    color_palette = sns.color_palette(palette, n_colors=len(ecdf_umap_df['cluster'].unique()))
-    cluster_colors = {cluster: color_palette[i] for i, cluster in enumerate(sorted(ecdf_umap_df['cluster'].unique()))}
-    
+    if isinstance(palette, str):
+        color_palette = sns.color_palette(palette, n_colors=len(ecdf_umap_df['cluster'].unique()))
+        cluster_colors = {cluster: color_palette[i] for i, cluster in enumerate(sorted(ecdf_umap_df['cluster'].unique()))}
+    elif isinstance(palette, dict):
+        cluster_colors = palette
+    else:
+        raise ValueError(f"Invalid palette: {palette}")
+
     # Add cluster labels on the UMAP plot
     for cluster, center in cluster_centers.iterrows():
         if cluster in clusters:
-            # Create a semi-transparent white box with black border for the label
             bbox_props = dict(boxstyle="round,pad=0.3", fc="white", ec="black", alpha=0.7)
-            # Add the cluster label at the center of each cluster
-            ax_main.text(center['UMAP_1'], center['UMAP_2'], f"{cluster}", 
-                        ha='center', va='center', fontsize=label_font_size, 
-                        bbox=bbox_props, zorder=10)
-    
-    # Create small distribution plots for each cluster
+            ax_main.text(center[x], center[y], f"{cluster}", 
+                         ha='center', va='center', fontsize=label_font_size, 
+                         bbox=bbox_props, zorder=10)
+
+    # --- Arrange subplots to minimize connector line crossings ---
+    # 1. Get cluster center coordinates (in data coordinates)
+    cluster_coords = np.array([cluster_centers.loc[cluster, [x, y]].values for cluster in clusters])
+    # 2. Get candidate subplot positions (in normalized [-0.5, 0.5] coordinates)
+    subplot_coords = np.array(positions)
+    # 3. Convert subplot positions to data coordinates for distance calculation
+    subplot_data_coords = np.zeros_like(subplot_coords)
+    for i, (pos_x, pos_y) in enumerate(subplot_coords):
+        subplot_data_coords[i, 0] = x_min + (x_max - x_min) * (pos_x + 0.5)
+        subplot_data_coords[i, 1] = y_min + (y_max - y_min) * (pos_y + 0.5)
+    # 4. Compute cost matrix (distance from each cluster center to each subplot position)
+    cost_matrix = np.linalg.norm(cluster_coords[:, None, :] - subplot_data_coords[None, :, :], axis=2)
+    # 5. Find optimal assignment using Hungarian algorithm
+    row_ind, col_ind = linear_sum_assignment(cost_matrix)
+    # Now, for cluster i, assign subplot at positions[col_ind[i]]
+
+    # --- Create small distribution plots for each cluster ---
+    subplot_keys = list(subplot_kwargs.keys())
     for i, cluster in enumerate(clusters):
-        if i >= len(positions):
-            break
-            
+        subplot_idx = col_ind[i]
+        pos_x, pos_y = positions[subplot_idx]
+
         # Get data for this cluster
         ids = vep_ecdf_pivot.loc[vep_ecdf_pivot['cluster'] == cluster].reset_index()['id'].unique()
         cluster_data = vep_ecdf.loc[vep_ecdf['id'].isin(ids)]
-        
+
         # Calculate mean ECDF and KDE
-        mean_ecdf = cluster_data.groupby('grid_index')['ecdf'].mean()
-        mean_kde = cluster_data.groupby('grid_index')['kde'].mean()
-        
-        # Calculate position for this subplot
-        pos_x, pos_y = positions[i]
-        
-        # Convert normalized position to data coordinates
+        mean_1 = cluster_data.groupby(subplot_x)[subplot_keys[0]].mean()
+        mean_2 = cluster_data.groupby(subplot_x)[subplot_keys[1]].mean()
+
+        # Convert normalized position to data coordinates (for possible use)
         data_x = x_min + (x_max - x_min) * (pos_x + 0.5)
         data_y = y_min + (y_max - y_min) * (pos_y + 0.5)
-        
+
         # Create a small inset axes for this cluster
-        # Position is relative to the main axes but placed outside the data area
-        # Reduce the size of the inset plots to 0.15 of the main plot
         ax_dist = fig.add_axes([
             ax_main.get_position().x0 + (ax_main.get_position().width * (pos_x + 0.5) * 0.9),
             ax_main.get_position().y0 + (ax_main.get_position().height * (pos_y + 0.5) * 0.9),
             ax_main.get_position().width * 0.15,
             ax_main.get_position().height * 0.15
         ])
-        
+
         # Plot mean ECDF
-        ax_dist.plot(mean_ecdf.index, mean_ecdf.values, color='blue', label='ECDF')
-        
+        ax_dist.plot(mean_1.index, mean_1.values, 
+                     color=subplot_kwargs[subplot_keys[0]]['color'], 
+                     label=subplot_keys[0])
+
         # Create second y-axis for KDE
         ax2 = ax_dist.twinx()
-        ax2.plot(mean_kde.index, mean_kde.values, color='red', label='KDE')
-        
+        ax2.plot(mean_2.index, mean_2.values, 
+                 color=subplot_kwargs[subplot_keys[1]]['color'], 
+                 label=subplot_keys[1])
+
         # Customize the small plot
         ax_dist.set_title(f'Cluster {cluster}', fontsize=8)
         ax_dist.tick_params(axis='both', which='major', labelsize=6)
         ax2.tick_params(axis='both', which='major', labelsize=6)
-        
+
         # Remove axis labels to save space
         ax_dist.set_xlabel('')
         ax_dist.set_ylabel('')
         ax2.set_ylabel('')
-        
+
         # Add a background to the subplot to make it stand out
         ax_dist.set_facecolor('white')
         ax_dist.patch.set_alpha(0.8)
-        
+
         # Connect the cluster center to the distribution plot
         if cluster in cluster_centers.index:
-            center = cluster_centers.loc[cluster]
-            # Get the correct color for this specific cluster
-            cluster_color = cluster_colors[cluster]
+            center = cluster_centers.loc[cluster] 
+            line_color = line_color if line_color is not None else cluster_colors[cluster]
             con = ConnectionPatch(
-                xyA=(center['UMAP_1'], center['UMAP_2']),
+                xyA=(center[x], center[y]),
                 xyB=(0.5, 0.5),
                 coordsA='data',
                 coordsB='axes fraction',
                 arrowstyle='<|-',
                 axesA=ax_main,
                 axesB=ax_dist,
-                color=cluster_color,
+                color=line_color,
                 alpha=connector_alpha,
                 linewidth=2.0
             )
             ax_main.add_artist(con)
-    
+
     # Add a legend to the main plot
     ax_main.legend(bbox_to_anchor=(1.05, 1), loc='upper left', borderaxespad=0)
-    
+
     # Adjust layout
     plt.tight_layout()
-    return fig
-
+    return {'fig': fig, 'axes': ax_main, 'data': {'ecdf_umap_df': ecdf_umap_df, 'vep_ecdf_pivot': vep_ecdf_pivot}}
 
 def test_normality(df, 
                    groupby_cols=None, 
                    value_col="VEP", 
                    min_n=20, 
-                   show_progress=True):
+                   show_progress=True,
+                   save_path=None,
+                   force=False):
     """
     Test for normality of a value column within groups of a DataFrame.
 
@@ -447,12 +918,21 @@ def test_normality(df,
         samples will have NaN for statistic and p-value.
     show_progress : bool, default True
         Whether to show a progress bar during computation.
+    save_path : str or None, optional
+        Path to save or load the cached normality results. If None, results are not cached.
+    force : bool, default False
+        If True, force recalculation even if a cached file exists. If False and the file exists,
+        load the cached results.
 
     Returns
     -------
     pd.DataFrame
         DataFrame with groupby columns and columns: 'statistic', 'pvalue', 'n_samples'.
     """
+    if save_path is not None and os.path.exists(save_path) and not force:
+        print("Loading cached normality results")
+        return pd.read_parquet(save_path)
+
     if groupby_cols is None:
         groupby_cols = ['model_location','protein','clinsig','mutant','scoring_strategy']
 
@@ -485,6 +965,10 @@ def test_normality(df,
         grouped = df.groupby(groupby_cols, observed=True)[value_col].apply(normality_with_n)
 
     results = grouped.reset_index().rename(columns={f"level_{len(groupby_cols)}": "metric"}).pivot_table(index=groupby_cols, columns="metric", values=value_col).reset_index()
+
+    if save_path is not None:
+        print("Saving normality results")
+        results.to_parquet(save_path)
     return results
 
 def plot_test_normality(normality_results, 
@@ -633,6 +1117,15 @@ def plot_test_normality(normality_results,
     
     plt.tight_layout()
     plt.show()
+
+    # Report statistics
+    normality_mean_prop = normality_by_clinsig_prop.mean(axis=0)
+    print(f"Total proteins: {normality_results['protein'].nunique()}")
+    print(f"Total sites: {normality_results['site'].nunique()}")
+    print(f"Sites with normal distribution (Testable): {normality_results['site'].nunique() * (1-normality_mean_prop['Not testable']):0} ({1-normality_mean_prop['Not testable']:.2%})")
+    print(f"Sites with normal distribution (True): {normality_results['site'].nunique() * normality_mean_prop[True]:0} ({normality_mean_prop[True]:.2%})")
+    print(f"Sites with non-normal distribution: {normality_results['site'].nunique() * normality_mean_prop[False]:0} ({normality_mean_prop[False]:.2%})")
+
     return {'fig': fig, 'ax': ax, 'data': normality_by_clinsig_prop}
 
 
@@ -759,9 +1252,11 @@ def plot_ref_percentile_schematic(
             if i == 1:  # blank axis
                 blank_ax = fig.add_axes([parent_x0, y_pos, parent_width, height])
                 blank_ax.axis('off')
+                blank_ax.set_facecolor('none')  # Make background transparent
                 axs.append(blank_ax)
             else:
                 sub_ax = fig.add_axes([parent_x0, y_pos, parent_width, height])
+                sub_ax.set_facecolor('none')  # Make background transparent
                 axs.append(sub_ax)
 
         ax_top, ax_blank, ax_bottom = axs
@@ -794,7 +1289,7 @@ def plot_ref_percentile_schematic(
             ax_top.set_xlabel(r"$VEP_{REF}$ percentile")
         ax_top.set_xlim(-3, 3)
         ax_top.set_xticks([-3, 0, 3])
-        ax_top.set_xticklabels(['0', '50', '100'])
+        ax_top.set_xticklabels([])  # Remove x-tick labels for top schematic
         ax_top.spines['right'].set_visible(False)
         ax_top.spines['left'].set_visible(False)
         ax_top.spines['top'].set_visible(False)
@@ -836,10 +1331,14 @@ def plot_ref_percentile_schematic(
     else:
         # Standalone schematic as before
         fig = plt.figure(figsize=(4, 10.5))
+        fig.patch.set_facecolor('none')  # Make figure background transparent
         gs = gridspec.GridSpec(3, 1, height_ratios=[1, 1, 1], hspace=0.3)
         ax_top = fig.add_subplot(gs[0])
+        ax_top.set_facecolor('none')  # Make background transparent
         ax_blank = fig.add_subplot(gs[1])
+        ax_blank.set_facecolor('none')  # Make background transparent
         ax_bottom = fig.add_subplot(gs[2], sharex=ax_top)
+        ax_bottom.set_facecolor('none')  # Make background transparent
         axs = [ax_top, ax_blank, ax_bottom]
 
         ax_top.set_ylim(schematic_ymin, schematic_ymax)
@@ -859,7 +1358,7 @@ def plot_ref_percentile_schematic(
             ax_top.set_xlabel(r"$VEP_{REF}$ percentile")
         ax_top.set_xlim(-3, 3)
         ax_top.set_xticks([-3, 0, 3])
-        ax_top.set_xticklabels(['0', '50', '100'])
+        ax_top.set_xticklabels([])  # Remove x-tick labels for top schematic
         ax_top.spines['right'].set_visible(False)
         ax_top.spines['top'].set_visible(False)
 
@@ -897,6 +1396,7 @@ def plot_ref_vep_percentile_stacked_bar(
     groupby_cols=['model_location','protein','clinsig','mutant','scoring_strategy'],
     y='VEP_percentile',
     n_bins=10, 
+    n_ref_pct_bins=10,
     figsize=(10, 4), 
     label_padding=0.15, 
     is_ref=True,
@@ -907,6 +1407,7 @@ def plot_ref_vep_percentile_stacked_bar(
     show_vertical_arrows=False,
     show_schematic=True,
     legend_on_right=True,
+    legend_loc='upper right',
     legend_height_factor=1.5,
     schematic_width_ratio=1.3,
     barplot_width_ratio=5,
@@ -1010,8 +1511,8 @@ def plot_ref_vep_percentile_stacked_bar(
     data['VEP_binned_label'] = data['VEP_binned'].map(lambda x: bin_labels[int(x)] if pd.notnull(x) else np.nan)
 
     # Bin VEP_percentile into deciles (y-axis bins)
-    percentile_bins = np.linspace(0, 100, 11)
-    percentile_labels = [f"{int(percentile_bins[i])}-{int(percentile_bins[i+1])}%" for i in range(10)]
+    percentile_bins = np.linspace(0, 100, n_ref_pct_bins+1)
+    percentile_labels = [f"$P_{{{int(percentile_bins[i])}-{int(percentile_bins[i+1])}}}$" for i in range(n_ref_pct_bins)]
     data['VEP_percentile_decile'] = pd.cut(
         data['VEP_percentile'],
         bins=percentile_bins,
@@ -1045,8 +1546,11 @@ def plot_ref_vep_percentile_stacked_bar(
             legend_width_ratio = 0.8  # Dedicated space for legend
             gs = gridspec.GridSpec(1, 3, width_ratios=[barplot_width_ratio, legend_width_ratio, schematic_width_ratio], wspace=schematic_padding_left)
             ax = fig.add_subplot(gs[0])
+            ax.set_facecolor('none')  # Make background transparent
             legend_ax = fig.add_subplot(gs[1])  # Dedicated axis for legend
+            legend_ax.set_facecolor('none')  # Make background transparent
             schematic_ax = fig.add_subplot(gs[2])
+            schematic_ax.set_facecolor('none')  # Make background transparent
             
             # Hide the legend axis (it's just for spacing)
             legend_ax.set_xticks([])
@@ -1059,7 +1563,9 @@ def plot_ref_vep_percentile_stacked_bar(
             # Original layout: 2 columns - barplot and schematic
             gs = gridspec.GridSpec(1, 2, width_ratios=[barplot_width_ratio, schematic_width_ratio], wspace=schematic_padding_left)
             ax = fig.add_subplot(gs[0])
+            ax.set_facecolor('none')  # Make background transparent
             schematic_ax = fig.add_subplot(gs[1])
+            schematic_ax.set_facecolor('none')  # Make background transparent
             legend_ax = None
         
         # Apply top padding to schematic column if specified
@@ -1071,6 +1577,7 @@ def plot_ref_vep_percentile_stacked_bar(
             schematic_ax.set_position([schematic_pos.x0, new_y0, schematic_pos.width, new_height])
     else:
         fig, ax = plt.subplots(figsize=figsize)
+        ax.set_facecolor('none')  # Make background transparent
         schematic_ax = None
         legend_ax = None
 
@@ -1095,14 +1602,30 @@ def plot_ref_vep_percentile_stacked_bar(
     
     if legend_on_right:
         # Legend in the dedicated legend axis (middle column)
-        legend_ax.legend(
+        legend_obj = legend_ax.legend(
             handles[::-1],
             reversed_labels,
-            title=r"$VEP_{REF}$" + "\n" + "percentile bin",
-            loc='upper center',
+            title=r"$VEP_{REF}$" + " percentile bin",
+            loc='center left',  # Center the legend content vertically
             borderaxespad=0.0,
-            bbox_to_anchor=(0.4, .97),  # Add a bit of padding to the top 
         )
+        
+        # After creating the legend, adjust its position to account for the title
+        # This ensures the legend content (not including title) is centered
+        if legend_obj is not None:
+            # Get the legend's bounding box
+            legend_bbox = legend_obj.get_window_extent()
+            # Transform to display coordinates
+            legend_bbox_display = legend_bbox.transformed(legend_ax.transAxes.inverted())
+            
+            # Calculate the height of the legend content (excluding title)
+            legend_height = legend_bbox_display.height
+            title_height = legend_height * 0.15  # Approximate title height as fraction of total legend height
+            
+            # Adjust y position to center the content (excluding title)
+            # Move up by half the title height to center the content
+            # For the right legend, we need to adjust the bbox_to_anchor
+            legend_obj.set_bbox_to_anchor((0.5, 0.5 + (title_height / 2)))
     else:
         # Legend on the left side of the barplot (original behavior)
         # Calculate legend position and height based on height factor
@@ -1110,9 +1633,9 @@ def plot_ref_vep_percentile_stacked_bar(
             # Adjust y-position based on height factor
             # For height_factor > 1, move legend down; for < 1, move it up
             y_offset = (legend_height_factor - 1.0) * 0.5  # Scale factor for y-position adjustment
-            y_pos = 1.0 + y_offset
+            y_pos = 0.5 + y_offset  # Center at 0.5 instead of 1.0
         else:
-            y_pos = 1.0
+            y_pos = 0.5  # Center vertically
         
         # Create legend with height adjustment
         if legend_height_factor != 1.0:
@@ -1123,7 +1646,7 @@ def plot_ref_vep_percentile_stacked_bar(
                 reversed_labels,
                 title=r"$VEP_{REF}$" + "\n" + "percentile bin",
                 bbox_to_anchor=(-0.15, y_pos),
-                loc='upper right',
+                loc=legend_loc,
                 borderaxespad=0.0,
                 # Adjust legend height by modifying the layout
                 ncol=1,  # Ensure single column for height control
@@ -1140,9 +1663,28 @@ def plot_ref_vep_percentile_stacked_bar(
                 reversed_labels,
                 title=r"$VEP_{REF}$" + "\n" + "percentile bin",
                 bbox_to_anchor=(-0.15, y_pos),
-                loc='upper right',
+                loc=legend_loc,
                 borderaxespad=0.0
             )
+        
+        # After creating the legend, adjust its position to account for the title
+        # This ensures the legend content (not including title) is centered
+        if legend is not None:
+            # Get the legend's bounding box
+            legend_bbox = legend.get_window_extent()
+            # Transform to display coordinates
+            legend_bbox_display = legend_bbox.transformed(ax.transAxes.inverted())
+            
+            # Calculate the height of the legend content (excluding title)
+            legend_height = legend_bbox_display.height
+            title_height = legend_height * 0.15  # Approximate title height as fraction of total legend height
+            
+            # Adjust y position to center the content (excluding title)
+            # Move up by half the title height to center the content
+            adjusted_y_pos = y_pos + (title_height / 2)
+            
+            # Update the legend position
+            legend.set_bbox_to_anchor((-0.15, adjusted_y_pos))
     ax.yaxis.set_major_formatter(plt.FuncFormatter(lambda y, _: '{:.2f}'.format(y)))
     ax.set_xticklabels(ax.get_xticklabels(), rotation=0)
 
@@ -1216,12 +1758,14 @@ def plot_ref_vep_percentile_stacked_bar(
                 top_data_y = ax.transData.inverted().transform((0, top_title_y))[1]
                 bottom_data_y = ax.transData.inverted().transform((0, bottom_title_y))[1]
                 
-                # Draw lines from barplot right edge to arrows (in legend area)
-                ax.plot([barplot_right, x_arrow], [top_data_y, top_data_y], color='gray', linestyle=':', alpha=0.7, linewidth=1.5)
-                ax.plot([barplot_right, x_arrow], [bottom_data_y, bottom_data_y], color='gray', linestyle=':', alpha=0.7, linewidth=1.5)
+                # Draw lines from barplot right edge all the way to the legend
+                # Extend beyond the arrows to reach the legend area
+                legend_x = x_arrow + 0.3  # Extend further right to reach the legend
+                ax.plot([barplot_right, legend_x], [top_data_y, top_data_y], color='gray', linestyle=':', alpha=0.7, linewidth=1.5)
+                ax.plot([barplot_right, legend_x], [bottom_data_y, bottom_data_y], color='gray', linestyle=':', alpha=0.7, linewidth=1.5)
                 
-                # Expand the xlim to make sure arrows and labels are visible
-                ax.set_xlim(xlim[0], x_arrow + 0.6)
+                # Expand the xlim to make sure arrows, labels, and extended lines are visible
+                ax.set_xlim(xlim[0], legend_x + 0.1)
             else:
                 # Original behavior for 2-column layout
                 # Get the right edge of the barplot
@@ -1338,20 +1882,48 @@ def plot_ref_vep_percentile_stacked_bar(
         return {"fig": fig, "axes": ax, "data": data}
 
 
-def plot_ref_vep_std_stacked_bar(vep_df, 
-                                groupby_cols = ['model_location','protein','clinsig','mutant','scoring_strategy'],
-                                y='VEP_percentile',
-                                n_bins=10, 
-                                figsize=(9, 4), 
-                                label_padding=0.15, 
-                                is_ref=True,
-                                title="Standard Deviations Separating REF VEP from full VEP Distribution Mean",
-                                x_label="VEP Quantile",
-                                y_label="Proportion of Variants"):
+def plot_ref_vep_std_stacked_bar(
+    vep_df, 
+    groupby_cols = ['model_location','protein','clinsig','mutant','scoring_strategy'],
+    y='VEP_percentile',
+    n_bins=10, 
+    figsize=(9, 4), 
+    label_padding=0.15, 
+    is_ref=True,
+    title="Standard Deviations Separating REF VEP from full VEP Distribution Mean",
+    x_label="VEP Quantile",
+    y_label="Proportion of Variants",
+    xaxis_quartile_labels=True
+):
     """
     Plot a stacked bar plot of VEP percentiles, binned by quantiles and standard deviation categories.
     Adds arrows and labels to indicate under/overestimation of pathogenicity.
     Returns the matplotlib figure and axis, and the processed data.
+
+    Parameters
+    ----------
+    vep_df : pd.DataFrame
+        DataFrame containing VEP results.
+    groupby_cols : list, optional
+        Columns to group by for computing representativeness stats (default: ['model_location','protein','clinsig','mutant','scoring_strategy']).
+    y : str, optional
+        Column name for y-axis values (default: 'VEP_percentile').
+    n_bins : int, optional
+        Number of quantile bins for VEP_mean (default: 10).
+    figsize : tuple, optional
+        Figure size (default: (9, 4)).
+    label_padding : float, optional
+        Vertical padding between arrow labels (default: 0.15).
+    is_ref : bool, optional
+        Whether to compute REF statistics (default: True).
+    title : str, optional
+        Plot title.
+    x_label : str, optional
+        X-axis label.
+    y_label : str, optional
+        Y-axis label.
+    xaxis_quartile_labels : bool, optional
+        If True, label x-axis ticks as Q1, Q2, ... instead of bin ranges.
     """
     from matplotlib import cm
     import matplotlib.pyplot as plt
@@ -1427,7 +1999,16 @@ def plot_ref_vep_std_stacked_bar(vep_df,
         borderaxespad=0.0
     )
     ax.yaxis.set_major_formatter(plt.FuncFormatter(lambda y, _: '{:.2f}'.format(y)))
-    ax.set_xticklabels(ax.get_xticklabels(), rotation=0)
+
+    # Optionally relabel x-axis ticks as Q1, Q2, ...
+    if xaxis_quartile_labels:
+        # Only relabel visible ticks (i.e., those with data)
+        n_visible = len(stacked_prop)
+        quartile_labels = [f"Q{i+1}" for i in range(n_visible)]
+        ax.set_xticklabels(quartile_labels, rotation=0)
+    else:
+        ax.set_xticklabels(ax.get_xticklabels(), rotation=0)
+
     plt.tight_layout()
 
     # --- Add arrows and labels along the y-axis, outside the right margin ---
@@ -1980,6 +2561,10 @@ def plot_vep_histogram_with_arrows(
         plt.subplots_adjust(right=0.75)
     else:
         plt.tight_layout()
+
+    # Remove the top and right spines (margin lines) for a cleaner look
+    ax.spines['top'].set_visible(False)
+    ax.spines['right'].set_visible(False)
     
     if add_arrows:  
         # _draw_vep_direction_arrows_chunky(
@@ -2292,3 +2877,86 @@ def plot_vep_kde_with_arrows(vep_df,
     plt.show()
 
     return {'fig':ax, 'axes':ax, 'data':vep_df}
+
+
+def test_vep_clinsig_separation(
+    vep_agg, 
+    clinsig_col="clinsig", 
+    vep_col="VEP", 
+    model_col="model_location", 
+    clinsig_groups=None
+):
+    """
+    Test the separation between all specified clinsig groups in each model using Mann-Whitney U test.
+
+    Parameters
+    ----------
+    vep_agg : pd.DataFrame
+        DataFrame containing at least columns for model, clinsig, and VEP values.
+    clinsig_col : str
+        Name of the column containing clinical significance labels.
+    vep_col : str
+        Name of the column containing VEP values.
+    model_col : str
+        Name of the column containing model identifiers.
+    clinsig_groups : list or None
+        List of clinsig group labels to test. If None, defaults to ["benign", "likely_benign", "path", "likely_path"].
+
+    Returns
+    -------
+    vep_diff_df : pd.DataFrame
+        DataFrame with Mann-Whitney U test results for all pairwise group comparisons per model.
+    summary : pd.DataFrame
+        Aggregated mean pvalue and statistic per model.
+    """
+    from scipy.stats import mannwhitneyu
+    import itertools
+
+    if clinsig_groups is None:
+        clinsig_groups = vep_agg[clinsig_col].unique()
+
+    if clinsig_col not in vep_agg.columns:
+        raise ValueError(f"vep_agg must contain a '{clinsig_col}' column with clinical significance labels.")
+
+    results = []
+    for model, group in vep_agg.groupby(model_col):
+        # For each group, extract VEP values
+        group_veps = {}
+        for label in clinsig_groups:
+            mask = group[clinsig_col].str.fullmatch(label, case=False, na=False)
+            vep_vals = group.loc[mask, vep_col].dropna()
+            group_veps[label] = vep_vals
+
+        # For each pairwise combination, perform Mann-Whitney U test if both groups have data
+        for g1, g2 in itertools.combinations(clinsig_groups, 2):
+            vep1 = group_veps[g1]
+            vep2 = group_veps[g2]
+            if len(vep1) > 0 and len(vep2) > 0:
+                stat, pval = mannwhitneyu(vep1, vep2, alternative="two-sided")
+                results.append({
+                    model_col: model,
+                    "group1": g1,
+                    "group2": g2,
+                    "n_group1": len(vep1),
+                    "n_group2": len(vep2),
+                    "statistic": stat,
+                    "pvalue": pval,
+                    "group1_median": vep1.median(),
+                    "group2_median": vep2.median()
+                })
+            else:
+                results.append({
+                    model_col: model,
+                    "group1": g1,
+                    "group2": g2,
+                    "n_group1": len(vep1),
+                    "n_group2": len(vep2),
+                    "statistic": None,
+                    "pvalue": None,
+                    "group1_median": vep1.median() if len(vep1) > 0 else None,
+                    "group2_median": vep2.median() if len(vep2) > 0 else None
+                })
+
+    vep_diff_df = pd.DataFrame(results).sort_values(by=[model_col, 'group1', 'group2'])
+    summary = vep_diff_df.groupby(model_col).agg({"pvalue": "mean", "statistic": "mean"}).sort_values(by="statistic", ascending=False)
+    return vep_diff_df, summary

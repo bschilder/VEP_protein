@@ -3048,6 +3048,8 @@ def plot_haplotypes_summary(
     verbose=True,
     show_median=True,  # New argument to control median annotation
     median_line_kwargs=None,  # Optional kwargs for the median line
+    show_mean=True,  # New argument to control mean annotation
+    mean_line_kwargs=None,  # Optional kwargs for the mean line
     save_path=None,
     fig_save_kwargs=utils.FIG_SAVE_KWARGS,
 ):
@@ -3121,6 +3123,17 @@ def plot_haplotypes_summary(
                 median_line_kwargs["label"] = f"Median = {int(median_val)}"
         ax1.axvline(median_val, **median_line_kwargs)
         ax1.legend()
+    if show_mean:
+        mean_val = np.mean(n_haplotypes)
+        if mean_line_kwargs is None:
+            mean_line_kwargs = dict(color="goldenrod", linestyle=":", linewidth=2, label=f"Mean = {mean_val:.2f}")
+        else:
+            # Ensure label is present
+            mean_line_kwargs = dict(mean_line_kwargs)  # copy
+            if "label" not in mean_line_kwargs:
+                mean_line_kwargs["label"] = f"Mean = {mean_val:.2f}"
+        ax1.axvline(mean_val, **mean_line_kwargs)
+        ax1.legend()
 
     # --- Plot 1: Number of WT Variants per Haplotype (now on the right) ---
     ax2 = axes[1]
@@ -3137,6 +3150,13 @@ def plot_haplotypes_summary(
     ax2.set_title(title[1])
 
     plt.tight_layout()
+
+    # Remove the top and right spines (margin lines) for a cleaner look
+    ax1.spines['top'].set_visible(False)
+    ax1.spines['right'].set_visible(False)
+    ax2.spines['top'].set_visible(False)
+    ax2.spines['right'].set_visible(False)
+
     if save_path is not None:
         plt.savefig(save_path, **fig_save_kwargs)
     
@@ -3447,6 +3467,10 @@ def plot_haplotypes_and_superpop_bar(
         fig, ax1 = plt.subplots(1, 1, figsize=(figsize[0] * width_ratios[0] / sum(width_ratios), figsize[1]), facecolor='none')
         outputs["fig"] = fig
         outputs["axes"] = ax1
+
+        # Remove the top and right spines (margin lines) for a cleaner look
+        ax1.spines['top'].set_visible(False)
+        ax1.spines['right'].set_visible(False)
         
         # Left: superpopulation bar 
         plot_superpopulation_bar_out = plot_superpopulation_bar(
@@ -3499,6 +3523,10 @@ def plot_haplotypes_and_superpop_bar(
 
         # Adjust layout to prevent overlap
         plt.subplots_adjust(wspace=0.3)  # Add space between subplots
+
+        # Remove the top and right spines (margin lines) for a cleaner look
+        ax.spines['top'].set_visible(False)
+        ax.spines['right'].set_visible(False)
     
     if show:
         plt.show()
