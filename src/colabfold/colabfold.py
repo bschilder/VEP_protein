@@ -525,11 +525,12 @@ def plot_contact_map(contact_map,
                      cmap="gnuplot2", 
                      agg_func=np.nanmax,
                      title=None,
-                     cbar_label="Contact Score",
+                     cbar_label=r"3D Distance (Å)",
                      x_label="Residue Position",
                      y_label="Residue Position"):
     
     import scipy.spatial.distance
+    import matplotlib as mpl
  
     if reverse_sign:
         contact_map = -contact_map
@@ -538,7 +539,6 @@ def plot_contact_map(contact_map,
     if normalize_rows:
         row_sums = np.nansum(contact_map, axis=1, keepdims=True)
         contact_map = np.divide(contact_map, row_sums, where=(row_sums!=0) & (row_sums!=np.nan))
-
 
     # Normalize the whole matrix to a scale from 0 to 1
     if normalize_scale:
@@ -567,18 +567,23 @@ def plot_contact_map(contact_map,
     if log_after_bin:
         contact_map_binned = log_func(contact_map_binned)
 
-    ### Power transform the matrix
-    if pow is not None:
-        contact_map_binned = contact_map_binned**pow
-
+    # Do NOT apply pow to the data, but to the color scale
     # Create the plot 
     fig, ax = plt.subplots(figsize=figsize)
-    plt.imshow(contact_map_binned, 
-                cmap=cmap, 
-                interpolation="nearest")
-    plt.colorbar().ax.set_ylabel(cbar_label, 
-                                 rotation=270, 
-                                 va="bottom") 
+
+    # Set up normalization for color scale
+    if pow is not None and pow != 1:
+        norm = mpl.colors.PowerNorm(gamma=pow, vmin=np.nanmin(contact_map_binned), vmax=np.nanmax(contact_map_binned))
+    else:
+        norm = None
+
+    im = plt.imshow(contact_map_binned, 
+                    cmap=cmap, 
+                    interpolation="nearest",
+                    norm=norm)
+    # plt.colorbar(im).ax.set_ylabel(cbar_label, 
+    #                                rotation=270, 
+    #                                va="bottom") 
 
     mc.label_bins(bin_size, n_bins, max_labels=max_labels)
 
@@ -1877,7 +1882,9 @@ def plot_contact_map_diff_barplot_grouped(
     translate_superpop_names=True,
     ylabel="Contact Counts",
     xlabel=None,
-    legend_title="Contact Change\nRelative to REF",
+    title=None,
+    text_label_info =["count", "percent"],
+    legend_title="Contact Change\nRelative to Ref",
     cmap="seismic_r", 
 ):
     """
@@ -1890,7 +1897,7 @@ def plot_contact_map_diff_barplot_grouped(
         group_by (str): Column name in bar_df to group bars by (default: "superpopulation").
         figsize (tuple): Size of the matplotlib figure (default: (10, 5)).
         cmap (str): Name of the matplotlib colormap to use for bar colors (default: "seismic_r").
-        legend_title (str): Title for the legend (default: "Contact Change\nRelative to REF").
+        legend_title (str): Title for the legend (default: "Contact Change\nRelative to Ref").
         ylabel (str): Y-axis label (default: "Contact Counts").
 
     Returns:
@@ -1987,10 +1994,15 @@ def plot_contact_map_diff_barplot_grouped(
         row = bar_df[(bar_df[group_by] == group_name) & (bar_df["Type"] == hue_name)]
         
         if not row.empty:
-            count_val = row["Count"].values[0]
-            percent_val = row["Percent"].values[0]
-            
-            label = f"{count_val}\n({percent_val:.2f}%)"
+            # Dynamically build the label based on text_label_info
+            label_parts = []
+            if "count" in text_label_info:
+                count_val = row["Count"].values[0]
+                label_parts.append(f"{count_val}")
+            if "percent" in text_label_info:
+                percent_val = row["Percent"].values[0]
+                label_parts.append(f"({percent_val:.2f}%)")
+            label = "\n".join(label_parts) if label_parts else ""
             
             # Position the annotation at the top of the bar
             ax.annotate(label,
@@ -2004,7 +2016,12 @@ def plot_contact_map_diff_barplot_grouped(
     
     ax.set_xlabel(xlabel)
     ax.set_ylabel(ylabel)
-    ax.legend(title=legend_title)
+    if title is not None:
+        ax.set_title(title)
+    ax.legend(title=legend_title, frameon=False)
+
+
+    
     plt.tight_layout()
     
     return {'fig':fig, 'axes':ax, 'data':bar_df}
@@ -3671,8 +3688,7 @@ def compute_population_specific_contact_maps(
 
 def plot_contact_map_and_zooms(
     contact_maps_wt,
-    ridge_df,
-    target_gene, 
+    ridge_df, 
     main_plot_above=False,
     max_highlights=12,
     highlight_size=100,
@@ -3681,25 +3697,96 @@ def plot_contact_map_and_zooms(
     zoom_subplot_size = 2,
     main_nrows = 2,
     main_ncols = 2,
-    pow=4,
+    linewidth=1,
+    pow=1/2,
     main_padding=0.25,
-    save_path=None
+    save_path=None,
+    palette="gnuplot2_r",
+    title="AlphaFold Distance Map", 
+    highlight_colors=None,  # NEW: Option to specify colors for highlights
+    zoom_rect_white_outline=False,  # NEW ARG: add white outline to zoomed rectangles
+    zoom_rect_white_outline_width=2,  # NEW ARG: width of white outline
+    zoom_show_ticks=False,  # NEW ARG: show x- and y-tick labels for zoomed plots
+    zoom_tick_density=5,  # NEW ARG: number of ticks to show in zoomed plots
 ):
     import matplotlib.pyplot as plt
     import matplotlib.patches as patches
     import numpy as np
+    import matplotlib as mpl
 
     half_size = highlight_size // 2
 
     if zoom_ncols is None:
         zoom_ncols = int(np.ceil(max_highlights / zoom_nrows))
     
+    # Determine highlight colors
+    if highlight_colors is None:
+        # Default: all lime
+        highlight_colors = ['lime'] * max_highlights
+    else:
+        # If a colormap or palette is provided, or a list shorter than max_highlights, repeat as needed
+        import seaborn as sns
+        if callable(highlight_colors):
+            # If a function (e.g., matplotlib colormap), sample it
+            cmap = highlight_colors
+            highlight_colors = [mpl.colors.to_hex(cmap(i / max_highlights)) for i in range(max_highlights)]
+        elif isinstance(highlight_colors, str):
+            highlight_colors = [highlight_colors] * max_highlights
+        elif hasattr(highlight_colors, "as_hex") and callable(getattr(highlight_colors, "as_hex", None)):
+            # seaborn color palette object (e.g., sns.color_palette())
+            palette_colors = highlight_colors.as_hex()
+            highlight_colors = list(palette_colors) * (max_highlights // len(palette_colors) + 1)
+            highlight_colors = highlight_colors[:max_highlights]
+        elif hasattr(highlight_colors, "__iter__") and not isinstance(highlight_colors, dict):
+            # List or tuple of colors (including seaborn palette lists)
+            highlight_colors = list(highlight_colors) * (max_highlights // len(highlight_colors) + 1)
+            highlight_colors = highlight_colors[:max_highlights]
 
     ref_key = get_ref_key(contact_maps_wt)
 
+    def get_gamma_cmap(base_cmap, gamma):
+        """Return a colormap that applies a power-law (gamma) transformation to the input."""
+        base = mpl.cm.get_cmap(base_cmap)
+        # Sample the base colormap
+        colors = base(np.linspace(0, 1, 256))
+        # Apply gamma correction to the mapping
+        x = np.linspace(0, 1, 256)
+        x_gamma = x**gamma
+        # Interpolate the original colormap at the gamma-corrected positions
+        from scipy.interpolate import interp1d
+        new_colors = np.empty_like(colors)
+        for i in range(colors.shape[1]):
+            channel = colors[:, i]
+            f = interp1d(x, channel, kind='linear')
+            new_colors[:, i] = f(x_gamma)
+        return mpl.colors.ListedColormap(new_colors)
+
+    gamma_cmap = get_gamma_cmap(palette, pow)
+
     def plot_contact_map_and_zooms_i(v, hap_id, main_plot_above=main_plot_above, main_padding=0.25):
         # Set up figure and gridspec
-        if main_plot_above:
+        if main_plot_above == -1:
+            # Zooms above main plot
+            fig = plt.figure(
+                figsize=(max(6, zoom_subplot_size * zoom_ncols), 6 + zoom_subplot_size * zoom_nrows + 0.5)
+            )
+            # Add a padding row (height_ratios: [zoom, zoom, zoom, pad, main])
+            height_ratios = [zoom_subplot_size] * zoom_nrows + [main_padding, 6]
+            gs = fig.add_gridspec(
+                zoom_nrows + 2, zoom_ncols,
+                height_ratios=height_ratios,
+                hspace=0.1
+            )
+            # Main plot is at the bottom
+            ax_main = fig.add_subplot(gs[zoom_nrows + 1, :])
+            # The padding axis (not shown) is gs[zoom_nrows, :]
+            zoom_subplot_indices = []
+            for i in range(max_highlights):
+                row_idx = i // zoom_ncols  # Zooms start from row 0
+                col_idx = i % zoom_ncols
+                if row_idx < zoom_nrows and col_idx < zoom_ncols:
+                    zoom_subplot_indices.append((row_idx, col_idx))
+        elif main_plot_above:
             # Add an extra row for padding under the main plot
             fig = plt.figure(
                 figsize=(max(6, zoom_subplot_size * zoom_ncols), 6 + zoom_subplot_size * zoom_nrows + 0.5)
@@ -3756,29 +3843,48 @@ def plot_contact_map_and_zooms(
                 if row < total_nrows and col < total_ncols:
                     zoom_subplot_indices.append((row, col))
 
-        im = ax_main.imshow(v**pow, cmap='gnuplot2', origin='upper')
+        im = ax_main.imshow(v, cmap=gamma_cmap, origin='upper')
+        cbar = fig.colorbar(im, ax=ax_main, fraction=0.046, pad=0.04)
+        cbar.set_label("3D Distance (Ångstroms)")
+ 
 
-        for i, (idx, row) in enumerate(ridge_df.iloc[:max_highlights].iterrows()):
+        # Sort by clinical position (lowest to highest) for left-to-right ordering
+        sorted_ridge_df = ridge_df.iloc[:max_highlights].sort_values('clinical_position')
+        
+        for i, (idx, row) in enumerate(sorted_ridge_df.iterrows()):
             x = int(row['clinical_position'])
             y = int(row['wt_position'])
+            color = highlight_colors[i] if i < len(highlight_colors) else 'lime'
             rect = patches.Rectangle(
                 (x - half_size, y - half_size),
                 highlight_size, highlight_size,
-                linewidth=1, edgecolor='lime', facecolor='none'
+                linewidth=linewidth, edgecolor=color, facecolor='none'
             )
             ax_main.add_patch(rect)
             # Draw crosshairs: horizontal through rectangle, vertical from bottom to rectangle
-            # Horizontal line: from left edge to right edge of rectangle (crosses through highlight)
+            # Horizontal line: extend from far left (beyond plot) to far right (beyond plot)
+            # Draw crosshairs: horizontal and vertical lines that stop at the rectangle's edge (do not extend into the rectangle)
+            # Horizontal line: from left edge to left side of rectangle, and from right side of rectangle to right edge
             ax_main.plot(
-                [0, x - half_size + highlight_size - 1],
-                [y, y],
-                color='lime', linewidth=1, linestyle='-'
+                [-0.5, x - half_size], [y, y],
+                color=color, linewidth=linewidth, linestyle='-',
+                zorder=10, clip_on=False
             )
-            # Vertical line (from bottom edge to bottom side of rectangle)
             ax_main.plot(
-                [x, x],
-                [v.shape[0] - 1, y - half_size],
-                color='lime', linewidth=1, linestyle='-'
+                [x + half_size + 1, v.shape[1] - 0.5], [y, y],
+                color=color, linewidth=linewidth, linestyle='-',
+                zorder=10, clip_on=False
+            )
+            # Vertical line: from bottom edge to bottom of rectangle, and from top of rectangle to top edge
+            ax_main.plot(
+                [x, x], [v.shape[0] - 0.5, y + half_size + 1],
+                color=color, linewidth=linewidth, linestyle='-',
+                zorder=10, clip_on=False
+            )
+            ax_main.plot(
+                [x, x], [y - half_size, -0.5],
+                color=color, linewidth=linewidth, linestyle='-',
+                zorder=10, clip_on=False
             )
             ax_main.spines['top'].set_visible(False)
             ax_main.spines['bottom'].set_visible(False)
@@ -3803,7 +3909,7 @@ def plot_contact_map_and_zooms(
             y_start_valid = max(y_start, 0)
             y_end_valid = min(y_end, v.shape[0])
 
-            zoomed = v[y_start_valid:y_end_valid, x_start_valid:x_end_valid] ** pow
+            zoomed = v[y_start_valid:y_end_valid, x_start_valid:x_end_valid]
 
             # Pad as needed to get to (highlight_size, highlight_size)
             zoomed = np.pad(
@@ -3817,19 +3923,65 @@ def plot_contact_map_and_zooms(
             if i < len(zoom_subplot_indices):
                 gs_idx = zoom_subplot_indices[i]
                 ax_zoom = fig.add_subplot(gs[gs_idx])
-                ax_zoom.imshow(zoomed, cmap='gnuplot2', origin='upper')
+                ax_zoom.imshow(zoomed, cmap=gamma_cmap, origin='upper')
                 ax_zoom.set_title(
-                    f"{row['wt_variant']} | {row['clinical_variant']}\n(Interaction: {row['interaction_strength_signed']:.2f})",
+                    f"{row['wt_variant']} | {row['clinical_variant']}\n(Joint Effect={row['interaction_strength_signed']:.2f})",
                     fontsize=8
                 )
                 center_x = highlight_size // 2
                 center_y = highlight_size // 2
-                ax_zoom.scatter([center_x], [center_y], facecolors='none', edgecolors='lime', marker='s', s=200, linewidths=3)
-                ax_zoom.set_xticks([])
-                ax_zoom.set_yticks([])
+                ax_zoom.scatter([center_x], [center_y], facecolors='none', edgecolors=color, marker='s', s=200, linewidths=3)
+                
+                # Add tick labels if requested
+                if zoom_show_ticks:
+                    # Calculate the actual coordinates in the main plot coordinate system
+                    # The zoomed region spans from (x_start, y_start) to (x_end, y_end) in main coordinates
+                    x_start_actual = x - half_size
+                    x_end_actual = x + half_size + 1
+                    y_start_actual = y - half_size
+                    y_end_actual = y + half_size + 1
+                    
+                    # Create tick positions and labels
+                    # For x-axis (clinical variant position)
+                    x_ticks = np.linspace(0, highlight_size - 1, zoom_tick_density)
+                    x_tick_labels = [str(int(x_start_actual + (x_end_actual - x_start_actual) * tick / (highlight_size - 1))) 
+                                   for tick in x_ticks]
+                    ax_zoom.set_xticks(x_ticks)
+                    ax_zoom.set_xticklabels(x_tick_labels, fontsize=6)
+                    
+                    # For y-axis (WT variant position) - note: origin='upper' means y=0 is at top
+                    y_ticks = np.linspace(0, highlight_size - 1, zoom_tick_density)
+                    y_tick_labels = [str(int(y_start_actual + (y_end_actual - y_start_actual) * tick / (highlight_size - 1))) 
+                                   for tick in y_ticks]
+                    ax_zoom.set_yticks(y_ticks)
+                    ax_zoom.set_yticklabels(y_tick_labels, fontsize=6)
+                    # Move y-tick labels closer to the axis
+                    ax_zoom.tick_params(axis='y', which='major', pad=1)
+                    
+                    # Add axis labels for zoomed plots
+                    ax_zoom.set_xlabel("Clinical Variant Position", fontsize=6)
+                    # Only add y-axis label for the leftmost zoom
+                    # If gs_idx is a tuple (e.g., for multi-dimensional gridspec), use its first element for the column index
+                    col_idx = gs_idx[1] if isinstance(gs_idx, tuple) and len(gs_idx) > 1 else (gs_idx % zoom_ncols)
+                    if col_idx == 0:
+                        ax_zoom.set_ylabel("WT Variant Position", fontsize=6)
+                else:
+                    ax_zoom.set_xticks([])
+                    ax_zoom.set_yticks([])
 
-        ax_main.set_title(f"{target_gene}: {hap_id} Contact Map")
-        plt.colorbar(im, ax=ax_main, fraction=0.046, pad=0.04)
+                # Add a white outline rectangle around the edge if requested
+                if zoom_rect_white_outline:
+                    outline_rect = patches.Rectangle(
+                        (0, 0),
+                        highlight_size, highlight_size,
+                        linewidth=zoom_rect_white_outline_width,
+                        edgecolor='white',
+                        facecolor='none',
+                        zorder=11
+                    )
+                    ax_zoom.add_patch(outline_rect)
+
+        ax_main.set_title(f"{title}") 
         ax_main.set_xlabel("Clinical Variant Position")
         ax_main.set_ylabel("WT Variant Position")
 
@@ -3848,7 +4000,11 @@ def plot_contact_map_and_zooms(
         ax_main.set_yticks(yticks)
 
         # Hide the padding axis if main_plot_above
-        if main_plot_above:
+        if main_plot_above == -1:
+            for col in range(zoom_ncols):
+                ax_pad = fig.add_subplot(gs[zoom_nrows, col])
+                ax_pad.axis('off')
+        elif main_plot_above:
             for col in range(zoom_ncols):
                 ax_pad = fig.add_subplot(gs[1, col])
                 ax_pad.axis('off')

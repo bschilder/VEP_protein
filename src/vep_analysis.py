@@ -781,16 +781,20 @@ def _filter_vep_df(vep_df,
     return vep_df
 
 def add_legend(g, 
+                include=None,
                 palette=utils.get_clinsig_palette(),
                  loc='upper center',
                  bbox_to_anchor=(0.5, 1.05),
                  top=0.9,
                  ncol=None):
     
-    handles = [plt.Rectangle((0,0),1,1, color=palette[label]) for label in palette]
-    labels = list(palette.keys())
+    if include is not None:
+        labels = [label for label in palette if label in include]
+    else:
+        labels = list(palette.keys())
+    handles = [plt.Rectangle((0,0),1,1, color=palette[label]) for label in labels]
     if ncol is None:    
-        ncol = len(palette)
+        ncol = len(labels)
     g.figure.legend(handles, labels, 
                  loc=loc,
                  bbox_to_anchor=bbox_to_anchor,
@@ -861,7 +865,7 @@ def plot_vep_density(vep_df,
     g.figure.suptitle(f'{final_label}\n{mutant_summary_str}', y=title_y)
 
     # Add legend 
-    add_legend(g, palette=palette,  top=legend_y, 
+    add_legend(g, palette=palette,  top=legend_y, include=vep_df[clinsig_col].unique(),
                    loc='lower center') 
     rm_subplot_prefixes(g)
 
@@ -912,13 +916,14 @@ def compute_representativeness_stats(
     y : str, optional
         Name of the percentile column to compute if not present (default: 'VEP_percentile').
     is_ref : bool, optional
-        Whether to filter for REF haplotypes (default: True).
+        Whether to return only the rows that correspond to the reference haplotypes (default: True).
 
     Returns
     -------
     pd.DataFrame
         DataFrame with added columns for percentile rank (`y`), 'VEP_mean', and 'VEP_std'.
     """
+    print(f"Computing representativeness stats for {y}")
     # Compute percentile rank if not present
     if y not in vep_df.columns:
         vep_df[y] = vep_df.groupby(groupby_cols, observed=True)['VEP'].rank(pct=True) * 100
@@ -947,6 +952,47 @@ def compute_representativeness_stats(
 
     return pct_df
 
+
+def plot_vep_ref_representativeness(vep_df, 
+            groupby_cols=['model_location','protein','clinsig','mutant','scoring_strategy'],
+            title=r"VEP$_{ref}$ Representativeness",
+            figsize=(5, 5), 
+            xlabel="Clinical Significance",
+            ylabel=r"VEP$_{ref}$ Percentile",   
+            clinsig_col="clinsig", 
+            palette = utils.get_clinsig_palette(), 
+            hline_x=50, 
+            reverse_percentiles=False):
+    
+    if "is_ref" not in vep_df.columns:
+        vep_df["is_ref"] = vep_df["sample"]=="REF"
+    data = compute_representativeness_stats(vep_df, groupby_cols=groupby_cols)
+    
+    # Reverse percentiles to ensure larger VEP_percentile values are benign, smaller are pathogenic
+    if reverse_percentiles:
+        data["VEP_percentile"] = 100 - data["VEP_percentile"]
+    # n_bins=10
+    # vep_binned, bin_edges = pd.qcut(data['VEP_mean'], q=n_bins, labels=False, retbins=True, duplicates='drop')
+    # data = data.copy()
+    # data['VEP_binned'] = vep_binned
+ 
+    data = utils.sort_by_clinsig(data, clinsig_col=clinsig_col)
+    
+
+    fig, ax = plt.subplots(figsize=figsize)
+    g = sns.violinplot(data=data, x=clinsig_col, y="VEP_percentile", hue=clinsig_col,
+                       cut=0,
+                       palette=palette,
+                       legend=False,
+                       ax=ax)
+    g.set_xlabel(xlabel)
+    g.set_ylabel(ylabel)
+    g.set_title(title)
+
+    if hline_x is not None:
+        g.axhline(hline_x, color='grey', linestyle='--', linewidth=1)
+
+    return {"fig":g.figure, 'axes':g.axes , "data":data}
 
 
 
@@ -3343,7 +3389,8 @@ def plot_top_diff_variants(
         sample_head_and_tail=False,
         arrow_bottom_margin=0.25,
         arrow_text_padding=0.05,
-        table_width_ratio=0.4
+        table_width_ratio=0.4,
+        palatte = utils.get_clinsig_palette()
     ):
     """
     Plot variants where the REF was +/- 1 VEP unit from the mean (or other x column).
@@ -3381,7 +3428,10 @@ def plot_top_diff_variants(
     import pandas as pd
 
 
-    diff_df = vep_df.copy ()
+    diff_df = vep_df.copy()
+
+    if "n_haplotypes" not in diff_df.columns:
+        diff_df["n_haplotypes"] = diff_df.groupby(["model_location", "scoring_strategy", "mutant"])["haplotype"].transform("nunique")
 
     if is_ref_filter is not None:
         diff_df = diff_df.loc[diff_df["is_ref"] ==is_ref_filter]
@@ -3452,7 +3502,6 @@ def plot_top_diff_variants(
     
     # Create barplot subplot
     ax = fig.add_subplot(gs[0])
-    palatte = utils.get_clinsig_palette()
 
     # Add an extra row with value 0 to create space above the first data row
     # This will allow the table header to align with the space above the first bar
@@ -3653,78 +3702,232 @@ def plot_top_diff_variants(
     plt.tight_layout()
     if show:
         plt.show()
-    return ax, table_ax
+    return {"fig": fig.figure, "axes": fig, "data": diff_df}
 
-def variant_count_by_source_barplot(urls={'substitutions': "https://marks.hms.harvard.edu/proteingym/ProteinGym_v1.1/clinical_ProteinGym_substitutions.zip",
-                                           'splice_variants': "~/projects/VEP_DNA/data/splicing/splicevardb_x_clinvar_snv.csv",
-                                           'utr_variants': "~/projects/VEP_DNA/data/UTR/clinvar_utr_snv.bed.gz"},
-                                    show_plot=True,
-                                    figsize=(10, 2),
-                                    legend_loc='lower right'):
+def variant_count_by_source_barplot(
+    urls={
+        'substitutions': "https://marks.hms.harvard.edu/proteingym/ProteinGym_v1.1/clinical_ProteinGym_substitutions.zip",
+        'splice_variants': "~/projects/VEP_DNA/data/splicing/splicevardb_x_clinvar_snv.csv",
+        'utr_variants': "~/projects/VEP_DNA/data/UTR/clinvar_utr_snv.bed.gz"
+    },
+    show_plot=True,
+    figsize=(10, 2),
+    legend_loc='lower right',
+    palette = utils.get_clinsig_palette(),
+    x_label="Variant Type",
+    y_label="Variants",
+    flip_axes=False
+):
+    """
+    Plots a stacked bar plot of clinical variant counts by type and clinical significance.
 
+    Parameters
+    ----------
+    urls : dict
+        Dictionary of file paths/URLs for substitutions, splice_variants, and utr_variants.
+    show_plot : bool
+        Whether to display the plot.
+    figsize : tuple
+        Figure size.
+    legend_loc : str
+        Location of the legend.
+    x_label : str
+        Label for the x-axis.
+    y_label : str
+        Label for the y-axis.
+    flip_axes : bool
+        If True, flip the x and y axes (vertical bars instead of horizontal).
+    """
+    pg_subs_paths = pooch.retrieve(
+        urls['substitutions'],
+        known_hash=None,
+        processor=pooch.Unzip(),
+        progressbar=True
+    )
 
-    pg_subs_paths = pooch.retrieve(urls['substitutions'],
-                    known_hash=None,
-                    processor=pooch.Unzip(),
-                    progressbar=True)
-    
     #### ProteinGym ####
     pg_subs = pd.concat([pd.read_csv(path, index_col=0) for path in tqdm(pg_subs_paths)])
-    sub_counts = pg_subs.groupby("DMS_bin_score", observed=True).size().reset_index().rename(columns={"DMS_bin_score":"ClinSig", 0: "Count"})
+    sub_counts = pg_subs.groupby("DMS_bin_score", observed=True).size().reset_index().rename(
+        columns={"DMS_bin_score": "ClinSig", 0: "Count"}
+    )
     sub_counts["Source"] = "ProteinGym"
-    sub_counts["Consequence"] = "Missense"
-    
+    sub_counts["Variant Type"] = "Missense"
+
     #### Splicing ####
     splice_variants = pd.read_csv(urls['splice_variants'])
-    splice_counts = splice_variants.groupby("CLNSIG_simplified", observed=True).size().reset_index().rename(columns={"CLNSIG_simplified":"ClinSig", 0: "Count"})
+    splice_counts = splice_variants.groupby("CLNSIG_simplified", observed=True).size().reset_index().rename(
+        columns={"CLNSIG_simplified": "ClinSig", 0: "Count"}
+    )
     splice_counts["Source"] = "SpliceVarDB"
-    splice_counts["Consequence"] = "Splicing"
-    
-    
+    splice_counts["Variant Type"] = "Splicing"
+
     #### UTR ####
     import src.clinvar as cv
     utr_variants = cv.read_bed(urls['utr_variants']).to_pandas()
 
-    clnsig_map = {"likely_path": "pathogenic",
-                    "likely_pathogenic": "pathogenic",
-                    "pathogenic": "pathogenic",
-                    "path": "pathogenic",
-                    "likely_benign": "benign"}
-    utr_counts = utr_variants.replace({"CLNSIG_simple": clnsig_map}).groupby("CLNSIG_simple", observed=True).size().reset_index().rename(columns={"CLNSIG_simple":"ClinSig", 0: "Count"})
-
+    clnsig_map = {
+        "likely_path": "pathogenic",
+        "likely_pathogenic": "pathogenic",
+        "pathogenic": "pathogenic",
+        "path": "pathogenic",
+        "likely_benign": "benign",
+        "vus": "VUS",
+        "VUS": "VUS",
+        
+    }
+    utr_counts = utr_variants.replace({"CLNSIG_simple": clnsig_map}).groupby("CLNSIG_simple", observed=True).size().reset_index().rename(
+        columns={"CLNSIG_simple": "ClinSig", 0: "Count"}
+    )
     utr_counts["Source"] = "ClinVar"
-    utr_counts["Consequence"] = "UTR"
-    
-    
+    utr_counts["Variant Type"] = "UTR"
+
     #### Combine and plot ####
-    palette = utils.get_clinsig_palette()
-    variant_counts = pd.concat([splice_counts, utr_counts, sub_counts]) 
+    variant_counts = pd.concat([splice_counts, utr_counts, sub_counts])
     variant_counts["ClinSig"] = variant_counts["ClinSig"].str.lower()
-    variant_counts = variant_counts.loc[variant_counts["ClinSig"].str.lower()!="vus"] 
-    variant_counts["Consequence (Source)"] = variant_counts["Consequence"] + " (" + variant_counts["Source"] + ")"
+    # variant_counts = variant_counts.loc[variant_counts["ClinSig"].str.lower() != "vus"]
+    variant_counts["Variant Type (Source)"] = variant_counts["Variant Type"] + " (" + variant_counts["Source"] + ")"
     print(variant_counts)
     # Create figure and axes with specified size
     fig, ax = plt.subplots(figsize=figsize)
 
-    # Group data by Consequence (Source) and ClinSig
-    grouped = variant_counts.groupby(['Consequence (Source)', 'ClinSig'], sort=False, observed=True)['Count'].sum().unstack()
+    variant_counts["ClinSig"] = variant_counts["ClinSig"].str.replace("vus", "VUS")
+    variant_counts.sort_values(by="Variant Type", inplace=True)
 
-    # Create stacked bar plot
-    grouped.plot(kind='barh', 
-                stacked=True,
-                color=[palette["benign"], palette["path"]],  # Benign, Pathogenic 
-                width=0.95,
-                ax=ax)  # Specify the axes to plot on
-    plt.title("Clinical Variants by Consequence and Source")
-    plt.legend(title="Clinical Significance", loc=legend_loc)
-    plt.xlabel('Variant Count')
-    plt.ylabel('Consequence (Source)')
+    # Group data by Consequence (Source) and ClinSig
+    grouped = variant_counts.groupby(['Variant Type', 'ClinSig'], sort=False, observed=True)['Count'].sum().unstack()
+
+    # Create stacked bar plot, with option to flip axes
+    if not flip_axes:
+        grouped.plot(
+            kind='barh',
+            stacked=True,
+            color=[palette[c] for c in grouped.columns],  # Ensure order matches columns
+            width=0.95,
+            ax=ax
+        )
+        plt.xlabel(x_label)
+        plt.ylabel(y_label)
+    else:
+        grouped.plot(
+            kind='bar',
+            stacked=True,
+            color=[palette[c] for c in grouped.columns],  # Ensure order matches columns
+            width=0.95,
+            ax=ax
+        )
+        plt.xlabel(x_label)
+        plt.ylabel(y_label)
+        
+
+    # Rotate x-axis tick labels for better readability
+    if flip_axes:
+        plt.xticks(rotation=0, ha='center') 
+
+    ax.set_yticklabels([f"{int(y/1000)}k" if y >= 1000 else str(int(y)) for y in ax.get_yticks()])
+    plt.title("Clinical Variants by Type")
+    plt.legend(title="Clinical\nSignificance" if flip_axes else "Clinical Significance", loc=legend_loc)
     plt.tight_layout()
 
     # Remove the top and right spines (margin lines) for a cleaner look
     ax.spines['top'].set_visible(False)
     ax.spines['right'].set_visible(False)
-    
+    legend = plt.legend(title="Clinical Significance", loc=legend_loc)
+    legend.get_frame().set_linewidth(0)
+    plt.tight_layout()
+
     if show_plot:
         plt.show()
     return {'fig': fig, 'ax': ax, 'data': grouped}
+
+
+import matplotlib.ticker as mticker
+
+
+def plot_n_variants_histogram(
+    df, 
+    x="n_variants",
+    title="WT Variants per Haplotype",
+    x_label="WT Variants per Haplotype",
+    y_label="Number of Haplotypes",
+    formatter=mticker.FuncFormatter(lambda x, pos: f"{x/1_000_000:.0f}M" if x >= 1_000_000 else (f"{int(x)}" if x > 0 else "0")),
+    save_path=None, 
+    bins=50,
+    figsize=(10, 4),
+    show_plot=True
+):
+    """
+    Plot a histogram showing the distribution of the number of WT variants per haplotype.
+
+    This function creates a histogram of the specified column (default: "n_variants") from the input DataFrame,
+    displaying the number of haplotypes with a given number of WT variants. The median value is highlighted
+    with a vertical dashed line. The y-axis is formatted to display counts in thousands (k) or millions (M)
+    for readability.
+
+    Parameters
+    ----------
+    df : pd.DataFrame
+        Input DataFrame containing the data to plot.
+    x : str, optional
+        Column name in `df` representing the number of variants per haplotype (default: "n_variants").
+    title : str, optional
+        Title of the plot (default: "WT Variants per Haplotype").
+    x_label : str, optional
+        Label for the x-axis (default: "WT Variants per Haplotype").
+    y_label : str, optional
+        Label for the y-axis (default: "Number of Haplotypes").
+    formatter : matplotlib.ticker.Formatter, optional
+        Formatter for the y-axis ticks (default: formats to "k" or "M" as appropriate).
+    save_path : str or None, optional
+        If provided, the path to save the figure (default: None).
+    bins : int, optional
+        Number of bins for the histogram (default: 50).
+    figsize : tuple, optional
+        Size of the figure (default: (10, 4)).
+    show_plot : bool, optional
+        Whether to display the plot (default: True).
+
+    Returns
+    -------
+    dict
+        Dictionary containing the figure, axes, and the input DataFrame:
+        {'fig': fig, 'ax': ax, 'data': df}
+    """
+    fig, ax = plt.subplots(figsize=figsize)
+    sns.histplot(
+        df, 
+        x=x, 
+        bins=bins, 
+        color="gray",
+        # hue="cohort", multiple="stack", palette="gray"
+    )
+    median_val = df[x].median()
+    plt.axvline(
+        median_val, 
+        color="goldenrod", 
+        linestyle="--", 
+        linewidth=2, 
+        label=f"Median = {int(median_val)}"
+    )
+    plt.title(title)
+    plt.xlabel(x_label)
+    plt.ylabel(y_label)
+    legend = plt.legend(title="")
+    # Remove the margin line (frame) around the legend
+    if legend is not None:
+        legend.get_frame().set_linewidth(0)
+        legend.get_frame().set_edgecolor('none')
+
+    # Set y-axis to thousands (k) or millions (M) instead of scientific notation
+    ax = plt.gca()
+    ax.yaxis.set_major_formatter(formatter)
+
+    # Remove the top and right spines (margin lines) for a cleaner look
+    ax.spines['top'].set_visible(False)
+    ax.spines['right'].set_visible(False)
+    plt.tight_layout()
+
+    if save_path is not None:
+        plt.savefig(save_path, **utils.FIG_SAVE_KWARGS)
+    if show_plot:
+        plt.show()
+    return {'fig': fig, 'ax': ax, 'data': df}

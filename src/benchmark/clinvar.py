@@ -524,7 +524,6 @@ def agg_logreg_results(lr_gene_df,
         return lr_gene_grouped
 
 
-
 def plot_logreg_results_subplots(
     data_dict,
     group_id="group_id",
@@ -541,7 +540,8 @@ def plot_logreg_results_subplots(
     bar_linewidth=1,
     pr_linewidth=2,
     pr_linestyle="-",
-    model_names=None
+    model_names=None,
+    colwrap=None
 ):
     """
     Create subplots for multiple models' logistic regression results.
@@ -581,6 +581,8 @@ def plot_logreg_results_subplots(
         Line style for PR curves (e.g., '-', '--', '-.', ':').
     model_names : list, optional
         List of model names to plot in order. If None, uses keys from data_dict.
+    colwrap : int, optional
+        If set, wrap subplots into a grid with this many columns (like seaborn's col_wrap).
 
     Returns
     -------
@@ -588,37 +590,81 @@ def plot_logreg_results_subplots(
         Dictionary containing the figure, axes, and data used for plotting.
     """
     import matplotlib.pyplot as plt
-    import seaborn as sns  
+    import seaborn as sns
+    import numpy as np
 
     if model_names is None:
         model_names = list(data_dict.keys())
-    
-    n_models = len(model_names)
-    
-    # Create figure with subplots: n_models rows, 2 columns
-    fig, axes = plt.subplots(n_models, 2, figsize=(figsize[0], figsize[1] * n_models))
-    
-    # Handle case where there's only one model (axes will be 1D)
-    if n_models == 1:
-        axes = axes.reshape(1, -1)
-    
-    # Plot each model in its own row
-    for i, model_name in enumerate(model_names):
+
+    # Filter out models with empty DataFrames
+    nonempty_model_names = []
+    for name in model_names:
+        lr_df = data_dict[name]
+        if lr_df is not None and not lr_df.empty:
+            nonempty_model_names.append(name)
+
+    nonempty_model_names = sorted(nonempty_model_names, reverse=True)
+
+    if not nonempty_model_names:
+        raise ValueError("No non-empty models to plot.")
+
+    n_models = len(nonempty_model_names)
+
+    # Determine subplot grid shape
+    if colwrap is not None:
+        ncols = int(colwrap)
+        nrows = int(np.ceil(n_models / ncols))
+        total_cols = ncols * 2
+        fig, axes = plt.subplots(
+            nrows=nrows,
+            ncols=total_cols,
+            figsize=(figsize[0] * ncols, figsize[1] * nrows)
+        )
+        # axes shape: (nrows, total_cols)
+        # Flatten for easier indexing
+        if nrows == 1:
+            axes = np.expand_dims(axes, axis=0)
+        if nrows == 1 and total_cols == 2:
+            axes = axes.reshape(1, 2)
+    else:
+        fig, axes = plt.subplots(n_models, 2, figsize=(figsize[0], figsize[1] * n_models))
+        if n_models == 1:
+            axes = axes.reshape(1, -1)
+        nrows = n_models
+        ncols = 1
+
+    # Track which axes are actually used
+    used_axes = []
+    barplot_df_all = []
+    pr_curves_all = [] 
+
+    for idx, model_name in enumerate(nonempty_model_names):
+        if colwrap is not None:
+            row = idx // ncols
+            col = idx % ncols
+            ax_bar = axes[row, col * 2]
+            ax_pr = axes[row, col * 2 + 1]
+        else:
+            ax_bar = axes[idx, 0]
+            ax_pr = axes[idx, 1]
+
         lr_df = data_dict[model_name]
-        
+
         # Precompute unique labels and palette
-        unique_labels = lr_df[group_id].unique()   
+        unique_labels = lr_df[group_id].unique()
 
         # Barplot data preparation (vectorized)
         barplot_df = lr_df.melt(
-            id_vars=[group_id, "pr_curve", "support"], 
+            id_vars=[group_id, "pr_curve", "support"],
             var_name="metric",
             value_name="value"
         )
         if remove_macro_metrics:
             barplot_df = barplot_df[~barplot_df["metric"].str.startswith("macro_")]
-        
+
+        barplot_df["model"] = model_name
         barplot_df['metric'] = barplot_df['metric'].str.replace("_", "\n")
+        barplot_df_all.append(barplot_df)
 
         # Barplot (left column)
         barplot = sns.barplot(
@@ -626,58 +672,76 @@ def plot_logreg_results_subplots(
             x="metric",
             y="value",
             hue=group_id,
-            ax=axes[i, 0],
+            ax=ax_bar,
             palette=palette,
             edgecolor=bar_edgecolor if bar_edge else None,
             linewidth=bar_linewidth if bar_edge else 0
         )
-        axes[i, 0].set_ylim(0, 1)
-        axes[i, 0].set_xticks(range(len(axes[i, 0].get_xticklabels())))
-        axes[i, 0].set_xticklabels(
-            [tick.get_text() for tick in axes[i, 0].get_xticklabels()],
+        ax_bar.set_ylim(0, 1)
+        ax_bar.set_xticks(range(len(ax_bar.get_xticklabels())))
+        ax_bar.set_xticklabels(
+            [tick.get_text() for tick in ax_bar.get_xticklabels()],
             rotation=0
         )
-        axes[i, 0].set_title(f"{title1_prefix}{model_name}")
-        axes[i, 0].legend(**legend_kwargs)
-        axes[i, 0].spines['top'].set_visible(False)
-        axes[i, 0].spines['right'].set_visible(False)
+        ax_bar.set_title(f"{title1_prefix}{model_name}")
+        ax_bar.legend(**legend_kwargs)
+        ax_bar.spines['top'].set_visible(False)
+        ax_bar.spines['right'].set_visible(False)
 
         # If bar_edge is False, remove bar outlines after plotting
         if not bar_edge:
-            for patch in axes[i, 0].patches:
+            for patch in ax_bar.patches:
                 patch.set_linewidth(0)
 
         # Precision-Recall curves (right column)
         pr_curves = lr_df["pr_curve"].to_list()
         labels = lr_df[group_id].to_numpy()
         auprcs = lr_df["AUPRC"].to_numpy()
-        
+        pr_df = pd.DataFrame(pr_curves)
+        pr_df["model"] = model_name
+        pr_curves_all.append(pr_df) 
         # Build a legend label for each
         legend_labels = [f"{label} (AUPRC={auprc_fmt.format(ap)})" for label, ap in zip(labels, auprcs)]
-        
+
         # Plot all curves
         for j, (pr, label, legend_label) in enumerate(zip(pr_curves, labels, legend_labels)):
             precision, recall = pr
             color = palette[label]
-            axes[i, 1].plot(
-                recall, precision, 
-                label=legend_label, 
-                color=color, 
-                linewidth=pr_linewidth, 
+            ax_pr.plot(
+                recall, precision,
+                label=legend_label,
+                color=color,
+                linewidth=pr_linewidth,
                 linestyle=pr_linestyle
             )
-        
-        axes[i, 1].set_xlabel("Recall")
-        axes[i, 1].set_ylabel("Precision")
-        axes[i, 1].set_title(f"{title2_prefix}{model_name}")
-        axes[i, 1].legend(loc="lower left")
-        axes[i, 1].spines['top'].set_visible(False)
-        axes[i, 1].spines['right'].set_visible(False)
+
+        ax_pr.set_xlabel("Recall")
+        ax_pr.set_ylabel("Precision")
+        ax_pr.set_title(f"{title2_prefix}{model_name}")
+        ax_pr.legend(loc="lower left")
+        ax_pr.spines['top'].set_visible(False)
+        ax_pr.spines['right'].set_visible(False)
+
+        used_axes.append((ax_bar, ax_pr))
+
+    # Hide unused axes (empty subplots)
+    if colwrap is not None:
+        total_axes = nrows * ncols * 2
+        for idx in range(n_models, nrows * ncols):
+            row = idx // ncols
+            col = idx % ncols
+            for ax in [axes[row, col * 2], axes[row, col * 2 + 1]]:
+                ax.set_visible(False)
+    else:
+        if n_models < len(model_names):
+            for idx in range(n_models, len(model_names)):
+                for ax in axes[idx]:
+                    ax.set_visible(False)
 
     plt.tight_layout()
     plt.show()
 
-    return {"fig": fig, "axes": axes, "model_names": model_names}
+    return {"fig": fig, "axes": axes, "data": {"barplot_df": pd.concat(barplot_df_all), "pr_curves": pd.concat(pr_curves_all)}}
 
 def plot_logreg_gene_subplots(
     data_dict,
@@ -694,7 +758,8 @@ def plot_logreg_gene_subplots(
     bar_edgecolor="black",
     bar_linewidth=1,  
     model_names=None,
-    subplots_kwargs={}
+    subplots_kwargs={},
+    colwrap=None
 ):
     """
     Generate subplots for logistic regression results from multiple models.
@@ -734,6 +799,8 @@ def plot_logreg_gene_subplots(
         List of model names to plot in order. If None, uses keys from data_dict.
     subplots_kwargs : dict, optional
         Additional keyword arguments passed to plt.subplots().
+    colwrap : int, optional
+        If not None, wrap the subplots into multiple columns with this many columns per row.
 
     Returns
     -------
@@ -753,23 +820,56 @@ def plot_logreg_gene_subplots(
     """
     import matplotlib.pyplot as plt
     import seaborn as sns  
+    import numpy as np
 
     if model_names is None:
         model_names = list(data_dict.keys())
     
     n_models = len(model_names)
-    
-    # Create figure with subplots: n_models rows, 2 columns
-    fig, axes = plt.subplots(n_models, 2, 
-                             figsize=(figsize[0], figsize[1] * n_models),
-                             **subplots_kwargs)
-    
-    # Handle case where there's only one model (axes will be 1D)
-    if n_models == 1:
-        axes = axes.reshape(1, -1)
-    
-    # Plot each model in its own row
+
+    # Determine subplot grid shape
+    if colwrap is not None and colwrap > 0:
+        ncols = colwrap * 2
+        nrows = int(np.ceil(n_models / colwrap))
+        fig, axes = plt.subplots(
+            nrows, ncols,
+            figsize=(figsize[0] * colwrap, figsize[1] * nrows),
+            **subplots_kwargs
+        )
+        # Ensure axes is 2D
+        if nrows == 1:
+            axes = axes.reshape(1, -1)
+        elif ncols == 2:
+            axes = axes.reshape(-1, 2)
+    else:
+        # Default: n_models rows, 2 columns
+        fig, axes = plt.subplots(
+            n_models, 2, 
+            figsize=(figsize[0], figsize[1] * n_models),
+            **subplots_kwargs
+        )
+        if n_models == 1:
+            axes = axes.reshape(1, -1)
+
+    # Helper to get axes for i-th model
+    def get_axes(i):
+        if colwrap is not None and colwrap > 0:
+            row = i // colwrap
+            col = (i % colwrap) * 2
+            return axes[row, col], axes[row, col + 1]
+        else:
+            return axes[i, 0], axes[i, 1]
+
+    # Track which axes are used
+    used_axes = set()
+    barplot_df_all = []
+    interp_results_all = []
+
     for i, k in enumerate(model_names):
+
+        ax_bar, ax_pr = get_axes(i)
+        used_axes.add(ax_bar)
+        used_axes.add(ax_pr)
 
         # Compute mean results across all genes
         plot_data = agg_logreg_results(
@@ -780,6 +880,9 @@ def plot_logreg_gene_subplots(
         
         # Interpolate PR curves across all genes
         interp_results = interpolate_pr_curves_by_group(data_dict[k])
+        pr_df = pd.DataFrame(interp_results)
+        pr_df["model"] = k
+        interp_results_all.append(pr_df)
 
         # Barplot data preparation (vectorized)
         barplot_df = plot_data.melt(
@@ -790,7 +893,9 @@ def plot_logreg_gene_subplots(
         if remove_macro_metrics:
             barplot_df = barplot_df[~barplot_df["metric"].str.startswith("macro_")]
         
+        barplot_df["model"] = k
         barplot_df['metric'] = barplot_df['metric'].str.replace("_", "\n")
+        barplot_df_all.append(barplot_df)
 
         # Barplot (left column)
         barplot = sns.barplot(
@@ -798,40 +903,47 @@ def plot_logreg_gene_subplots(
             x="metric",
             y="value",
             hue=group_id,
-            ax=axes[i, 0],
+            ax=ax_bar,
             palette=palette,
             edgecolor=bar_edgecolor if bar_edge else None,
             linewidth=bar_linewidth if bar_edge else 0
         )
-        axes[i, 0].set_ylim(0, 1)
-        axes[i, 0].set_xticks(range(len(axes[i, 0].get_xticklabels())))
-        axes[i, 0].set_xticklabels(
-            [tick.get_text() for tick in axes[i, 0].get_xticklabels()],
+        ax_bar.set_ylim(0, 1)
+        ax_bar.set_xticks(range(len(ax_bar.get_xticklabels())))
+        ax_bar.set_xticklabels(
+            [tick.get_text() for tick in ax_bar.get_xticklabels()],
             rotation=0
         )
-        axes[i, 0].set_title(f"{title1_prefix}{k}")
-        axes[i, 0].legend(**legend_kwargs)
-        axes[i, 0].spines['top'].set_visible(False)
-        axes[i, 0].spines['right'].set_visible(False)
+        ax_bar.set_title(f"{title1_prefix}{k}")
+        ax_bar.legend(**legend_kwargs)
+        ax_bar.spines['top'].set_visible(False)
+        ax_bar.spines['right'].set_visible(False)
 
         # If bar_edge is False, remove bar outlines after plotting
         if not bar_edge:
-            for patch in axes[i, 0].patches:
+            for patch in ax_bar.patches:
                 patch.set_linewidth(0)
 
         plot_mean_pr_curve_by_group(
             interp_results, 
-            ax=axes[i, 1], 
+            ax=ax_pr, 
             palette=palette,
             agg_stats=plot_data,
             auprc_fmt=auprc_fmt,
             title=f"{title2_prefix}{k}"
         )
 
+    # Hide any unused axes (empty subplots)
+    # axes may be a 2D or 1D array, flatten for easy iteration
+    axes_flat = axes.flatten() if hasattr(axes, "flatten") else np.array([axes])
+    for ax in axes_flat:
+        if ax not in used_axes:
+            ax.set_visible(False)
+
     plt.tight_layout()
     plt.show()
 
-    return {"fig": fig, "axes": axes, "model_names": model_names}
+    return {"fig": fig, "axes": axes, "data": {"barplot_df": pd.concat(barplot_df_all), "pr_curves": pd.concat(interp_results_all)}}
 
 def interpolate_pr_curves_by_group(
     df,

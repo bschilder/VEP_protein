@@ -168,6 +168,8 @@ def expand_matrix(X, target_size=None,
         target_size = X.shape[0]
         if verbose:
             print(f"No target size specified, using input size {target_size}")
+    if isinstance(target_size, tuple):
+        target_size = target_size[0]
 
     if X.shape[0] == target_size and X.shape[1] == target_size:
         if verbose:
@@ -199,7 +201,7 @@ def expand_matrix(X, target_size=None,
 
     return expanded_matrix
 
-def label_bins(bin_size, n_bins, max_labels=10):
+def label_bins(bin_size, n_bins, max_labels=7, xtick_rotation=0, ytick_rotation=None):
     """
     Create and set bin labels for a contact map plot based on residue positions.
     
@@ -207,7 +209,8 @@ def label_bins(bin_size, n_bins, max_labels=10):
         bin_size (int): Size of each bin in residues
         n_bins (int): Number of bins in the contact map
         max_labels (int, optional): Maximum number of labels to show. Defaults to 10.
-        
+        xtick_rotation (int, optional): Rotation of the x-axis labels. Defaults to 90.
+        ytick_rotation (int, optional): Rotation of the y-axis labels. Defaults to 0.
     Returns:
         None: Modifies the current matplotlib plot's axis labels
     """
@@ -217,8 +220,8 @@ def label_bins(bin_size, n_bins, max_labels=10):
     # Generate labels with optimal spacing
     bin_labels = [f"{i*bin_size + 1}" if i % spacing == 0 else "" for i in range(n_bins)]
     
-    plt.xticks(range(n_bins), bin_labels, rotation=90)
-    plt.yticks(range(n_bins), bin_labels)
+    plt.xticks(range(n_bins), bin_labels, rotation=xtick_rotation)
+    plt.yticks(range(n_bins), bin_labels, rotation=ytick_rotation)
 
 def nonzero_mean(arr, axis=None):
     """

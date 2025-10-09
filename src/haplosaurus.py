@@ -3041,17 +3041,20 @@ def plot_haplotypes_summary(
     color=("grey", "grey"),
     edgecolor=("black", "black"),
     figsize=(13, 4),
-    title=("Number of Haplotypes per Protein", "Number of Wildtype (WT) Variants per Haplotype"),
-    xlabel=("Number of Haplotypes", "Number of WT Variants"),
-    ylabel=("Number of Proteins", "Number of Haplotypes"),
+    title=("Haplotypes per Protein", "WT Variants per Haplotype"),
+    xlabel=("Haplotypes", "WT Variants per Haplotype"),
+    ylabel=("Proteins", "Haplotypes"),
     gridspec_kw={'width_ratios': [0.3, 1]},
-    verbose=True,
     show_median=True,  # New argument to control median annotation
     median_line_kwargs=None,  # Optional kwargs for the median line
     show_mean=True,  # New argument to control mean annotation
     mean_line_kwargs=None,  # Optional kwargs for the mean line
     save_path=None,
     fig_save_kwargs=utils.FIG_SAVE_KWARGS,
+    count_indels_as_one=False,
+    bin_sep=r"$\leq$",
+    show_subplots=(True, True),  # New argument: tuple of bools (left, right)
+    verbose=True,
 ):
     """
     Plot the number of haplotypes per protein (subplot1) and 
@@ -3064,13 +3067,26 @@ def plot_haplotypes_summary(
         verbose (bool): Whether to print verbose output. Defaults to True.
         show_median (bool): Whether to show the median as a vertical line in subplot 1.
         median_line_kwargs (dict or None): Optional kwargs for axvline (e.g., color, linestyle).
+        count_indels_as_one (bool): Whether to count indels as one edit (as opposed to the total number of genomic positions affected).
+            e.g. "123del{22}" will be counted as 1 edit, not 22.
+            Defaults to False.
+        show_subplots (tuple of bool): Tuple (show_left, show_right) to control which subplots are shown.
     """
     import matplotlib.pyplot as plt
     import pandas as pd
     import numpy as np
 
+    # For y-axis tick formatting
+    from matplotlib.ticker import FuncFormatter
+
+    # Validate show_subplots
+    if not (isinstance(show_subplots, (tuple, list)) and len(show_subplots) == 2 and all(isinstance(x, bool) for x in show_subplots)):
+        raise ValueError("show_subplots must be a tuple of two bools, e.g. (True, True)")
+
+    show_left, show_right = show_subplots
+
     hap_df = haplotypes_to_df(haplotypes).reset_index()
-    hap_df = utils.add_edits(hap_df)
+    hap_df = utils.add_edits(hap_df, count_indels_as_one=count_indels_as_one)
 
     #### Prepare data for both plots ####
     def edits_label(edits, max_edits=10, bin_size=200):
@@ -3079,7 +3095,15 @@ def plot_haplotypes_summary(
         else:
             bin_start = max_edits + 1 + ((edits - (max_edits + 1)) // bin_size) * bin_size
             bin_end = bin_start + bin_size - 1
-            return f"{int(bin_start)}-\n{int(bin_end)}"
+            if bin_start > 1000:
+                bin_start = f"{bin_start/1000:.0f}k"
+            else:
+                bin_start = int(bin_start)
+            if bin_end > 1000:
+                bin_end = f"{bin_end/1000:.0f}k"
+            else:
+                bin_start = int(bin_start)
+            return f"{bin_sep}{bin_end}"
 
     # Sort hap_df by edits
     hap_df.sort_values(by="edits", inplace=True)
@@ -3100,62 +3124,156 @@ def plot_haplotypes_summary(
     # Data for plot 2
     counts_per_protein = hap_df.groupby("ENST")["haplotype"].nunique().reset_index().sort_values(by="haplotype", ascending=False)
 
-    #### Create subplots: 1 row, 2 columns, width ratio 0.3:1 ####
-    fig, axes = plt.subplots(1, 2, figsize=figsize, gridspec_kw=gridspec_kw)
+    # Determine how many subplots to show and their positions
+    subplot_indices = []
+    subplot_titles = []
+    subplot_labels = []
+    subplot_ylabels = []
+    subplot_colors = []
+    subplot_edgecolors = []
+    subplot_data = []
+    subplot_plot_funcs = []
 
-    # --- Plot 2: Number of Haplotypes per Protein (now on the left) ---
-    ax1 = axes[0]
-    n_haplotypes = counts_per_protein["haplotype"]
-    ax1.hist(n_haplotypes, bins=bins, color=color[0], edgecolor=edgecolor[0])
-    ax1.set_ylabel(ylabel[0])
-    ax1.set_xlabel(xlabel[0])
-    ax1.set_title(title[0])
+    if show_left:
+        subplot_indices.append(0)
+        subplot_titles.append(title[0])
+        subplot_labels.append(xlabel[0])
+        subplot_ylabels.append(ylabel[0])
+        subplot_colors.append(color[0])
+        subplot_edgecolors.append(edgecolor[0])
+        subplot_data.append(counts_per_protein)
+        subplot_plot_funcs.append("hist")
+    if show_right:
+        subplot_indices.append(1)
+        subplot_titles.append(title[1])
+        subplot_labels.append(xlabel[1])
+        subplot_ylabels.append(ylabel[1])
+        subplot_colors.append(color[1])
+        subplot_edgecolors.append(edgecolor[1])
+        subplot_data.append((counts.index, counts.values))
+        subplot_plot_funcs.append("bar")
 
-    # Optionally add median line
-    if show_median:
-        median_val = np.median(n_haplotypes)
-        if median_line_kwargs is None:
-            median_line_kwargs = dict(color="goldenrod", linestyle="--", linewidth=2, label=f"Median = {int(median_val)}")
+    n_subplots = len(subplot_indices)
+    if n_subplots == 0:
+        raise ValueError("At least one subplot must be shown (show_subplots cannot be (False, False)).")
+
+    # Adjust figsize and gridspec if only one subplot is shown
+    if n_subplots == 1:
+        # Use the width of the corresponding subplot
+        if show_left:
+            width = figsize[0] * gridspec_kw['width_ratios'][0] / sum(gridspec_kw['width_ratios'])
         else:
-            # Ensure label is present
-            median_line_kwargs = dict(median_line_kwargs)  # copy
-            if "label" not in median_line_kwargs:
-                median_line_kwargs["label"] = f"Median = {int(median_val)}"
-        ax1.axvline(median_val, **median_line_kwargs)
-        ax1.legend()
-    if show_mean:
-        mean_val = np.mean(n_haplotypes)
-        if mean_line_kwargs is None:
-            mean_line_kwargs = dict(color="goldenrod", linestyle=":", linewidth=2, label=f"Mean = {mean_val:.2f}")
-        else:
-            # Ensure label is present
-            mean_line_kwargs = dict(mean_line_kwargs)  # copy
-            if "label" not in mean_line_kwargs:
-                mean_line_kwargs["label"] = f"Mean = {mean_val:.2f}"
-        ax1.axvline(mean_val, **mean_line_kwargs)
-        ax1.legend()
+            width = figsize[0] * gridspec_kw['width_ratios'][1] / sum(gridspec_kw['width_ratios'])
+        fig, ax = plt.subplots(1, 1, figsize=(width, figsize[1]))
+        axes = [ax]
+    else:
+        fig, axes = plt.subplots(1, 2, figsize=figsize, gridspec_kw=gridspec_kw)
+        # Only keep the axes that are shown
+        axes = [axes[i] for i, show in enumerate((show_left, show_right)) if show]
 
-    # --- Plot 1: Number of WT Variants per Haplotype (now on the right) ---
-    ax2 = axes[1]
-    bars = ax2.bar(counts.index, counts.values, color=color[1], edgecolor=edgecolor[1])
-    ax2.spines['top'].set_visible(False)
-    for bar in bars:
-        height = bar.get_height()
-        if height > 0:
-            ax2.annotate(f"{int(height):,}", xy=(bar.get_x() + bar.get_width() / 2, height),
-                        xytext=(0, 3), textcoords="offset points",
-                        ha='center', va='bottom', fontsize=9)
-    ax2.set_ylabel(ylabel[1])
-    ax2.set_xlabel(xlabel[1])
-    ax2.set_title(title[1])
+    # --- Plotting ---
+    ax_idx = 0
+    results = {}
+
+    # Formatter for y-axis in thousands
+    def thousands_formatter(x, pos):
+        if x >= 1000:
+            return f"{int(x/1000)}k"
+        elif x == 0:
+            return "0"
+        else:
+            return f"{int(x)}"
+
+    yformatter = FuncFormatter(thousands_formatter)
+
+    for i, ax in enumerate(axes):
+        if subplot_plot_funcs[i] == "hist":
+            n_haplotypes = subplot_data[i]["haplotype"]
+            ax.hist(n_haplotypes, bins=bins, color=subplot_colors[i], edgecolor=subplot_edgecolors[i])
+            ax.set_ylabel(subplot_ylabels[i])
+            ax.set_xlabel(subplot_labels[i])
+            ax.set_title(subplot_titles[i])
+
+            # Set y-axis ticks in thousands
+            ax.yaxis.set_major_formatter(yformatter)
+
+            # Optionally add median line
+            handles = []
+            labels_ = []
+            if show_median:
+                median_val = np.median(n_haplotypes)
+                if median_line_kwargs is None:
+                    median_line_kwargs_ = dict(color="gold", linestyle="--", linewidth=2, label=f"Median = {int(median_val)}")
+                else:
+                    median_line_kwargs_ = dict(median_line_kwargs)  # copy
+                    if "color" not in median_line_kwargs_:
+                        median_line_kwargs_["color"] = "gold"
+                    if "linestyle" not in median_line_kwargs_:
+                        median_line_kwargs_["linestyle"] = "--"
+                    if "linewidth" not in median_line_kwargs_:
+                        median_line_kwargs_["linewidth"] = 2
+                    if "label" not in median_line_kwargs_:
+                        median_line_kwargs_["label"] = f"Median = {int(median_val)}"
+                median_line = ax.axvline(median_val, **median_line_kwargs_)
+                handles.append(median_line)
+                labels_.append(median_line_kwargs_["label"])
+            if show_mean:
+                mean_val = np.mean(n_haplotypes)
+                if mean_line_kwargs is None:
+                    mean_line_kwargs_ = dict(color="goldenrod", linestyle=":", linewidth=2, label=f"Mean = {mean_val:.2f}")
+                else:
+                    mean_line_kwargs_ = dict(mean_line_kwargs)  # copy
+                    if "label" not in mean_line_kwargs_:
+                        mean_line_kwargs_["label"] = f"Mean = {mean_val:.2f}"
+                mean_line = ax.axvline(mean_val, **mean_line_kwargs_)
+                handles.append(mean_line)
+                labels_.append(mean_line_kwargs_["label"])
+            if handles:
+                legend = ax.legend(handles=handles, labels=labels_, frameon=False)
+            # Remove the top and right spines (margin lines) for a cleaner look
+            ax.spines['top'].set_visible(False)
+            ax.spines['right'].set_visible(False)
+            results['counts_per_protein'] = counts_per_protein
+        elif subplot_plot_funcs[i] == "bar":
+            bar_x, bar_y = subplot_data[i]
+            bars = ax.bar(bar_x, bar_y, color=subplot_colors[i], edgecolor=subplot_edgecolors[i])
+            ax.spines['top'].set_visible(False)
+            # Set y-axis ticks in thousands
+            ax.yaxis.set_major_formatter(yformatter)
+            for bar in bars:
+                height = bar.get_height()
+                if height > 0:
+                    ax.annotate(f"{int(height):,}", xy=(bar.get_x() + bar.get_width() / 2, height),
+                                xytext=(0, 3), textcoords="offset points",
+                                ha='center', va='bottom', fontsize=9)
+            # Add vertical goldenrod dashed line at median, include in legend, no frame
+            if len(bar_x) > 0 and "edits" in hap_df.columns:
+                # Compute the median of hap_df["edits"]
+                median_edits = np.median(hap_df["edits"])
+                # Find the x value in bar_x that is closest to the median_edits
+                if isinstance(bar_x, (np.ndarray, list, tuple, pd.Series)):
+                    # Convert bar_x to numpy array for easier computation
+                    bar_x_arr = np.array(bar_x)
+                    # Find the index of the closest value
+                    closest_idx = np.abs(bar_x_arr - median_edits).argmin()
+                    if hasattr(bar_x, 'iloc'):
+                        median_x = bar_x.iloc[closest_idx]
+                    else:
+                        median_x = bar_x[closest_idx]
+                else:
+                    median_x = median_edits
+                median_line = ax.axvline(median_x, color="goldenrod", linestyle="--", linewidth=2, label=f"Median = {median_edits:.2f}")
+                legend = ax.legend(handles=[median_line], frameon=False)
+                median_line = ax.axvline(median_x, color="goldenrod", linestyle="--", linewidth=2, label=f"Median = {median_edits:.0f}")
+                legend = ax.legend(handles=[median_line], frameon=False)
+            ax.set_ylabel(subplot_ylabels[i])
+            ax.set_xlabel(subplot_labels[i])
+            ax.set_title(subplot_titles[i])
+            ax.spines['top'].set_visible(False)
+            ax.spines['right'].set_visible(False)
+            results['edits_counts'] = counts
 
     plt.tight_layout()
-
-    # Remove the top and right spines (margin lines) for a cleaner look
-    ax1.spines['top'].set_visible(False)
-    ax1.spines['right'].set_visible(False)
-    ax2.spines['top'].set_visible(False)
-    ax2.spines['right'].set_visible(False)
 
     if save_path is not None:
         plt.savefig(save_path, **fig_save_kwargs)
@@ -3164,9 +3282,13 @@ def plot_haplotypes_summary(
 
     return {'fig':fig, 
             'axes':axes,
-            'data':{'ax1':hap_df,
-                    'ax2':counts_per_protein}
-                    }
+            'data':{
+                'counts_per_protein': counts_per_protein,
+                'hap_df': hap_df,
+                'edits_counts': counts
+            }
+    }
+
 
 
 
@@ -3356,10 +3478,10 @@ def plot_superpopulation_bar(haplotypes,
     # Put the total number of samples at the top of the bar
     total_samples = sum(bar_heights)
     ax.text(
-        -0.5,
+        -0.25,
         bottom + 0.02 * total_samples,  # a little above the top
-        f"Total: {total_samples}",
-        ha='left', va='bottom', fontsize=12, 
+        f"n={total_samples}",
+        ha='left', va='bottom', fontsize='medium', 
     )
 
     ax.set_ylabel('Individuals')
@@ -3372,6 +3494,7 @@ def plot_superpopulation_bar(haplotypes,
     # Remove the top and right plot outline (spines)
     ax.spines['top'].set_visible(False)
     ax.spines['right'].set_visible(False)
+    ax.spines['bottom'].set_visible(False)
 
     # Add labels for each superpopulation to the right, connected by lines, using label repulsion
     x_bar = 0
@@ -3396,8 +3519,8 @@ def plot_superpopulation_bar(haplotypes,
         # Place initial text at the bar center with a shadow effect for better visibility
         txt = ax.text(
             x_text, y_bar, label,
-            va='center', ha='left', fontsize=10, color=color, fontweight='bold',
-            path_effects=[withStroke(linewidth=1, foreground='grey')]
+            va='center', ha='left', fontsize='medium',# color=color, fontweight='bold',
+            # path_effects=[withStroke(linewidth=1, foreground='grey')]
         )
         texts.append(txt)
 

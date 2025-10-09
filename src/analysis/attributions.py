@@ -925,10 +925,11 @@ def compute_enrichment_vs_threshold(
     return pd.DataFrame(results)
 
 
-
 def plot_enrichment_vs_interactions(
     results, 
     log_x_axis=False, 
+    log_y1_axis=False,
+    log_y2_axis=False,
     show=True, 
     ax=None, 
     y1_label_freq=0.1,
@@ -948,10 +949,11 @@ def plot_enrichment_vs_interactions(
     y1_last_label=True,
     y2_first_label=True,
     y2_last_label=True,
+    arrow_label="Stronger Joint Effects",
     y1_axis_label="● Contact Enrichment",
-    y2_axis_label="■ Number of Interactions",
-    x_axis_label="Absolute Interaction Threshold",
-    title="WT-Clinical Variant Interaction Strength vs. Contact Enrichment",
+    y2_axis_label="■ Variant Pairs",
+    x_axis_label="Absolute Joint Effect Threshold",
+    title="WT-Clinical Variant Joint Effects vs. Contact Enrichment",
     figsize=(9, 6),
     add_arrow=True,
     arrow_title_padding=0.15,
@@ -975,6 +977,10 @@ def plot_enrichment_vs_interactions(
             - 'n_interactions': The number of interactions above each threshold.
     log_x_axis : bool, default False
         Whether to use a logarithmic scale for the x-axis (interaction threshold).
+    log_y1_axis : bool, default False
+        Whether to use a logarithmic scale for the left y-axis (enrichment).
+    log_y2_axis : bool, default False
+        Whether to use a logarithmic scale for the right y-axis (number of interactions).
     show : bool, default True
         Whether to display the plot with plt.show().
     ax : matplotlib.axes.Axes or None, optional
@@ -1032,7 +1038,10 @@ def plot_enrichment_vs_interactions(
     - The function uses seaborn for line plotting and matplotlib for axis manipulation.
     - Labels can be added to the first/last points or at a regular interval along each line.
     - The function supports both DataFrame and list-of-dict input for results.
+    - New: log_y1_axis and log_y2_axis control log scaling of the left and right y-axes.
     """
+    import numpy as np
+
     if not isinstance(results, pd.DataFrame):
         results_df = pd.DataFrame(results)
     else:
@@ -1060,26 +1069,19 @@ def plot_enrichment_vs_interactions(
     
     # Add arrow below x-axis label if requested
     if add_arrow:
-        # Get the x-axis label position and add arrow below it
         xlabel_pos = ax1.get_xlabel()
         if xlabel_pos:
-            # Calculate positions using the padding parameters
-            arrow_y = -arrow_title_padding  # Position arrow below x-axis label
-            label_y = arrow_y - arrow_label_padding  # Position label below arrow
-            
-            # Position arrow below the x-axis label
-            # Get font size - use title font size if arrow_label_fontsize is None
+            arrow_y = -arrow_title_padding
+            label_y = arrow_y - arrow_label_padding
             if arrow_label_fontsize is None:
-                # Get the title text object to access its font size
                 title_obj = ax1.title
                 title_fontsize = title_obj.get_fontsize() if title_obj else 12
                 label_fontsize = title_fontsize
             else:
                 label_fontsize = arrow_label_fontsize
-                
             ax1.annotate(
-                "Stronger Interactions",
-                xy=(0.5, label_y),  # Position below arrow
+                arrow_label,
+                xy=(0.5, label_y),
                 xycoords='axes fraction',
                 ha='center',
                 va='top',
@@ -1087,11 +1089,10 @@ def plot_enrichment_vs_interactions(
                 color='black',
                 weight='bold'
             )
-            # Add the arrow
             ax1.annotate(
                 "",
-                xy=(0.7, arrow_y),  # Arrow head position
-                xytext=(0.3, arrow_y),  # Arrow tail position
+                xy=(0.7, arrow_y),
+                xytext=(0.3, arrow_y),
                 xycoords='axes fraction',
                 arrowprops=dict(arrowstyle='->', color='black', lw=2.0),
                 ha='center',
@@ -1100,6 +1101,8 @@ def plot_enrichment_vs_interactions(
 
     if log_x_axis:
         ax1.set_xscale("log") 
+    if log_y1_axis:
+        ax1.set_yscale("log")
 
     def add_min_max_labels(ax, 
                            results_df, 
@@ -1112,7 +1115,8 @@ def plot_enrichment_vs_interactions(
                            label_kwargs=None, 
                            offset=0.0,
                            idx_offset=1,
-                           y_offset=0.02):
+                           y_offset=0.02,
+                           log_y_axis=False):
         """
         Add text labels for minimum and maximum y values next to the first and last data points.
 
@@ -1142,6 +1146,8 @@ def plot_enrichment_vs_interactions(
             Index offset for first/last label (to avoid edge effects).
         y_offset : float, default 0.02
             Fraction of y-range to offset label vertically.
+        log_y_axis : bool, default False
+            Whether the y-axis is log-scaled (adjust y-offset accordingly).
         """
         if label_kwargs is None:
             label_kwargs = {}
@@ -1150,22 +1156,43 @@ def plot_enrichment_vs_interactions(
         first_lab_coords = results_df.iloc[first_idx][x_col], results_df.iloc[first_idx][y_col]
         last_lab_coords = results_df.iloc[last_idx][x_col], results_df.iloc[last_idx][y_col]
 
-        # Offset y slightly above the point
-        y_range = results_df[y_col].max() - results_df[y_col].min()
-        y_offset_val = y_range * y_offset if y_range > 0 else 0.1
+        y_vals = results_df[y_col].values
+        if log_y_axis:
+            # Avoid log(0) by filtering out non-positive values
+            y_vals_pos = y_vals[y_vals > 0]
+            if len(y_vals_pos) == 0:
+                y_range = 1.0
+            else:
+                y_range = np.log10(y_vals_pos).max() - np.log10(y_vals_pos).min()
+        else:
+            y_range = y_vals.max() - y_vals.min()
+        if log_y_axis:
+            # Offset in log space, then exponentiate back
+            def offset_y(y):
+                if y > 0:
+                    return y * (10 ** (y_offset * y_range))  # multiplicative offset
+                else:
+                    return y + 0.1  # fallback for non-positive
+        else:
+            def offset_y(y):
+                return y + (y_range * y_offset if y_range > 0 else 0.1) + offset
 
         if first_label:
+            x, y = first_lab_coords
+            y_disp = offset_y(y)
             ax.text(
-                first_lab_coords[0],
-                first_lab_coords[1] + y_offset_val + offset,
-                f"{label_fmt.format(first_lab_coords[1])}{label_suffix}",
+                x,
+                y_disp,
+                f"{label_fmt.format(y)}{label_suffix}",
                 **label_kwargs
             )
         if last_label:
+            x, y = last_lab_coords
+            y_disp = offset_y(y)
             ax.text(
-                last_lab_coords[0],
-                last_lab_coords[1] + y_offset_val + offset,
-                f"{label_fmt.format(last_lab_coords[1])}{label_suffix}",
+                x,
+                y_disp,
+                f"{label_fmt.format(y)}{label_suffix}",
                 **label_kwargs
             )
 
@@ -1178,7 +1205,8 @@ def plot_enrichment_vs_interactions(
         last_label=y1_last_label,
         label_fmt="{:.0f}",
         label_suffix="x",
-        label_kwargs=y1_label_kwargs
+        label_kwargs=y1_label_kwargs,
+        log_y_axis=log_y1_axis
     )
     # Add min/max labels for number of interactions (left y-axis, but can be used for right)
     add_min_max_labels(
@@ -1189,7 +1217,8 @@ def plot_enrichment_vs_interactions(
         last_label=y2_last_label,
         label_fmt="{:.0f}",
         label_suffix="", 
-        label_kwargs=y2_label_kwargs
+        label_kwargs=y2_label_kwargs,
+        log_y_axis=log_y2_axis
     ) 
 
     # Plot number of interactions (right y-axis)
@@ -1205,19 +1234,36 @@ def plot_enrichment_vs_interactions(
 
     if log_x_axis:
         ax2.set_xscale("log")
+    if log_y2_axis:
+        ax2.set_yscale("log")
 
     # Add text labels for enrichment at specified frequency (left y-axis)
     if y1_label_freq and y1_label_freq > 0:
         n_points = len(results_df)
         step = max(1, int(round(1/y1_label_freq)))
+        y_vals = results_df["enrichment"].values
+        if log_y1_axis:
+            y_vals_pos = y_vals[y_vals > 0]
+            if len(y_vals_pos) == 0:
+                y_range = 1.0
+            else:
+                y_range = np.log10(y_vals_pos).max() - np.log10(y_vals_pos).min()
+            def offset_y(y):
+                if y > 0:
+                    return y * (10 ** (0.015 * y_range))
+                else:
+                    return y + 0.1
+        else:
+            y_range = y_vals.max() - y_vals.min()
+            def offset_y(y):
+                return y + (y_range * 0.015 if y_range > 0 else 0.1)
         for i in range(0, n_points, step):
             row = results_df.iloc[i]
             x = row["interaction_threshold"]
             y = row["enrichment"]
-            # Offset label slightly above the point to avoid overlap
-            y_offset = (results_df["enrichment"].max() - results_df["enrichment"].min()) * 0.015
+            y_disp = offset_y(y)
             ax1.text(
-                x, y + y_offset, f"{y:.1f}x", 
+                x, y_disp, f"{y:.1f}x", 
                 **y1_label_kwargs
             )
 
@@ -1225,14 +1271,29 @@ def plot_enrichment_vs_interactions(
     if y2_label_freq and y2_label_freq > 0:
         n_points = len(results_df)
         step = max(1, int(round(1/y2_label_freq)))
+        y_vals = results_df["n_interactions"].values
+        if log_y2_axis:
+            y_vals_pos = y_vals[y_vals > 0]
+            if len(y_vals_pos) == 0:
+                y_range = 1.0
+            else:
+                y_range = np.log10(y_vals_pos).max() - np.log10(y_vals_pos).min()
+            def offset_y(y):
+                if y > 0:
+                    return y * (10 ** (0.015 * y_range))
+                else:
+                    return y + 0.1
+        else:
+            y_range = y_vals.max() - y_vals.min()
+            def offset_y(y):
+                return y + (y_range * 0.015 if y_range > 0 else 0.1)
         for i in range(0, n_points, step):
             row = results_df.iloc[i]
             x = row["interaction_threshold"]
             y = row["n_interactions"]
-            # Offset label slightly above the point to avoid overlap
-            y_offset = (results_df["n_interactions"].max() - results_df["n_interactions"].min()) * 0.015
+            y_disp = offset_y(y)
             ax2.text(
-                x, y + y_offset, f"{int(y)}", 
+                x, y_disp, f"{int(y)}", 
                 **y2_label_kwargs
             )
 
@@ -1551,7 +1612,7 @@ def pairwise_variant_sensitization_clustermap(vep_prot,
             xticks = [i + 0.5 for i in label_cols]
             xticklabels = [data.columns[x_order[i]] for i in label_cols]
             g.ax_heatmap.set_xticks(xticks)
-            g.ax_heatmap.set_xticklabels(xticklabels, rotation=90)
+            g.ax_heatmap.set_xticklabels(xticklabels, rotation=0)
             x_indices = label_cols
 
         # Y-axis: put ticks in the middle of each row
@@ -1583,9 +1644,9 @@ def pairwise_variant_sensitization_clustermap(vep_prot,
         except Exception as e:
             print(f"Could not add REF line: {e}")
 
-    g.ax_heatmap.collections[0].colorbar.set_label("Mean VEP score", rotation=270, va="bottom")
+    g.ax_heatmap.collections[0].colorbar.set_label("Mean VEP score")
     g.ax_heatmap.set_xlabel("Clinical variants")
-    g.ax_heatmap.set_ylabel("WT variants", rotation=270, va="bottom")
+    g.ax_heatmap.set_ylabel("WT variants")
     g.ax_heatmap.set_title(f"Pairwise Variant Sensitization Analysis\nProtein: {vep_prot['GENEINFO'].unique()[0].split(':')[0]} ({vep_prot['protein'].unique()[0]})\nInjected clinical variants (n={clinical_vs_wt.shape[1]} cols) x Natural WT variants (n={clinical_vs_wt.shape[0]} rows)",
                         ha="left", x=0.1, y=title_y)
     plt.show()
@@ -2301,19 +2362,24 @@ def plot_contact_and_sensitization_maps(
     outlier_sig,
     add_rect=True,
     figsize=None,
-    dpi=300,
-    save_fig=False,
-    save_path=None,
-    cmap="gnuplot2",
+    cmap=("gnuplot2", "binary"),
     masking_percentile1=50,
-    masking_percentile2=25,
+    masking_percentile2=25, 
+    title=None,
+    x_label="Clinical Variant Position",
+    y_label="WT Variant Position",
+    invert_mask=False,
     height_width=20,
     heatmap_alpha=None,
     rectangles_alpha=0.9,
+    cbar_label=r"3D Distance (Ångstroms)",
+    rectangles_linewidth=0.5,
     rectangles_cmap={"high": "red", "low": "blue"},
     mask_color=None,
-    show_plot=(True, True),
-    title=None
+    show_plot=(True, True), 
+    dpi=300,
+    save_fig=False,
+    save_path=None,
 ):
     """
     Plot contact map and overlay sensitization map with optional rectangles.
@@ -2350,8 +2416,9 @@ def plot_contact_and_sensitization_maps(
 
     outlier_sig = outlier_sig.copy()
     
-    contact_map_unbinned = mc.expand_matrix(contact_map_binned)
-    print(contact_map_unbinned.shape)
+    contact_map_unbinned= contact_map_binned
+    # contact_map_unbinned = mc.expand_matrix(contact_map_binned)
+    # print(contact_map_unbinned.shape)
 
     if save_path is None:
         save_path = f"contact_map_{'sensitization_map' if add_rect else ''}.png"
@@ -2366,6 +2433,8 @@ def plot_contact_and_sensitization_maps(
     # Calculate threshold for bottom 50% of values for masking
     masking_threshold = np.percentile(contact_map_unbinned[~np.isnan(contact_map_unbinned)], q=masking_percentile1)  
     mask = contact_map_unbinned < masking_threshold
+    if invert_mask:
+        mask = ~mask
 
     def add_plot_labels(g, 
                         bin_size,
@@ -2378,7 +2447,7 @@ def plot_contact_and_sensitization_maps(
             title = f"Contact Map {'x Variant Sensitization Map' if add_rect else ''}"
         if title is not None:
             plt.title(title)
-        g.collections[0].colorbar.set_label("Contact Score", rotation=270, va="bottom")
+        g.collections[0].colorbar.set_label(cbar_label)
         plt.xlabel(xlabel)
         plt.ylabel(ylabel)
         plt.title(title)
@@ -2394,9 +2463,9 @@ def plot_contact_and_sensitization_maps(
 
     ##### PLOT 1 #####
     if show_plot[0]:
-        fig1, ax1 = plt.subplots(dpi=dpi, figsize=figsize)
+        fig1, ax1 = plt.subplots(figsize=figsize)
         g1 = sns.heatmap(contact_map_unbinned,
-                        cmap=cmap,
+                        cmap=cmap[0],
                         mask=mask,
                         alpha=1) 
         add_plot_labels(g1, bin_size=1, 
@@ -2411,21 +2480,32 @@ def plot_contact_and_sensitization_maps(
 
     ##### PLOT 2 #####
     if show_plot[1]:
-        fig2, ax2 = plt.subplots(dpi=dpi, figsize=figsize)
-        # masking_threshold_2 = np.percentile(contact_map_unbinned[~np.isnan(contact_map_unbinned)], q=masking_percentile2)
-        # mask_2 = contact_map_unbinned < masking_threshold_2
-        g2 = sns.heatmap(contact_map_unbinned,
-                        cmap="binary",
-                        # mask=mask_2,
-                        alpha=heatmap_alpha)
+        fig2, ax2 = plt.subplots(figsize=figsize)
+        if masking_percentile2 is not None:
+            masking_threshold_2 = np.percentile(contact_map_unbinned[~np.isnan(contact_map_unbinned)], q=masking_percentile2)
+            mask_2 = contact_map_unbinned < masking_threshold_2
+            if invert_mask:
+                mask_2 = ~mask_2
+        else:
+            mask_2 = None
+        g2 = ax2.imshow(
+            np.ma.masked_array(contact_map_unbinned, mask=mask_2) if mask_2 is not None else contact_map_unbinned,
+            cmap=cmap[1],
+            alpha=heatmap_alpha,
+            # aspect='auto',
+            interpolation='nearest'
+        )
+        # Add colorbar for the imshow plot
+        cbar = plt.colorbar(g2, ax=ax2, fraction=0.046, pad=0.04)
+        cbar.set_label(cbar_label)
 
-        add_plot_labels(g2, bin_size=1, 
-                        n_bins=contact_map_unbinned.shape[0], 
-                        add_rect=True, 
-                        xlabel="Residue Position", 
-                        ylabel="Residue Position",
-                        title=title)
+        ax2.set_xlabel(x_label)
+        ax2.set_ylabel(y_label)
+        ax2.set_title(title) 
         color_mask(g2, mask_color=mask_color)
+        # Remove the border (spines) around the plot
+        for spine in ax2.spines.values():
+            spine.set_visible(False)
         
         # Add rectangles around high-confidence sensitization variants
         if add_rect:    
@@ -2439,7 +2519,8 @@ def plot_contact_and_sensitization_maps(
                 x_col="wt_position",
                 y_col="clinical_position",
                 color_col="outlier_type",
-                cmap=rectangles_cmap
+                cmap=rectangles_cmap,
+                linewidth=rectangles_linewidth
             )
     else:
         fig2, ax2 = None, None
@@ -2447,7 +2528,7 @@ def plot_contact_and_sensitization_maps(
         
 
     if save_fig:
-        plt.savefig(save_path, dpi=dpi, bbox_inches='tight')
+        plt.savefig(save_path, dpi=dpi)
     if any(show_plot):
         plt.show()
 
@@ -2466,9 +2547,9 @@ def plot_clinsig_interaction_strength(
     x="clinsig",    
     y="interaction_strength",
     palette=utils.get_clinsig_palette(),
-    title="Mean Interaction Strength per Clinical Variant",
+    title="Marginal Effects per Clinical Variant",
     xlabel="Clinical Significance",
-    ylabel="Interaction Strength",
+    ylabel="Marginal Effect Size",
     figsize=(5, 5),
     text_format="star",
     show_test_name=False,
@@ -2476,19 +2557,17 @@ def plot_clinsig_interaction_strength(
     verbose=0,
     pvalue_format_string=" ({:.2g})",
     test='Mann-Whitney',
-    annotator_kwargs=None,
+    annotator_kwargs={},
 ):
     import matplotlib.pyplot as plt
     import seaborn as sns
     from statannotations.Annotator import Annotator
-    from itertools import combinations
-
-    if annotator_kwargs is None:
-        annotator_kwargs = {}
+    from itertools import combinations 
+    import pandas as pd
 
     # Prepare bar_df
     if x in ridge_df.columns:
-        bar_df = ridge_df.groupby(["clinical_variant",x])[y].agg(agg_func).reset_index()
+        bar_df = ridge_df.groupby(["clinical_variant", x])[y].agg(agg_func).reset_index()
     else:
         if annot_df is None:
             raise ValueError("annot_df is required when x is not in ridge_df.columns")
@@ -2507,8 +2586,30 @@ def plot_clinsig_interaction_strength(
 
     bar_df[x] = bar_df[x].astype(str).apply(clean_clinsig)
 
-    bar_df = utils.sort_by_clinsig(bar_df, clinsig_col=x)
- 
+    # Get the canonical clinsig order and filter to those present in the data
+    canonical_order = utils.get_clinsig_order()
+    # Apply the same cleaning as above to the canonical order
+    def clean_order_label(label):
+        label = str(label).replace("_", "\n")
+        if label == "path":
+            return "pathogenic"
+        elif label == "likely\npath":
+            return "likely\npathogenic"
+        return label
+    cleaned_canonical_order = [clean_order_label(l) for l in canonical_order]
+    # Only keep those present in the data, and ensure uniqueness
+    present_clinsigs = list(bar_df[x].unique())
+    clinsig_order = []
+    seen = set()
+    for l in cleaned_canonical_order:
+        if l in present_clinsigs and l not in seen:
+            clinsig_order.append(l)
+            seen.add(l)
+
+    # Sort bar_df by clinsig order
+    bar_df[x] = pd.Categorical(bar_df[x], categories=clinsig_order, ordered=True)
+    bar_df = bar_df.sort_values(x)
+
     # Remap palette keys to match cleaned clinsig labels
     palette_cleaned = {}
     for k, v in palette.items():
@@ -2521,8 +2622,7 @@ def plot_clinsig_interaction_strength(
 
     plt.figure(figsize=figsize)
 
-    # Draw the boxplot, keeping the same order as the DataFrame
-    clinsig_order = list(bar_df[x].unique())
+    # Draw the boxplot, using the correct clinsig order
     ax = sns.boxplot(
         data=bar_df,
         x=x,
@@ -2539,11 +2639,8 @@ def plot_clinsig_interaction_strength(
     ax.set_xlabel(xlabel)
     ax.set_ylabel(ylabel)
 
-    # Get the order of clinsig groups as plotted
-    clinsig_order = [t.get_text() for t in ax.get_xticklabels()]
-
     # Compute mean interaction_strength for each clinsig group
-    means = bar_df.groupby(x)[y].mean()
+    means = bar_df.groupby(x, observed=True)[y].mean()
     # Sort clinsig groups by mean interaction_strength
     sorted_clinsig = means.sort_values().index.tolist()
 
@@ -2639,6 +2736,7 @@ def plot_variant_sensitization_schematic(
     linecolor='grey',
 
     replace_haplotype_prefix=False,
+    include_haplotype_suffix=True,
     random_seed=0,
     noise_scale=0.10,
     coef_matrix_scale=20,
@@ -2646,7 +2744,7 @@ def plot_variant_sensitization_schematic(
 
     plot1_title="Haplotype x WT Variant Matrix",
     plot2_title="Haplotype x Clinical Variant VEP Matrix",
-    plot3_title="WT x Clinical Variant Interaction Scores",
+    plot3_title="WT x Clinical Variant Coefficients",
     
     plot1_kwargs={},
     plot2_kwargs={},
@@ -2670,7 +2768,11 @@ def plot_variant_sensitization_schematic(
     rotate_x_labels=False,
     title_y_position=None,
     heatmap_aspect='auto',
-    facecolor='none'
+    facecolor='none',
+    
+    # New arguments
+    show_haplotype_labels_plot3=True,
+    show_text_labels=(True, True, True)
     
 ):
     """
@@ -2765,6 +2867,12 @@ def plot_variant_sensitization_schematic(
         - heatmap_aspect=(1.0, 2.0, 0.5)  # Different ratios for each heatmap
     facecolor : str, optional
         Face color for the figure, default 'none'.
+    show_haplotype_labels_plot3 : bool, optional
+        Whether to show haplotype row labels in the third (rightmost) heatmap, default True.
+    show_text_labels : tuple of bool, optional
+        Tuple of three boolean values to control text label display in each heatmap.
+        Format: (plot1_show_labels, plot2_show_labels, plot3_show_labels).
+        Default (True, True, True) shows labels in all three heatmaps.
     
     Returns
     -------
@@ -2808,12 +2916,17 @@ def plot_variant_sensitization_schematic(
     
     if replace_haplotype_prefix:
         Xwt.index = [f"Hap{i+1}"+":"+x.split(":")[-1] for i, x in enumerate(Xwt.index)]
+    if not include_haplotype_suffix:
+        Xwt.index = [x.split(":")[0] for x in Xwt.index]
 
     Xwt_with_extra, annot = add_extra_row_col(Xwt, fill_value=np.nan, annot_type="int")
 
+    # Use show_text_labels parameter to control annotation display
+    annot_to_use = annot if show_text_labels[0] else False
+
     sns.heatmap(
         Xwt_with_extra,
-        annot=annot,
+        annot=annot_to_use,
         fmt="",
         cbar=False,
         cmap=plot1_cmap,
@@ -2863,9 +2976,12 @@ def plot_variant_sensitization_schematic(
 
     Xvep_with_extra, annot_vep = add_extra_row_col(Xvep, fill_value=np.nan, annot_type="float")
 
+    # Use show_text_labels parameter to control annotation display
+    annot_vep_to_use = annot_vep if show_text_labels[1] else False
+
     sns.heatmap(
         Xvep_with_extra,
-        annot=annot_vep,
+        annot=annot_vep_to_use,
         fmt="",
         cbar=False,
         ax=axes[1],
@@ -2928,10 +3044,12 @@ def plot_variant_sensitization_schematic(
     else:
         annot_coef_numeric = pd.to_numeric(annot_coef, errors='coerce')
  
+    # Use show_text_labels parameter to control annotation display
+    annot_coef_to_use = annot_coef_numeric if show_text_labels[2] else False
 
     sns.heatmap(
         coef_matrix_abs_with_extra,
-        annot=annot_coef_numeric, 
+        annot=annot_coef_to_use, 
         cbar=False,
         ax=axes[2],
         linewidths=linewidths,
@@ -2965,6 +3083,10 @@ def plot_variant_sensitization_schematic(
 
     # Remove yticklabels for the second plot for visual clarity
     axes[1].set_yticklabels([])
+    
+    # Control haplotype labels in the third plot
+    if not show_haplotype_labels_plot3:
+        axes[2].set_yticklabels([])
 
     # Add grey box around first two plots if requested
     if add_grey_box:
@@ -3136,6 +3258,11 @@ def plot_wt_clinical_interaction_vs_angstroms(
     style_var="is_contact",
     palette=None,
     show=True,
+    x_title="3D Distance (Ångstroms)",
+    y_title="Joint Effect",
+    title="WT-Clinical Variant Joint Effect Size vs. 3D Distance",
+    legend_outside=False,
+    label_fontsize=10,
     adjust_text_kwargs={},
 ):
     """
@@ -3164,6 +3291,8 @@ def plot_wt_clinical_interaction_vs_angstroms(
 
     # Prepare DataFrame
     ridge_df = ridge_df.copy()
+    vep_prot = vep_prot.copy()
+    
     ridge_df['protein'] = ridge_df['site'].str.split(":").str[0]
     ridge_df = utils.add_hgvsp_id(ridge_df)
     if "clinsig" not in ridge_df.columns:
@@ -3173,12 +3302,22 @@ def plot_wt_clinical_interaction_vs_angstroms(
             right_on="mutant",
             how="left"
         )
-        
+    ridge_df['clinsig'] = ridge_df['clinsig'].replace(
+        to_replace=r'path$', value='pathogenic', regex=True
+    )
+    ridge_df['clinsig'] = ridge_df['clinsig'].str.replace("_", " ", regex=False)
+    vep_prot['clinsig'] = vep_prot['clinsig'].replace(
+        to_replace=r'path$', value='pathogenic', regex=True
+    )
+    vep_prot['clinsig'] = vep_prot['clinsig'].str.replace("_", " ", regex=False)
 
 
     top_interactions = ridge_df.reindex(
         ridge_df["interaction_strength"].abs().sort_values(ascending=False).index
     ).head(N)
+
+    ridge_df = utils.sort_by_clinsig(ridge_df, clinsig_col="clinsig")
+    top_interactions = utils.sort_by_clinsig(top_interactions, clinsig_col="clinsig")
 
     ridge_df["Angstroms_inverted"] = ridge_df["Angstroms"].max() - ridge_df["Angstroms"]
 
@@ -3188,7 +3327,7 @@ def plot_wt_clinical_interaction_vs_angstroms(
     plt.figure(figsize=figsize)
 
     ax = sns.scatterplot(
-        data=ridge_df.sort_values(y_var, ascending=False),
+        data=ridge_df,
         x=x_var,
         y=y_var,
         hue=hue_var,
@@ -3201,21 +3340,28 @@ def plot_wt_clinical_interaction_vs_angstroms(
         linewidth=0.01,
     )
 
-    plt.xlabel("3D Distance (Ångstroms)")
-    plt.ylabel("Interaction Strength")
-    plt.title("WT-Clinical Variant Interaction Strength vs. 3D Distance")
+    plt.xlabel(x_title)
+    plt.ylabel(y_title)
+    plt.title(title)
 
-    # Move legend outside the plot (to the right)
-    legend = ax.legend(bbox_to_anchor=(1.05, 1), loc='upper left', borderaxespad=0.)
+    # Option to put legend inside or outside the plot
+    if legend_outside:
+        legend = ax.legend(bbox_to_anchor=(1.05, 1), loc='upper left', borderaxespad=0.)
+    else:
+        legend = ax.legend(loc='upper right')
+    # Always remove the border around the legend
+    legend.get_frame().set_linewidth(0)
+    legend.get_frame().set_edgecolor('none')
+
     for leg in legend.get_texts():
         if "contact_score" in leg.get_text().lower() or "size" in leg.get_text().lower():
             leg.set_text("Contact Score")
         if "interaction_strength" in leg.get_text().lower():
-            leg.set_text("Interaction Strength")
+            leg.set_text("Joint Effect Size")
         if "is_contact" in leg.get_text().lower():
             leg.set_text("Contact")
         if "Angstroms_inverted" in leg.get_text().lower():
-            leg.set_text(r"Angstroms")
+            leg.set_text(r"Ångstroms")
         if "clinsig" in leg.get_text().lower():
             leg.set_text("Clinical Significance")
 
@@ -3223,33 +3369,43 @@ def plot_wt_clinical_interaction_vs_angstroms(
     texts = []
     for _, row in top_interactions.iterrows():
         label = (
-            f"{row['wt_variant']} | {row['clinical_variant_fmt']}\n"
-            + f"Interaction: {row['interaction_strength_signed']:.2f}\n"
-            + f"$\\mathrm{{\\AA}}$: {row['Angstroms']:.2f}\n"
+            f"{row['wt_variant']} | {row['clinical_variant_fmt']}"
+            # + f"Interaction: {row['interaction_strength_signed']:.2f}\n"
+            # + f"$\\mathrm{{\\AA}}$: {row['Angstroms']:.2f}"
         )
+        # Set horizontalalignment to 'left' and anchor to 'left' for left-side anchoring
         texts.append(
             plt.text(
                 row[x_var],
                 row[y_var],
                 label,
-                fontsize=8,
-                color='black',
-                bbox=dict(facecolor='white', alpha=0.1, edgecolor='none', boxstyle='round,pad=0.2'),
+                fontsize=label_fontsize,
+                color='black',  
+                # bbox=dict(facecolor='white', alpha=0.5, edgecolor='none', boxstyle='round,pad=0.2'),
+                # ha='left',  # horizontal alignment
+                # va='center',  # vertical alignment
             )
         )
     # Remove top and right spines (margin lines)
     ax.spines['top'].set_visible(False)
     ax.spines['right'].set_visible(False)
 
-    # Adjust text to avoid overlap
+    # Adjust text to avoid overlap, anchor arrows to left side of text
+
     adjust_text(
         texts,
-        arrowprops=dict(arrowstyle='->', color='black', lw=0.5),
-        ax=ax,
+        arrowprops=dict(arrowstyle='->', color='black', lw=0.5, alpha=0.5),
+        ax=ax, 
+        # expand_text=(1.05, 1.2),  # slightly expand text box for better arrow placement
+        # only_move={'points':'y', 'text':'xy'},  # allow text to move in x and y
+        #  only_move='x+',
+        explode_radius=0,
+        va='top',
+        ha='left', 
         **adjust_text_kwargs
     )
 
-    plt.tight_layout()  # To make room for the legend outside the plot
+    # plt.tight_layout()  # To make room for the legend outside the plot
     if show:
         plt.show()
     return {'fig': ax.figure, 'ax': ax, 'data': top_interactions}

@@ -712,6 +712,7 @@ def _count_edits_indel(variant_str,
 def count_edits(lst,
                 tx_id_sep=":",
                 search_strings=['>','del','ins'], 
+                count_indels_as_one=False,
                 as_dict=False):
     """
     Count the number of edits (number of differences relative to the reference sequence) in a list of haplotype names.
@@ -720,6 +721,8 @@ def count_edits(lst,
         lst (list): List of haplotype names.
         tx_id_sep (str): Separator between transcript ID and variant string.
         search_strings (list): List of strings to search for in the variant string.
+        count_indels_as_one (bool): If True, count indels as one edit (as opposed to the total number of genomic positions affected).
+            e.g. "123del{22}" will be counted as 1 edit, not 22.
         as_dict (bool): If True, return a dictionary with the haplotype names as keys and the edit distances as values.
 
     Returns:
@@ -740,9 +743,15 @@ def count_edits(lst,
             # Count each variant string 
             # INDELS
             if "del" in search_strings and "del" in variant_str:
-                total += _count_edits_indel(variant_str, "del")
+                if count_indels_as_one:
+                    total += 1
+                else:
+                    total += _count_edits_indel(variant_str, "del")
             elif "ins" in search_strings and "ins" in variant_str:
-                total += _count_edits_indel(variant_str, "ins")
+                if count_indels_as_one:
+                    total += 1
+                else:
+                    total += _count_edits_indel(variant_str, "ins")
             # Truncating mutations (already counted in INDELS)
             elif "*" in variant_str:
                 continue
@@ -758,11 +767,33 @@ def count_edits(lst,
     
 def add_edits(df,
               haplotype_col="haplotype",
+              count_indels_as_one=False,
               **kwargs):
     """
     Add the edit distance to the list of variants.
+
+    Args:
+        df (pandas.DataFrame): The dataframe containing the haplotype column.
+        haplotype_col (str): The column containing the haplotype names.
+        count_indels_as_one (bool): If True, count indels as one edit (as opposed to the total number of genomic positions affected).
+            e.g. "123del{22}" will be counted as 1 edit, not 22.
+        **kwargs: Additional arguments to pass to count_edits.
+
+    Returns:
+        pandas.DataFrame: The dataframe with the edits column added.
+
+    Example:
+    >>> add_edits(df, haplotype_col="haplotype", count_indels_as_one=True)
+    >>> df['edits']
+    0    1
+    1    2
+    2    3
+    Name: edits, dtype: int64
     """
-    edits_dict = count_edits(df[haplotype_col], as_dict=True, **kwargs)
+    edits_dict = count_edits(df[haplotype_col], 
+                            as_dict=True, 
+                            count_indels_as_one=count_indels_as_one, 
+                            **kwargs)
     df['edits'] = df[haplotype_col].map(edits_dict)
     return df
 
@@ -930,6 +961,11 @@ def get_clinsig_palette(values=['path', 'likely_path', 'likely_benign', 'benign'
     palette["vus"] = "lightgray"
     palette["pathogenic"] = palette["path"]
     palette["likely_pathogenic"] = palette["likely_path"]
+
+    # Avoid changing dict size during iteration by iterating over a list of keys
+    for k in list(palette.keys()):
+        palette[k.replace("_", " ")] = palette[k]
+
     return palette
 
 
@@ -941,7 +977,7 @@ def get_superpop_palette(values=['AFR', 'AMR', 'EAS', 'EUR',
     return cmap
 
 def get_ref_nonref_palette():
-    cmap = {"REF": "grey", 
+    cmap = {"REF": "lightgrey", 
             "non-REF": "mediumslateblue", 
             "All": "darkslateblue"}
     return cmap
@@ -1158,11 +1194,23 @@ def split_batches(lst,
     return batches
 
 
+def get_clinsig_order(reverse=True):
+    # Define clinsig order: pathogenic, likely pathogenic, VUS, likely benign, benign
+    order = [
+        "path", "pathogenic", "Pathogenic",
+        "likely_path", "likely_pathogenic", "likely pathogenic", "Likely Pathogenic", "Likely_pathogenic",
+        "VUS", "vus", "Vus",
+        "likely_benign", "likely benign", "Likely Benign", "Likely_benign",
+        "benign", "Benign"
+    ]
+    if reverse:
+        order = order[::-1]
+    return order
 
 
 def sort_by_clinsig(df,
                     clinsig_col='clinsig',
-                    clinsig_order=get_clinsig_palette().keys(),
+                    clinsig_order=get_clinsig_order(),
                     ascending=True
                     ):
     """
@@ -1817,3 +1865,43 @@ FIG_SAVE_KWARGS = {
     "pad_inches":0.1, 
     "facecolor":"None", 
 }
+
+
+def rasterize_figure(fig, types=["PathCollection", "Line2D", "Rectangle"]):
+    """
+    Rasterize all PathCollection (scatter), Line2D (lines), etc. at high resolution
+    """
+    axes = None
+    if "axes" in fig:
+        axes = fig["axes"].values()
+    elif "ax" in fig:
+        # Single axis
+        axes = [fig["ax"]]
+    elif "axs" in fig:
+        # List or array of axes
+        axs = fig["axs"]
+        if isinstance(axs, dict):
+            axes = axs.values()
+        elif hasattr(axs, "__iter__"):
+            axes = axs
+        else:
+            axes = [axs]
+    elif "fig" in fig and hasattr(fig["fig"], "get_axes"):
+        axes = fig["fig"].get_axes()
+    else:
+        axes = []
+
+    for ax in axes:
+        if ax is not None:
+            # Rasterize all PathCollection (scatter), Line2D (lines), etc.
+            for artist in ax.get_children():
+                # Scatter points
+                if artist.__class__.__name__ == "PathCollection" and artist.__class__.__name__ in types:
+                    artist.set_rasterized(True)
+                # Lines
+                if artist.__class__.__name__ == "Line2D" and artist.__class__.__name__ in types:
+                    artist.set_rasterized(True)
+                # Bars (if any)
+                if artist.__class__.__name__ == "Rectangle" and artist.get_label() == "" and artist.__class__.__name__ in types:
+                    artist.set_rasterized(True)
+            # Do NOT rasterize text

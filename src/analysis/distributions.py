@@ -136,7 +136,7 @@ def get_ecdf(x,
              return_df=False,
              plot=False, 
              grid_points=100,
-             max_components=20,
+             max_components=50,
              random_state=42,
              title=None,
              error=True):
@@ -388,6 +388,14 @@ def plot_estimate_modality(vep_ecdf,
         plt.xlabel(x_label)
     if y_label:
         plt.ylabel(y_label)
+
+    # Remove top and right borders (spines)
+    ax.spines['top'].set_visible(False)
+    ax.spines['right'].set_visible(False)
+    # Remove border around legend
+    leg = ax.get_legend()
+    if leg is not None:
+        leg.set_frame_on(False)
 
     ax.legend(title=hue_col)
     plt.show()
@@ -1114,7 +1122,13 @@ def plot_test_normality(normality_results,
     # Adjust margins when legend is on the left to prevent overlap with y-axis title
     if legend_left:
         plt.subplots_adjust(left=0.25)
-    
+    # Remove top and right borders (spines)
+    ax.spines['top'].set_visible(False)
+    ax.spines['right'].set_visible(False)
+    # Remove border around legend
+    leg = ax.get_legend()
+    if leg is not None:
+        leg.set_frame_on(False)
     plt.tight_layout()
     plt.show()
 
@@ -1281,12 +1295,12 @@ def plot_ref_percentile_schematic(
             ax_top.set_ylabel("Density")
         ax_top.set_yticks([])
         # fontweight does not apply to LaTeX text; use \mathbf{} for bold in LaTeX
-        ax_top.set_title(r"$\mathbf{VEP_{REF}\ underestimates}$" + "\n" + r"$\mathbf{pathogenicity}$", 
+        ax_top.set_title(r"$\mathbf{VEP_{ref}\ underestimates}$" + "\n" + r"$\mathbf{pathogenicity}$", 
                         fontsize=title_fontsize, 
                         loc=title_loc,
                         fontweight='bold')
         if show_xlabel[0]:  # Show xlabel for top schematic if first boolean is True
-            ax_top.set_xlabel(r"$VEP_{REF}$ percentile")
+            ax_top.set_xlabel(r"$VEP_{ref}$ percentile")
         ax_top.set_xlim(-3, 3)
         ax_top.set_xticks([-3, 0, 3])
         ax_top.set_xticklabels([])  # Remove x-tick labels for top schematic
@@ -1306,11 +1320,11 @@ def plot_ref_percentile_schematic(
         if show_ylabel[1]:  # Show ylabel for bottom schematic if second boolean is True
             ax_bottom.set_ylabel("Density")
         ax_bottom.set_yticks([])
-        ax_bottom.set_title(r"$\mathbf{VEP_{REF}\ overestimates}$" + "\n" + r"$\mathbf{pathogenicity}$", 
+        ax_bottom.set_title(r"$\mathbf{VEP_{ref}\ overestimates}$" + "\n" + r"$\mathbf{pathogenicity}$", 
                             fontsize=title_fontsize, loc=title_loc,
                             fontweight='bold')
         if show_xlabel[1]:  # Show xlabel for bottom schematic if second boolean is True
-            ax_bottom.set_xlabel(r"$VEP_{REF}$ percentile")
+            ax_bottom.set_xlabel(r"$VEP_{ref}$ percentile")
         ax_bottom.set_xlim(-3, 3)
         ax_bottom.set_xticks([-3, 0, 3])
         ax_bottom.set_xticklabels(['0', '50', '100'])
@@ -1353,9 +1367,9 @@ def plot_ref_percentile_schematic(
         if show_ylabel[0]:  # Show ylabel for top schematic if first boolean is True
             ax_top.set_ylabel("Density")
         ax_top.set_yticks([])
-        ax_top.set_title(r"$VEP_{REF}$ underestimates\npathogenicity", fontweight='bold', loc=title_loc)
+        ax_top.set_title(r"$VEP_{ref}$ underestimates\npathogenicity", fontweight='bold', loc=title_loc)
         if show_xlabel[0]:  # Show xlabel for top schematic if first boolean is True
-            ax_top.set_xlabel(r"$VEP_{REF}$ percentile")
+            ax_top.set_xlabel(r"$VEP_{ref}$ percentile")
         ax_top.set_xlim(-3, 3)
         ax_top.set_xticks([-3, 0, 3])
         ax_top.set_xticklabels([])  # Remove x-tick labels for top schematic
@@ -1374,11 +1388,11 @@ def plot_ref_percentile_schematic(
         if show_ylabel[1]:  # Show ylabel for bottom schematic if second boolean is True
             ax_bottom.set_ylabel("Density")
         ax_bottom.set_yticks([])
-        ax_bottom.set_title(r"$VEP_{REF}$ overestimates\npathogenicity", 
+        ax_bottom.set_title(r"$VEP_{ref}$ overestimates\npathogenicity", 
                             fontweight='bold', 
                             loc=title_loc)
         if show_xlabel[1]:  # Show xlabel for bottom schematic if second boolean is True
-            ax_bottom.set_xlabel(r"$VEP_{REF}$ percentile")
+            ax_bottom.set_xlabel(r"$VEP_{ref}$ percentile")
         ax_bottom.set_xlim(-3, 3)
         ax_bottom.set_xticks([-3, 0, 3])
         ax_bottom.set_xticklabels(['0', '50', '100'])
@@ -1396,11 +1410,11 @@ def plot_ref_vep_percentile_stacked_bar(
     groupby_cols=['model_location','protein','clinsig','mutant','scoring_strategy'],
     y='VEP_percentile',
     n_bins=10, 
-    n_ref_pct_bins=10,
+    n_ref_pct_bins=5,
     figsize=(10, 4), 
     label_padding=0.15, 
     is_ref=True,
-    title=r"$VEP_{REF}$ Percentiles Relative to Full $VEP$ Distribution",
+    title=r"$VEP_{ref}$ Percentiles Relative to Full $VEP$ Distribution",
     x_label=r"$VEP_{mean}$ Quantile",
     y_label="Proportion of Variants",
     show_arrows=False,
@@ -1417,7 +1431,8 @@ def plot_ref_vep_percentile_stacked_bar(
     schematic_title_loc="left",
     show_schematic_xlabel=(False, True),
     show_schematic_ylabel=(False, False),
-    use_quantile_labels=True
+    use_quantile_labels=True,
+    flip_xaxis=False,  # <--- New argument to flip the x-axis direction
 ):
     """
     Plot a stacked bar plot showing the distribution of REF VEP percentiles
@@ -1480,11 +1495,18 @@ def plot_ref_vep_percentile_stacked_bar(
         First boolean controls top schematic, second controls bottom schematic.
     use_quantile_labels : bool, optional
         Whether to use quantile labels ("Q1", "Q2", etc.) for x-axis tick labels (default: True).
+    flip_xaxis : bool, optional
+        If True, reverse the direction of the x-axis (default: False).
     """
     from matplotlib import cm
     import matplotlib.pyplot as plt
 
     vep_df = vep_df.copy()
+
+    if "is_ref" not in vep_df.columns:
+        vep_df["is_ref"] = vep_df["sample"] == "REF"
+
+    groupby_cols = [x for x in groupby_cols if x in vep_df.columns]
 
     data = va.compute_representativeness_stats(vep_df, groupby_cols=groupby_cols, y=y, is_ref=is_ref)
 
@@ -1508,7 +1530,22 @@ def plot_ref_vep_percentile_stacked_bar(
             bin_labels.append(f"{left_str}\n→\n{right_str}")
 
     # Map integer bin codes to string labels
-    data['VEP_binned_label'] = data['VEP_binned'].map(lambda x: bin_labels[int(x)] if pd.notnull(x) else np.nan)
+    def _bin_label_mapper(x):
+        if pd.notnull(x):
+            idx = int(x)
+            return bin_labels[idx]
+        else:
+            return np.nan
+    data['VEP_binned_label'] = data['VEP_binned'].map(_bin_label_mapper)
+
+    # Optionally flip the bin labels and bin order for x-axis
+    if flip_xaxis:
+        # Create a mapping from original labels to flipped labels
+        original_labels = bin_labels.copy()
+        bin_labels = bin_labels[::-1]
+        # Map the data labels to the flipped labels
+        label_mapping = {original_labels[i]: bin_labels[i] for i in range(n_bins)}
+        data['VEP_binned_label'] = data['VEP_binned_label'].map(label_mapping)
 
     # Bin VEP_percentile into deciles (y-axis bins)
     percentile_bins = np.linspace(0, 100, n_ref_pct_bins+1)
@@ -1605,7 +1642,7 @@ def plot_ref_vep_percentile_stacked_bar(
         legend_obj = legend_ax.legend(
             handles[::-1],
             reversed_labels,
-            title=r"$VEP_{REF}$" + " percentile bin",
+            title=r"$VEP_{ref}$" + " percentile bin",
             loc='center left',  # Center the legend content vertically
             borderaxespad=0.0,
         )
@@ -1644,7 +1681,7 @@ def plot_ref_vep_percentile_stacked_bar(
             legend = ax.legend(
                 handles[::-1],
                 reversed_labels,
-                title=r"$VEP_{REF}$" + "\n" + "percentile bin",
+                title=r"$VEP_{ref}$" + "\n" + "percentile bin",
                 bbox_to_anchor=(-0.15, y_pos),
                 loc=legend_loc,
                 borderaxespad=0.0,
@@ -1661,7 +1698,7 @@ def plot_ref_vep_percentile_stacked_bar(
             legend = ax.legend(
                 handles[::-1],
                 reversed_labels,
-                title=r"$VEP_{REF}$" + "\n" + "percentile bin",
+                title=r"$VEP_{ref}$" + "\n" + "percentile bin",
                 bbox_to_anchor=(-0.15, y_pos),
                 loc=legend_loc,
                 borderaxespad=0.0
@@ -1693,6 +1730,10 @@ def plot_ref_vep_percentile_stacked_bar(
     ax.spines['right'].set_visible(False)
     ax.spines['bottom'].set_visible(False)
 
+    # Flip the x-axis if requested
+    if flip_xaxis:
+        ax.invert_xaxis()
+
     plt.tight_layout()
 
     # --- Add up/down arrows to the right of the barplot that align with the schematic ---
@@ -1704,11 +1745,11 @@ def plot_ref_vep_percentile_stacked_bar(
         if legend_on_right:
             # When legend is on right, arrows go between barplot and legend
             xlim = ax.get_xlim()
-            x_arrow = xlim[1] + 0.05
+            x_arrow = xlim[1] + 0.05 if not flip_xaxis else xlim[0] - 0.05
         else:
             # Original behavior: arrows go between barplot and schematic
             xlim = ax.get_xlim()
-            x_arrow = xlim[1] + 0.05
+            x_arrow = xlim[1] + 0.05 if not flip_xaxis else xlim[0] - 0.05
         
         # Length of arrows - extend almost to top and bottom with small gap in middle
         arrow_gap = (ymax - ymin) * 0.05  # Small gap in the middle
@@ -1760,12 +1801,15 @@ def plot_ref_vep_percentile_stacked_bar(
                 
                 # Draw lines from barplot right edge all the way to the legend
                 # Extend beyond the arrows to reach the legend area
-                legend_x = x_arrow + 0.3  # Extend further right to reach the legend
+                legend_x = x_arrow + 0.3 if not flip_xaxis else x_arrow - 0.3  # Extend further right/left to reach the legend
                 ax.plot([barplot_right, legend_x], [top_data_y, top_data_y], color='gray', linestyle=':', alpha=0.7, linewidth=1.5)
                 ax.plot([barplot_right, legend_x], [bottom_data_y, bottom_data_y], color='gray', linestyle=':', alpha=0.7, linewidth=1.5)
                 
                 # Expand the xlim to make sure arrows, labels, and extended lines are visible
-                ax.set_xlim(xlim[0], legend_x + 0.1)
+                if not flip_xaxis:
+                    ax.set_xlim(xlim[0], legend_x + 0.1)
+                else:
+                    ax.set_xlim(legend_x - 0.1, xlim[1])
             else:
                 # Original behavior for 2-column layout
                 # Get the right edge of the barplot
@@ -1787,6 +1831,7 @@ def plot_ref_vep_percentile_stacked_bar(
                 # Draw horizontal dotted lines from barplot right edge to schematic left edge
                 # Use data coordinates for x-axis and transform y-positions to data coordinates
                 x_data_right = ax.get_xlim()[1]  # Right edge of barplot data
+                x_data_left = ax.get_xlim()[0]   # Left edge of barplot data
                 
                 # Transform the y-positions from display coordinates to data coordinates
                 # We want the lines to align with the title positions in each schematic
@@ -1800,11 +1845,14 @@ def plot_ref_vep_percentile_stacked_bar(
                 bottom_data_y = ax.transData.inverted().transform((0, bottom_title_y))[1]
                 
                 # Draw lines from barplot right edge to arrows
-                ax.plot([x_data_right, x_arrow], [top_data_y, top_data_y], color='gray', linestyle=':', alpha=0.7, linewidth=1.5)
-                ax.plot([x_data_right, x_arrow], [bottom_data_y, bottom_data_y], color='gray', linestyle=':', alpha=0.7, linewidth=1.5)
-                
-                # Expand the xlim to make sure arrows and labels are visible
-                ax.set_xlim(xlim[0], x_arrow + 0.6)
+                if not flip_xaxis:
+                    ax.plot([x_data_right, x_arrow], [top_data_y, top_data_y], color='gray', linestyle=':', alpha=0.7, linewidth=1.5)
+                    ax.plot([x_data_right, x_arrow], [bottom_data_y, bottom_data_y], color='gray', linestyle=':', alpha=0.7, linewidth=1.5)
+                    ax.set_xlim(xlim[0], x_arrow + 0.6)
+                else:
+                    ax.plot([x_data_left, x_arrow], [top_data_y, top_data_y], color='gray', linestyle=':', alpha=0.7, linewidth=1.5)
+                    ax.plot([x_data_left, x_arrow], [bottom_data_y, bottom_data_y], color='gray', linestyle=':', alpha=0.7, linewidth=1.5)
+                    ax.set_xlim(x_arrow - 0.6, xlim[1])
 
     # --- Optionally add arrows and labels along the y-axis, outside the right margin ---
     if show_arrows:
@@ -1814,7 +1862,7 @@ def plot_ref_vep_percentile_stacked_bar(
 
         # Set the x position for the arrows and labels just outside the right of the plot
         xlim = ax.get_xlim()
-        x_arrow = xlim[1] + 0.1
+        x_arrow = xlim[1] + 0.1 if not flip_xaxis else xlim[0] - 0.1
 
         # Length of arrows (as a fraction of y-axis)
         arrow_length = (ymax - ymin) * 0.35
@@ -1829,10 +1877,10 @@ def plot_ref_vep_percentile_stacked_bar(
             annotation_clip=False
         )
         ax.text(
-            x_arrow + 0.08,
+            x_arrow + (0.08 if not flip_xaxis else -0.08),
             ycenter + arrow_length/2 + label_padding/2,
-            r"$VEP_{REF}$ underestimates\npathogenicity",
-            va='center', ha='left', rotation=90, fontsize=fontsize, fontweight='bold'
+            r"$VEP_{ref}$ underestimates\npathogenicity",
+            va='center', ha='left' if not flip_xaxis else 'right', rotation=90, fontsize=fontsize, fontweight='bold'
         )
 
         # Arrow for "REF Overestimates Pathogenicity" (downward)
@@ -1844,14 +1892,17 @@ def plot_ref_vep_percentile_stacked_bar(
             annotation_clip=False
         )
         ax.text(
-            x_arrow + 0.08,
+            x_arrow + (0.08 if not flip_xaxis else -0.08),
             ycenter - arrow_length/2 - label_padding/2,
-            r"$VEP_{REF}$ overestimates\npathogenicity",
-            va='center', ha='left', rotation=90, fontsize=fontsize, fontweight='bold'
+            r"$VEP_{ref}$ overestimates\npathogenicity",
+            va='center', ha='left' if not flip_xaxis else 'right', rotation=90, fontsize=fontsize, fontweight='bold'
         )
 
         # Optionally, expand the xlim to make sure arrows and labels are visible
-        ax.set_xlim(xlim[0], x_arrow + 0.75)
+        if not flip_xaxis:
+            ax.set_xlim(xlim[0], x_arrow + 0.75)
+        else:
+            ax.set_xlim(x_arrow - 0.75, xlim[1])
 
     # --- Optionally add schematic to the right of the plot ---
     if show_schematic and schematic_ax is not None:
@@ -1890,10 +1941,12 @@ def plot_ref_vep_std_stacked_bar(
     figsize=(9, 4), 
     label_padding=0.15, 
     is_ref=True,
-    title="Standard Deviations Separating REF VEP from full VEP Distribution Mean",
-    x_label="VEP Quantile",
+    title=r"Standard Deviations Separating $VEP_{ref}$ from $VEP_{mean}$",
+    x_label=r"$VEP_{mean}$ Quantile",
     y_label="Proportion of Variants",
-    xaxis_quartile_labels=True
+    xaxis_quartile_labels=True,
+    add_arrows=True,
+    flip_xaxis=False
 ):
     """
     Plot a stacked bar plot of VEP percentiles, binned by quantiles and standard deviation categories.
@@ -1924,6 +1977,8 @@ def plot_ref_vep_std_stacked_bar(
         Y-axis label.
     xaxis_quartile_labels : bool, optional
         If True, label x-axis ticks as Q1, Q2, ... instead of bin ranges.
+    flip_xaxis : bool, optional
+        If True, reverse the x-axis direction (default: False).
     """
     from matplotlib import cm
     import matplotlib.pyplot as plt
@@ -2012,42 +2067,47 @@ def plot_ref_vep_std_stacked_bar(
     plt.tight_layout()
 
     # --- Add arrows and labels along the y-axis, outside the right margin ---
-    ymin, ymax = ax.get_ylim()
-    ycenter = 0.5
-    xlim = ax.get_xlim()
-    x_arrow = xlim[1] + 0.1
-    arrow_length = (ymax - ymin) * 0.35
-    fontsize = 8
+    if add_arrows:
+        ymin, ymax = ax.get_ylim()
+        ycenter = 0.5
+        xlim = ax.get_xlim()
+        x_arrow = xlim[1] + 0.1
+        arrow_length = (ymax - ymin) * 0.35
+        fontsize = 8
 
-    ax.annotate(
-        "",
-        xy=(x_arrow, ycenter + arrow_length),
-        xytext=(x_arrow, ycenter),
-        arrowprops=dict(arrowstyle="->", color="black", lw=2),
-        annotation_clip=False
-    )
-    ax.text(
-        x_arrow + 0.08,
-        ycenter + arrow_length/2 + label_padding/2,
-        r"$\mathbf{VEP_{REF}}$"+"\n"+r"underestimates"+"\n"+r"pathogenicity",
-        va='center', ha='left', rotation=90, fontsize=fontsize, fontweight='bold'
-    )
+        ax.annotate(
+            "",
+            xy=(x_arrow, ycenter + arrow_length),
+            xytext=(x_arrow, ycenter),
+            arrowprops=dict(arrowstyle="->", color="black", lw=2),
+            annotation_clip=False
+        )
+        ax.text(
+            x_arrow + 0.08,
+            ycenter + arrow_length/2 + label_padding/2,
+            r"$\mathbf{VEP_{ref}}$"+"\n"+r"underestimates"+"\n"+r"pathogenicity",
+            va='center', ha='left', rotation=90, fontsize=fontsize, fontweight='bold'
+        )
 
-    ax.annotate(
-        "",
-        xy=(x_arrow, ycenter - arrow_length),
-        xytext=(x_arrow, ycenter),
-        arrowprops=dict(arrowstyle="->", color="black", lw=2),
-        annotation_clip=False
-    )
-    ax.text(
-        x_arrow + 0.08,
-        ycenter - arrow_length/2 - label_padding/2,
-        r"$\mathbf{VEP_{REF}}$"+"\n"+r"overestimates"+"\n"+r"pathogenicity",
-        va='center', ha='left', rotation=90, fontsize=fontsize, fontweight='bold'
-    )
-
-    ax.set_xlim(xlim[0], x_arrow + 0.75)
+        ax.annotate(
+            "",
+            xy=(x_arrow, ycenter - arrow_length),
+            xytext=(x_arrow, ycenter),
+            arrowprops=dict(arrowstyle="->", color="black", lw=2),
+            annotation_clip=False
+        )
+        ax.text(
+            x_arrow + 0.08,
+            ycenter - arrow_length/2 - label_padding/2,
+            r"$\mathbf{VEP_{ref}}$"+"\n"+r"overestimates"+"\n"+r"pathogenicity",
+            va='center', ha='left', rotation=90, fontsize=fontsize, fontweight='bold'
+        )
+        if flip_xaxis:
+            ax.set_xlim(x_arrow + 0.75, xlim[0])
+        else:
+            ax.set_xlim(xlim[0], x_arrow + 0.75)
+    if flip_xaxis:
+        ax.invert_xaxis()
     plt.show()
     return {"fig": fig, "ax": ax, "data": data}
 
@@ -2231,7 +2291,7 @@ def plot_ref_vep_diff_stacked_bar(vep_df,
     ax.text(
         x_arrow + 0.08,
         ycenter + arrow_length/2 + label_padding/2,
-        r"$VEP_{REF}$ underestimates\npathogenicity",
+        r"$VEP_{ref}$ underestimates\npathogenicity",
         va='center', ha='left', rotation=90, fontsize=fontsize, fontweight='bold'
     )
 
@@ -2245,7 +2305,7 @@ def plot_ref_vep_diff_stacked_bar(vep_df,
     ax.text(
         x_arrow + 0.08,
         ycenter - arrow_length/2 - label_padding/2,
-        r"$VEP_{REF}$ overestimates\npathogenicity",
+        r"$VEP_{ref}$ overestimates\npathogenicity",
         va='center', ha='left', rotation=90, fontsize=fontsize, fontweight='bold'
     )
 
@@ -2392,11 +2452,35 @@ def plot_vep_percentiles(vep_df,
 
     return {'fig':g, 'axes':ax, 'data':pct_df}
 
-def fix_clinsig_labels(df, 
-                       palette=None, 
-                       clinsig_col="clinsig", 
-                       mutant_col="mutant"):
-    
+def fix_clinsig_labels(
+    df, 
+    palette=None, 
+    clinsig_col="clinsig", 
+    mutant_col="mutant",
+    suffix="variants",
+    format_k=False,
+    k_precision=1
+):
+    """
+    Normalize clinsig labels and optionally format mutant counts as #.#k.
+
+    Parameters
+    ----------
+    df : pd.DataFrame
+        Input DataFrame.
+    palette : dict or None
+        Color palette for clinsig labels.
+    clinsig_col : str
+        Column name for clinical significance.
+    mutant_col : str
+        Column name for mutant/haplotype/variant.
+    suffix : str
+        Suffix for label (e.g., "variants").
+    format_k : bool, optional
+        If True, format counts as #.#k (e.g., 1.2k).
+    k_precision : int, optional
+        Number of decimal places for k-format (default: 1).
+    """
     # Normalize 'clinsig' column
     df[clinsig_col] = df[clinsig_col].str.replace("path$", "pathogenic", regex=True).str.replace("_", " ")
 
@@ -2410,9 +2494,20 @@ def fix_clinsig_labels(df,
         mutant_counts = df.groupby(clinsig_col)[mutant_col].nunique()
     else:
         mutant_counts = None
-        
+
+    def _format_count(n):
+        if not format_k:
+            return str(n)
+        if n >= 1000:
+            fmt = f"{{:.{k_precision}f}}"
+            return fmt.format(n / 1000).rstrip('0').rstrip('.') + "k"
+        return str(n)
+
     clinsig_label_map = {
-        clinsig: f"{clinsig} ({mutant_counts.get(clinsig, 0)} variants)" if mutant_counts is not None else clinsig
+        clinsig: (
+            f"{clinsig} ({_format_count(mutant_counts.get(clinsig, 0))}{'' if suffix is None else f' {suffix}'})"
+            if mutant_counts is not None else clinsig
+        )
         for clinsig in df[clinsig_col].unique()
     }
     df[clinsig_col+"_label"] = df[clinsig_col].map(clinsig_label_map)
@@ -2435,9 +2530,14 @@ def plot_vep_histogram_with_arrows(
     legend_title="Clinical Signifance",
     external_legend_annotation=False,
     arrow_text_fontsize=11,
+    legend_loc="best",
     x_label=r"$VEP_{mean}$",
-    y_label="Probability",
-    title="Variant Effect Prediction (VEP) Distributions",
+    y_label=None,
+    stat="frequency",
+    title="VEP Distributions",
+    suffix="variants",
+    format_k=False,
+    k_precision=1
 ):
     """
     Plot a histogram of VEP scores by clinical significance, with custom arrows and annotation.
@@ -2484,6 +2584,9 @@ def plot_vep_histogram_with_arrows(
 
     vep_df = vep_df.copy()
 
+    if y_label is None:
+        y_label = stat.title()
+
     n_haplotypes = vep_df["haplotype"].nunique()
     n_proteins = vep_df["protein"].nunique()
 
@@ -2498,7 +2601,12 @@ def plot_vep_histogram_with_arrows(
         .agg({"VEP": "mean", "haplotype": "count"}).reset_index()
 
     # Normalize 'clinsig' column
-    hist_df, palette_labels = fix_clinsig_labels(hist_df, clinsig_col="clinsig", mutant_col="mutant")
+    hist_df, palette_labels = fix_clinsig_labels(hist_df, 
+                                                 clinsig_col="clinsig", 
+                                                 mutant_col="mutant", 
+                                                 suffix=suffix, 
+                                                 format_k=format_k, 
+                                                 k_precision=k_precision)
 
     # Ensure 'clinsig' is a categorical with the palette order
     clinsig_order = list(palette_labels.keys())
@@ -2526,10 +2634,11 @@ def plot_vep_histogram_with_arrows(
     legend = ax.get_legend()
     if legend is not None:
         legend.set_title(legend_title)
+        legend.set_loc(legend_loc)
         if external_legend_annotation:
             # Move legend outside the plot to the right
             legend.set_bbox_to_anchor((1.02, 1.0))
-            legend.set_loc('upper left')
+            legend.set_loc("upper left")
 
     # Concise annotation string with italic prefixes
     lines = [
@@ -2565,6 +2674,10 @@ def plot_vep_histogram_with_arrows(
     # Remove the top and right spines (margin lines) for a cleaner look
     ax.spines['top'].set_visible(False)
     ax.spines['right'].set_visible(False)
+    # Remove border around legend if legend exists
+    if legend is not None:
+        legend.get_frame().set_linewidth(0)
+        legend.get_frame().set_edgecolor('none')
     
     if add_arrows:  
         # _draw_vep_direction_arrows_chunky(
@@ -2814,21 +2927,29 @@ def _draw_vep_direction_arrows_chunky(ax, fig,
             color="white", fontsize=arrow_text_fontsize, fontweight='bold', ha='right', va='center',
             transform=ax.transAxes, zorder=11
         )
-    
-def plot_vep_kde_with_arrows(vep_df, 
-                                    vep_col="VEP",
-                                    clinsig_col="clinsig",
-                                    site_col="site", 
-                                    title="VEP Distributions by Clinical Significance",
-                                    x_label=r"$VEP_{mean}$",
-                                    y_label="Density",  
-                                    palette = utils.get_clinsig_palette(),
-                                    figsize=(8, 5),
-                                    save_path=None,
-                                    dpi=300,
-                                    plot_kwargs={},
-                                    save_kwargs={},
-                                    ):
+
+def plot_vep_kde_with_arrows(
+    vep_df, 
+    vep_col="VEP",
+    clinsig_col="clinsig",
+    site_col="site", 
+    title="VEP Distributions",
+    x_label=r"$VEP_{mean}$",
+    y_label="Proportion",  
+    legend_title="Clinical Significance",
+    palette=utils.get_clinsig_palette(),
+    hline_x=None,
+    figsize=(8, 5),
+    save_path=None, 
+    plot_kwargs={},
+    save_kwargs=utils.FIG_SAVE_KWARGS,
+    suffix=None,
+    format_k=False,
+    k_precision=1,
+    legend_loc="best",
+    legend_kwargs={},
+    flip_xaxis=False
+):
     """
     Plot VEP distributions stratified by clinical significance categories,
     with annotated arrows for 'Pathogenic' and 'Benign' directions.
@@ -2845,38 +2966,99 @@ def plot_vep_kde_with_arrows(vep_df,
         Keyword arguments for the plot.
     save_kwargs : dict
         Keyword arguments for the save function.
+    hline_x : float
+        X position of the horizontal line.
+    x_label : str
+        Label for the x-axis.
+    y_label : str
+        Label for the y-axis.
+    title : str
+        Title for the plot.
+    legend_title : str
+        Title for the legend.
+    palette : dict
+        Palette for the plot.
+    figsize : tuple
+        Figure size.
+    suffix : str
+        Suffix for the legend.
+    format_k : bool
+        If True, format the legend as #.#k.
+    k_precision : int
+        Number of decimal places for k-format.
+    legend_loc : str or int, optional
+        Location of the legend (default: "best").
+    legend_kwargs : dict or None, optional
+        Additional keyword arguments for ax.legend().
+    flip_xaxis : bool, optional
+        If True, flip the direction of the x-axis (default: False).
     """
     import matplotlib.pyplot as plt
     import seaborn as sns
 
     plt.figure(figsize=figsize)
-    vep_df = vep_df.dropna(subset=[vep_col,clinsig_col]).groupby([clinsig_col,site_col], observed=True)[vep_col].mean().reset_index(name=vep_col)
+    
+    plot_df = vep_df.copy().dropna(subset=[vep_col, clinsig_col]).groupby([clinsig_col, site_col], observed=True)[vep_col].mean().reset_index(name=vep_col)
 
-    vep_df, palette_labeled = fix_clinsig_labels(vep_df, clinsig_col=clinsig_col, mutant_col=site_col)
+
+    plot_df = utils.sort_by_clinsig(plot_df, clinsig_col=clinsig_col)
+
+    plot_df, palette_labeled = fix_clinsig_labels(
+        plot_df, 
+        clinsig_col=clinsig_col, 
+        mutant_col=site_col, 
+        suffix=suffix, 
+        format_k=format_k, 
+        k_precision=k_precision
+    )
+
+    if legend_title is not None:
+        plot_df[legend_title] = plot_df[clinsig_col + "_label"]
+    else:
+        legend_title = clinsig_col + "_label"
 
     ax = sns.kdeplot(
-        data=vep_df,
+        data=plot_df,
         x=vep_col,
-        hue=clinsig_col+"_label",
+        hue=legend_title,
         multiple="fill",
         fill=True,
         cut=0, 
         palette=palette_labeled,
         **plot_kwargs
     )
-    plt.axvline(x=0.2, color='white', linestyle='--', linewidth=2, alpha=1)
+    if hline_x is not None:
+        plt.axvline(x=hline_x, color='black', linestyle='--', linewidth=2, alpha=1)
     plt.xlabel(x_label)
     plt.ylabel(y_label)
-    plt.title(title) 
+    plt.title(title)   
+
+    # Flip the x-axis if requested
+    if flip_xaxis:
+        ax.invert_xaxis()
+
+    # Set legend location and title
+    # legend = ax.get_legend()
+    # if legend is not None:
+    #     legend.set_title(legend_title)
+    #     # Remove the default legend so we can re-add it with user control
+    #     handles, labels = ax.get_legend_handles_labels()
+    #     legend.remove() 
+    #     ax.legend(
+    #         handles, labels, 
+    #         title=legend_title, 
+    #         loc=legend_loc, 
+    #         **legend_kwargs
+    #     )
 
     _draw_vep_direction_arrows(ax, palette)
 
     if save_path is not None:
-        plt.savefig(save_path, dpi=dpi, bbox_inches="tight", **save_kwargs)
+        ax.figure.savefig(save_path, **save_kwargs)
 
     plt.show()
 
-    return {'fig':ax, 'axes':ax, 'data':vep_df}
+    return {'fig': ax, 'axes': ax, 'data': plot_df}
 
 
 def test_vep_clinsig_separation(
