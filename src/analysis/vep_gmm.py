@@ -9,7 +9,12 @@ import src.haplosaurus as hs
 
 
 def train_vep_gmm(vep_df, 
+                    clinsig_col="clinsig",
+                    vep_col="VEP",
+                    clinsig_map={"path": ["path", "pathogenic", "likely_path", "likely_pathogenic"],
+                                 "benign": ["benign", "likely_benign"]},
                     groupby_cols=['model_location', 'protein', 'scoring_strategy'],
+                    min_variants_per_group=10,
                     plot=True):
     """
     Train Gaussian Mixture Models to find decision boundaries between pathogenic and benign variants
@@ -31,7 +36,10 @@ def train_vep_gmm(vep_df,
     from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score, roc_auc_score
 
     # Group data by model, protein, and scoring strategy
-    model_groups = vep_df.groupby(groupby_cols)
+    groupby_cols = [x for x in groupby_cols if x in vep_df.columns]
+    model_groups = vep_df.groupby(groupby_cols, observed=True)
+
+    all_clinsig_values = [item for sublist in clinsig_map.values() for item in sublist]
 
     # Store results
     gmm_results = []
@@ -41,15 +49,15 @@ def train_vep_gmm(vep_df,
                                     desc="Training GMMs",
                                     total=len(model_groups)):
         # Filter for variants with clear clinical significance (benign/likely_benign vs path/likely_path)
-        filtered_data = group_data[group_data['clinsig'].isin(['benign', 'likely_benign', 'path', 'likely_path'])]
+        filtered_data = group_data[group_data[clinsig_col].isin(all_clinsig_values)].copy()
         
         # Skip if we don't have enough data or if we don't have both classes
-        if len(filtered_data) < 10:
+        if len(filtered_data) < min_variants_per_group:
             continue
         
         # Create binary labels (0 for benign, 1 for pathogenic)
-        filtered_data['binary_label'] = filtered_data['clinsig'].apply(
-            lambda x: 1 if x in ['path', 'likely_path'] else 0
+        filtered_data.loc[:, 'binary_label'] = filtered_data[clinsig_col].apply(
+            lambda x: 1 if x in clinsig_map["path"] else 0
         )
         
         # Check if we have both classes
@@ -57,13 +65,13 @@ def train_vep_gmm(vep_df,
             continue
         
         # Prepare data for GMM - drop NaN values to avoid ValueError
-        filtered_data_no_nan = filtered_data.dropna(subset=['VEP'])
+        filtered_data_no_nan = filtered_data.dropna(subset=[vep_col])
         
         # Skip if we don't have enough data after dropping NaNs
-        if len(filtered_data_no_nan) < 10:
+        if len(filtered_data_no_nan) < min_variants_per_group:
             continue
         
-        X = filtered_data_no_nan['VEP'].values.reshape(-1, 1)
+        X = filtered_data_no_nan[vep_col].values.reshape(-1, 1)
         y_true = filtered_data_no_nan['binary_label'].values
         
         # Train GMM with 2 components
@@ -176,8 +184,8 @@ def plot_vep_gmm(gmm_df, vep_df):
         print(f"Average AUC: {gmm_df['auc'].mean():.4f}")
 
         # Display top performing models
-        print("\nTop 10 models by accuracy:")
-        print(gmm_df.sort_values('accuracy', ascending=False).head(10))
+        # print("\nTop 10 models by accuracy:")
+        # print(gmm_df.sort_values('accuracy', ascending=False).head(10))
 
         # Visualize an example
         if len(gmm_df) > 0:
@@ -389,7 +397,14 @@ def plot_decision_boundaries(boundary_crossing_df,
         plt.tight_layout()
         plt.show()
 
-def get_decision_boundaries(gmm_df, vep_df, groupby_cols=['protein', 'mutant'], plot=True):
+def get_decision_boundaries(
+    gmm_df, 
+    vep_df, 
+    gene_col="protein",
+    mutant_col="mutant",    
+    clinsig_col="clinsig", 
+    plot=True
+):
     """
     Find variants where the VEP crosses the decision boundary for some haplotypes but not others
 
@@ -406,15 +421,18 @@ def get_decision_boundaries(gmm_df, vep_df, groupby_cols=['protein', 'mutant'], 
     pd.DataFrame
         DataFrame containing decision boundaries
     """
+
+    if len(gmm_df) == 0:
+        raise ValueError("gmm_df has zero rows.")
     # First, we need to get the decision boundary for each protein from the GMM models
 
     # Create a dictionary to store decision boundaries for each protein
-    protein_decision_boundaries = {}
-    variant_groups = vep_df.groupby(groupby_cols)
+    gene_decision_boundaries = {}
+    variant_groups = vep_df.groupby([gene_col, mutant_col])
 
     # For each protein with a valid GMM model, calculate the decision boundary
     for _, model in gmm_df.iterrows():
-        protein = model['protein']
+        gene = model[gene_col]
         
         # Calculate the decision boundary where the two Gaussian components have equal probability
         # This is where: weight_0 * pdf_0(x) = weight_1 * pdf_1(x)
@@ -437,7 +455,7 @@ def get_decision_boundaries(gmm_df, vep_df, groupby_cols=['protein', 'mutant'], 
         if abs(a) < 1e-10:
             if b != 0:
                 boundary = -c/b
-                protein_decision_boundaries[protein] = boundary
+                gene_decision_boundaries[gene] = boundary
         else:
             # Solve the quadratic equation
             discriminant = b**2 - 4*a*c
@@ -448,13 +466,13 @@ def get_decision_boundaries(gmm_df, vep_df, groupby_cols=['protein', 'mutant'], 
                 
                 # Select the boundary that's between the two means
                 if min(mean_0, mean_1) <= x1 <= max(mean_0, mean_1):
-                    protein_decision_boundaries[protein] = x1
+                    gene_decision_boundaries[gene] = x1
                 elif min(mean_0, mean_1) <= x2 <= max(mean_0, mean_1):
-                    protein_decision_boundaries[protein] = x2
+                    gene_decision_boundaries[gene] = x2
                 else:
                     # If neither solution is between the means, take the one closer to the midpoint
                     midpoint = (mean_0 + mean_1) / 2
-                    protein_decision_boundaries[protein] = x1 if abs(x1 - midpoint) < abs(x2 - midpoint) else x2
+                    gene_decision_boundaries[gene] = x1 if abs(x1 - midpoint) < abs(x2 - midpoint) else x2
 
     # Now find variants where some haplotypes cross the decision boundary while others don't
     boundary_crossing_variants = []
@@ -463,11 +481,11 @@ def get_decision_boundaries(gmm_df, vep_df, groupby_cols=['protein', 'mutant'], 
                                                 total=len(variant_groups), 
                                                 desc="Finding boundary-crossing variants"):
         # Skip if we don't have a decision boundary for this protein
-        if protein not in protein_decision_boundaries:
+        if protein not in gene_decision_boundaries:
             continue
         
         # Get the decision boundary for this protein
-        boundary = protein_decision_boundaries[protein]
+        boundary = gene_decision_boundaries[protein]
         
         # Get VEP scores for this variant across different haplotypes
         vep_scores = variant_data['VEP'].dropna().tolist()
@@ -482,12 +500,12 @@ def get_decision_boundaries(gmm_df, vep_df, groupby_cols=['protein', 'mutant'], 
         
         if scores_above and scores_below:
             # This variant crosses the decision boundary
-            clinsig = variant_data['clinsig'].iloc[0]
+            clinsig = variant_data[clinsig_col].iloc[0]
             
             boundary_crossing_variants.append({
-                "protein":protein,    
-                "mutant":mutant,
-                'clinsig': clinsig,
+                gene_col:protein,    
+                mutant_col:mutant,
+                clinsig_col: clinsig,
                 'decision_boundary': boundary,
                 'min_vep': min(vep_scores),
                 'max_vep': max(vep_scores),
@@ -500,11 +518,13 @@ def get_decision_boundaries(gmm_df, vep_df, groupby_cols=['protein', 'mutant'], 
     # Convert to DataFrame
     boundary_crossing_df = pd.DataFrame(boundary_crossing_variants)
      # Sort by the proportion of scores that cross the boundary
+    print("Adding crossing proportion")
     boundary_crossing_df['crossing_proportion'] = boundary_crossing_df.apply(
         lambda x: min(x['scores_above_boundary'], x['scores_below_boundary']) / x['haplotype_count'], axis=1
     )
     # Display summary of boundary-crossing variants
     if not boundary_crossing_df.empty and plot:
+        print("Plotting decision boundaries")
         plot_decision_boundaries(boundary_crossing_df, vep_df, gmm_df)
     else:
         print("No variants found that cross decision boundaries in different haplotypes")
@@ -647,20 +667,25 @@ import matplotlib.ticker as mticker
 
 def plot_vep_histograms_with_boundaries(
     vep_df,
-    boundary_crossing_df,
-    target_sites,
-    bins=30, 
+    boundary_crossing_df=None,
+    gene_col="protein",
+    mutant_col="mutant",
+    target_sites=None,
+    bins="auto",
     facet_height=2.5,
     facet_aspect=1.75,
     col_wrap=2,
+    facet_col=None,
     title="VEP Distributions with Decision Boundaries",
     x_label="VEP",
     y1_label="Haplotype Count",
     y2_label="Density",
-    x_offset = 0,
+    x_offset = 0.1,
     y_offset_factor = 0.725,
     sharex=True,
     sharey=False,
+    flip_xaxis=False,
+     palette=["blue", "red"],
     show=True
 ):
     """
@@ -687,32 +712,46 @@ def plot_vep_histograms_with_boundaries(
         Number of columns in the facet grid.
     show : bool
         Whether to call plt.show() at the end.
-
+    flip_xaxis : bool
+        Whether to flip the x-axis.
     Returns
     -------
     g : sns.FacetGrid
         The FacetGrid object.
     """
  
-    plot_df = vep_df.loc[vep_df["site"].isin(target_sites)].copy()
+    if target_sites is not None:
+        plot_df = vep_df.loc[vep_df["site"].isin(target_sites)].copy()
+    else:
+        plot_df = vep_df.copy()
     # Sort according to site order in target_sites
     plot_df["site"] = pd.Categorical(plot_df["site"], categories=target_sites, ordered=True)
     plot_df = plot_df.sort_values("site")
 
-    plot_df["facet_label"] = (
-        plot_df["GENEINFO"].str.split(":").str[0]
-        + ":" + plot_df["mutant"]
-        + " (" + plot_df["n_haplotypes"].astype(str) + " haplotypes)"
-    )
-    # Merge with boundary_crossing_df, but also get decision boundaries for all proteins
-    # First, create a protein-level decision boundary mapping
-    protein_boundaries = boundary_crossing_df.groupby('protein')['decision_boundary'].first().to_dict()
+    if facet_col is not None:
+        plot_df["facet_label"] = plot_df[facet_col]
+    else:
+        plot_df["facet_label"] = (
+        "Gene: " + plot_df["GENEINFO"].str.split(":").str[0]
+        + " Clinical Variant: " + plot_df[mutant_col]
+        + " (Haplotypes: " + plot_df["n_haplotypes"].astype(str) + ")")
+
+
+    if flip_xaxis:
+        x_offset = -x_offset
+
+
+    if boundary_crossing_df is not None:
+        # Merge with boundary_crossing_df, but also get decision boundaries for all proteins
+        # First, create a protein-level decision boundary mapping
+        protein_boundaries = boundary_crossing_df.groupby(gene_col)['decision_boundary'].first().to_dict()
+        # Add decision boundary for each protein
+        plot_df['decision_boundary'] = plot_df[gene_col].map(protein_boundaries)
     
-    # Add decision boundary for each protein
-    plot_df['decision_boundary'] = plot_df['protein'].map(protein_boundaries)
-    
-    # Also merge the full boundary_crossing_df for additional info if available
-    plot_df = plot_df.merge(boundary_crossing_df, on=["protein", "mutant"], how="left", suffixes=('', '_crossing'))
+        # Also merge the full boundary_crossing_df for additional info if available
+        plot_df = plot_df.merge(boundary_crossing_df, on=[gene_col, mutant_col], how="left", suffixes=('', '_crossing'))
+
+    cmap = mpl.colors.LinearSegmentedColormap.from_list("red_blue", palette)
 
     # Custom histogram function to color bars along a red-blue continuum based on distance from boundary
     def colored_histplot_with_kde(data, color, **kwargs):
@@ -735,9 +774,7 @@ def plot_vep_histograms_with_boundaries(
                 if max_abs_dist == 0:
                     normed = np.zeros_like(distances)
                 else:
-                    normed = distances / max_abs_dist
-                # Use a diverging colormap: red for below boundary (more negative), blue for above boundary (less negative)
-                cmap = mpl.colors.LinearSegmentedColormap.from_list("red_blue", ["red", "blue"])
+                    normed = distances / max_abs_dist 
                 color_vals = (normed + 1) / 2
                 bar_colors = [cmap(val) for val in color_vals]
             else:
@@ -752,8 +789,6 @@ def plot_vep_histograms_with_boundaries(
                     normed_vep = (vep_max - bin_centers) / (vep_max - vep_min)
                 else:
                     normed_vep = np.zeros_like(bin_centers)
-                # Use a colormap: red for more negative, blue for less negative
-                cmap = mpl.colors.LinearSegmentedColormap.from_list("blue_red", ["blue", "red"])
                 bar_colors = [cmap(val) for val in normed_vep]
             else:
                 bar_colors = ["gray"] * len(bin_centers)
@@ -793,25 +828,47 @@ def plot_vep_histograms_with_boundaries(
                     c.set_alpha(0.2)
 
     # Add vertical lines at the VEP_REF (black), VEP_mean (goldenrod), and decision_boundary (red) values for each site
-    def add_vep_ref_and_mean_lines(data, color, **kwargs):
+    def add_vep_ref_and_mean_lines(data, color, label_yspacing=None, **kwargs):
+        """
+        Add vertical lines for VEP_REF, VEP_mean, and decision_boundary, with labels.
+        You can set label_yspacing (float, fraction of y-axis) to control label vertical increments (default: 0.06).
+        Now with a white background rectangle behind each label (alpha=0.25).
+        """
         ax = plt.gca()
         vep_mean = data["VEP_mean"].iloc[0] if "VEP_mean" in data.columns else None
         vep_ref = data["VEP_REF"].iloc[0] if "VEP_REF" in data.columns else None
         decision_boundary = data["decision_boundary"].iloc[0] if "decision_boundary" in data.columns else None
-        
-        y_offset = ax.get_ylim()[1]*y_offset_factor
 
-        valign = "bottom"
-        halign = "right"
-        if vep_ref is not None and pd.notnull(vep_ref):
-            ax.axvline(vep_ref, color="grey", linestyle="--", label="VEP_REF")
-            ax.text(vep_ref+x_offset, y_offset, r"$VEP_{ref}$", color="grey", rotation=90, va=valign, ha=halign, fontsize=10)
-        if vep_mean is not None and pd.notnull(vep_mean):
-            ax.axvline(vep_mean, color="goldenrod", linestyle="--", label="VEP_mean")
-            ax.text(vep_mean+x_offset, y_offset, r"$VEP_{mean}$", color="goldenrod", rotation=90, va=valign, ha=halign, fontsize=10)
+        y_offset = ax.get_ylim()[1] * y_offset_factor
+
+        # Place y-offsets starting from the top and moving downward
+        ymax = ax.get_ylim()[1]*.95
+        # Allow custom spacing for y increment, otherwise default to 0.06
+        dy_frac = label_yspacing if label_yspacing is not None else 0.15
+        delta_y = ymax * dy_frac  # Stagger distance down from the top
+
+        halign = "left"
+        valign = "center"
+        xlabels = []
+
+        # Prepare label info in top-down order
         if decision_boundary is not None and pd.notnull(decision_boundary):
-            ax.axvline(decision_boundary, color="red", linestyle="--", label="Boundary")
-            ax.text(decision_boundary+x_offset, y_offset, r"Boundary", color="red", rotation=90, va=valign, ha=halign, fontsize=10)
+            xlabels.append((decision_boundary, r"Boundary", "red"))
+        if vep_ref is not None and pd.notnull(vep_ref):
+            xlabels.append((vep_ref, r"$VEP_{ref}$", "grey"))
+        if vep_mean is not None and pd.notnull(vep_mean):
+            xlabels.append((vep_mean, r"$VEP_{mean}$", "goldenrod"))
+      
+
+        # Draw lines and staggered labels from top downward
+        for i, (xpos, label, color) in enumerate(xlabels):
+            ax.axvline(xpos, color=color, linestyle="--", label=label)
+            y_text = ymax - delta_y * i
+            ax.text(
+                xpos + x_offset, y_text, label, color=color, rotation=0,
+                va=valign, ha=halign, fontsize="medium",
+                bbox=dict(facecolor="white", alpha=.95, edgecolor=color, boxstyle="round,pad=0.1")
+            )
 
         handles, labels = ax.get_legend_handles_labels()
         by_label = dict(zip(labels, handles))
@@ -839,9 +896,11 @@ def plot_vep_histograms_with_boundaries(
                 if twin_ax.get_position().bounds == ax.get_position().bounds:
                     twin_ax.spines['top'].set_visible(False)
                     twin_ax.spines['right'].set_visible(False)
-        xlim = ax.get_xlim()
-        if xlim[0] < xlim[1]:
-            ax.set_xlim(xlim[1], xlim[0])
+
+        if flip_xaxis:
+            xlim = ax.get_xlim()
+            if xlim[0] < xlim[1]:
+                ax.set_xlim(xlim[1], xlim[0])
 
     if title is not None:
         g.fig.suptitle(title, fontsize="large")

@@ -815,6 +815,7 @@ def plot_vep_density(vep_df,
                      row='model_location',
                      sharex=True,
                      sharey=False,
+                     flip_xaxis=False,
                      verbose=True,
                      save_path=None,
                      facetgrid_kwargs={},
@@ -869,11 +870,15 @@ def plot_vep_density(vep_df,
                    loc='lower center') 
     rm_subplot_prefixes(g)
 
+    if flip_xaxis:
+        for ax in g.axes.flat:
+            ax.invert_xaxis()
+
     plt.tight_layout()
     
     # Save figure if save_path is provided
     if save_path is not None:
-        plt.savefig(save_path, bbox_inches='tight')
+        plt.savefig(save_path, **utils.FIG_SAVE_KWARGS)
         
     plt.show()
     # Add vertical lines for REF haplotypes
@@ -3931,3 +3936,114 @@ def plot_n_variants_histogram(
     if show_plot:
         plt.show()
     return {'fig': fig, 'ax': ax, 'data': df}
+
+
+def plot_variant_type_and_clinsig(
+    df,
+    x_var = "MC_term_label",
+    y_var = "VEP",
+    hue_var = "clinsig_simple",
+    x_label = "Clinical Variant Type",
+    y_label = r"VEP$_{mean}$",
+    title = r"VEP$_{mean}$ by Clinical Variant Type",
+    legend_title = "Clinical Significance", 
+    palette=utils.get_clinsig_palette(),
+    figsize=(3, 5),
+    legend=True,
+    save_path=None,
+    fig_kwargs=None
+):
+    """
+    Create and save a barplot of mean VEP by clinical variant type and significance with statistical annotation.
+    Includes comparisons both within each clinical variant type (i.e., among clinsig groups for each MC_term)
+    and across clinical variant types (i.e., among MC_terms for each clinsig group).
+
+    Parameters
+    ----------
+    flashzoi_agg : pd.DataFrame
+        DataFrame with columns 'MC_term', 'VEP', 'clinsig_simple'.
+    save_path : str
+        Output path for the saved figure.
+    fig_kwargs : dict or None
+        Additional kwargs for plt.savefig (merged with utils.FIG_SAVE_KWARGS).
+    """
+    from statannotations.Annotator import Annotator
+
+    # Map MC_term for pretty labels
+    df = df.copy()  # avoid modifying original
+
+    df = utils.sort_by_clinsig(df, clinsig_col=hue_var)
+
+    mc_terms = sorted(df[x_var].unique())
+    clinsig_simple_cats = list(df[hue_var].unique())
+
+    fig = plt.figure(figsize=figsize)
+    ax = sns.barplot(
+        data=df,
+        x=x_var,
+        y=y_var,
+        hue=hue_var,
+        palette=palette,
+        order=mc_terms,
+        hue_order=clinsig_simple_cats,
+        legend=legend,
+    )
+    ax.set_xlabel(x_label)
+    ax.set_ylabel(y_label)
+    ax.set_title(title)
+    if legend:
+        ax.legend(
+            title=legend_title,
+            frameon=False,
+            loc="upper left",
+            bbox_to_anchor=(1.02, 1.0)
+        )
+
+    sns.despine(ax=ax, top=True, right=True)
+
+    # Prepare all pairwise comparisons within MC_term (between clinsigs)
+    pairs_within = [
+        ((mc_term, cat1), (mc_term, cat2))
+        for mc_term in mc_terms
+        for i, cat1 in enumerate(clinsig_simple_cats)
+        for j, cat2 in enumerate(clinsig_simple_cats)
+        if j > i
+    ]
+
+    # Prepare all pairwise comparisons across MC_terms (between variant types, per clinsig group)
+    pairs_across = [
+        ((mc1, cln), (mc2, cln))
+        for cln in clinsig_simple_cats
+        for i, mc1 in enumerate(mc_terms)
+        for j, mc2 in enumerate(mc_terms)
+        if j > i
+    ]
+
+    # Combine both within and across pairs
+    pairs = pairs_within + pairs_across
+
+    annotator = Annotator(
+        ax=ax,
+        pairs=pairs,
+        data=df,
+        x=x_var,
+        y=y_var,
+        hue=hue_var,
+        order=mc_terms,
+        hue_order=clinsig_simple_cats,
+    )
+    annotator.configure(
+        test='t-test_ind',
+        text_format='star',
+        loc='inside',  # could also consider 'outside' but inside is default
+        comparisons_correction="bonferroni"
+    )
+    annotator.apply_and_annotate()
+
+    save_kwargs = dict(utils.FIG_SAVE_KWARGS)
+    if fig_kwargs is not None:
+        save_kwargs.update(fig_kwargs)
+    if save_path is not None:
+        plt.savefig(save_path, **save_kwargs)
+    
+    plt.show()

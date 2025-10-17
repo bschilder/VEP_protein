@@ -1015,7 +1015,7 @@ def _add_specific_superpops(
         pd.DataFrame: The dataframe with the specific group added.
     """
     specific_col = f'specific_{group_col}'
-    nonzero_col = f'nonzero_{group_col}_freqs'
+    nonzero_col = f'nonzero_{group_col}_count'
     top_col = f'top_{group_col}'
 
     if specific_col in df.columns:
@@ -1207,7 +1207,7 @@ def add_haplotype_freqs(df: pd.DataFrame,
         if verbose:
             print("Adding haplotype frequencies per population")
         # Drop any existing frequency columns
-        df.drop(columns=freq_cols+['top_pop', 'top_superpop','top_superpop_freq', 'nonzero_superpop_freqs','specific_superpopulation'], 
+        df.drop(columns=freq_cols+['top_pop', 'top_superpop','top_superpop_freq', 'nonzero_superpop_count','specific_superpopulation'], 
                 errors='ignore', inplace=True)
         ## New method: faster
         pop_freqs_df = pop_freqs_to_df(pop_freqs, 
@@ -3557,7 +3557,48 @@ def plot_superpopulation_bar(haplotypes,
         plt.show()
     return {'fig':fig, 'axes':ax, 'data':superpop_counts}                         # return DataFrame with superpopulation counts
 
- 
+
+def _plot_superpop_upset_plot(
+    freq_df,
+    ax=None,
+    show=True,
+    **upset_kwargs
+):
+    """
+    Plot the UpSet plot for superpopulations.
+
+    Args:
+        freq_df (pd.DataFrame): DataFrame with haplotype info, must include boolean columns for each superpopulation membership.
+        ax (matplotlib.axes.Axes or None): Axis to plot on, or None to use default.
+        show (bool): Whether to call plt.show().
+        **upset_kwargs: Additional keyword arguments for UpSet.
+
+    Returns:
+        tuple: (UpSet object/fig, count DataFrame)
+    """
+    from upsetplot import from_indicators, UpSet
+
+    # Assume columns starting with 'superpop_' or similar
+    superpop_cols = [col for col in freq_df.columns if col.startswith("superpop_") or col.startswith("in_superpop_")]
+    if not superpop_cols:
+        raise ValueError(
+            "No superpopulation indicator columns found (should start with 'superpop_' or 'in_superpop_')"
+        )
+    upset_data = from_indicators(superpop_cols, freq_df[superpop_cols])
+    upset = UpSet(
+        upset_data,
+        **upset_kwargs
+    )
+    if ax is not None:
+        upset.plot(ax=ax)
+        out_fig = ax.get_figure()
+    else:
+        out_fig = upset.plot()
+    if show:
+        import matplotlib.pyplot as plt
+        plt.show()
+    return {'fig':out_fig, 'axes':ax, 'data':upset_data}
+
 def plot_haplotypes_and_superpop_bar(
     freq_df, 
     haplotypes, 
@@ -3568,7 +3609,7 @@ def plot_haplotypes_and_superpop_bar(
     show=True
 ):
     """
-    Plot the superpopulation bar and the haplotypes by superpopulation specificity side by side.
+    Plot the superpopulation bar and the haplotypes by superpopulation specificity (optionally using UpSet plot) side by side.
 
     Args:
         freq_df (pd.DataFrame): DataFrame with haplotype info.
@@ -3576,52 +3617,47 @@ def plot_haplotypes_and_superpop_bar(
         utils (module): Module with get_superpop_palette().
         width_ratios (tuple): Width ratios for the two plots (superpop bar, haplotype).
         figsize (tuple): Figure size.
-        min_spacing (int): Minimum vertical spacing between labels in superpop bar.
         show (bool): Whether to call plt.show().
+        use_upset (bool): Whether to use UpSet plot for right subplot.
+        upset_kwargs (dict): Keyword arguments to pass to the UpSet plot function.
     Returns:
         dict: Dictionary containing plot objects and data.
     """
     freq_df = freq_df.copy()
-
     outputs = {}
     
     if use_upset:
-        # Create a single figure for the left plot
+        # Left panel: superpopulation bar
         fig, ax1 = plt.subplots(1, 1, figsize=(figsize[0] * width_ratios[0] / sum(width_ratios), figsize[1]), facecolor='none')
         outputs["fig"] = fig
         outputs["axes"] = ax1
-
-        # Remove the top and right spines (margin lines) for a cleaner look
+        # Remove spines
         ax1.spines['top'].set_visible(False)
         ax1.spines['right'].set_visible(False)
-        
         # Left: superpopulation bar 
         plot_superpopulation_bar_out = plot_superpopulation_bar(
             haplotypes, ax=ax1
         )
         ax = plot_superpopulation_bar_out["axes"]
         haplotype_counts = plot_superpopulation_bar_out["data"]
-
         outputs["subplot1"] = plot_superpopulation_bar_out
-        
-        # Right: UpSet plot - create it separately
-        upset, counts_df = plot_superpop_upset(
-            freq_df,  
-            ax=None,  # Let UpSet create its own figure
+
+        # Right: UpSet plot (use the new function)
+        upset_fig, counts_df = _plot_superpop_upset_plot(
+            freq_df=freq_df,
+            ax=None,  # new figure for UpSet plot
+            show=False, # let master show
             **upset_kwargs
         )
-        outputs["subplot2"] = {'fig':upset, 'axes':None, 'data':counts_df}
-        
-        # Try to get the UpSet figure and adjust its size
+        outputs["subplot2"] = {"fig": upset_fig, "axes": None, "data": counts_df}
+
+        # Try to size the UpSet figure
         try:
-            # Get the current figure (should be the UpSet figure)
-            upset_fig = plt.gcf()
-            if upset_fig != fig:  # If it's a different figure
+            if hasattr(upset_fig, "set_size_inches"):
                 upset_fig.set_size_inches(figsize[0] * width_ratios[1] / sum(width_ratios), figsize[1])
-        except:
-            # If we can't control the UpSet figure, just let it display naturally
+        except Exception:
             pass
-        
+
     else:
         # Create figure with proper spacing for regular subplots
         fig, axes = plt.subplots(
@@ -3652,6 +3688,7 @@ def plot_haplotypes_and_superpop_bar(
         ax.spines['right'].set_visible(False)
     
     if show:
+        import matplotlib.pyplot as plt
         plt.show()
     return outputs
 
@@ -3937,6 +3974,6 @@ def plot_superpop_upset(
                 ax.set_title(title)
             # plt.tight_layout()
             # Return the UpSet object so we can access its axes
-            return upset, counts_df
+            return {'fig':fig.figure, 'axes':ax, 'data':{'upset':upset, 'counts_df':counts_df}}
 
-    return upset, counts_df
+    return {'fig':fig.figure, 'axes':ax, 'data':{'upset':upset, 'counts_df':counts_df}}
