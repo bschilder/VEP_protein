@@ -3260,7 +3260,13 @@ def plot_vep_kde_with_arrows(
     k_precision=1,
     legend_loc="best",
     legend_kwargs={},
-    flip_xaxis=False
+    flip_xaxis=False,
+    add_histogram=False,
+    hist_kwargs={"bins":100,"edgecolor":"grey"},
+    title_y=0.9,
+    height_ratios=(.25,1),
+    hist_log_y=False,
+    title_kwargs={},
 ):
     """
     Plot VEP distributions stratified by clinical significance categories,
@@ -3304,11 +3310,29 @@ def plot_vep_kde_with_arrows(
         Additional keyword arguments for ax.legend().
     flip_xaxis : bool, optional
         If True, flip the direction of the x-axis (default: False).
+    add_histogram : bool, optional
+        If True, add a histogram on top of the KDE plot showing counts of vep_df[vep_col] (default: False).
+    hist_kwargs : dict, optional
+        Keyword arguments for the histogram plot (default: {}).
+    height_ratios : list, optional
+        Height ratios for [histogram, KDE] subplots when add_histogram=True (default: [1, 3]).
+    title_y : float, optional
+        Y position of the title when add_histogram=True, as a fraction of figure height (default: 0.98).
+        Only used when add_histogram=True.
+    hist_log_y : bool, optional
+        If True, use log scale for the histogram y-axis (default: False).
+        Only used when add_histogram=True.
     """
     import matplotlib.pyplot as plt
+    import matplotlib.ticker as mticker
     import seaborn as sns
 
-    plt.figure(figsize=figsize)
+    if add_histogram:
+        # Don't use sharex=True if we need to flip, as it interferes with invert_xaxis()
+        fig, (ax_hist, ax) = plt.subplots(2, 1, figsize=figsize, sharex=False, 
+                                          gridspec_kw={'height_ratios': height_ratios, 'hspace': 0})
+    else:
+        fig, ax = plt.subplots(figsize=figsize)
     
     plot_df = vep_df.copy().dropna(subset=[vep_col, clinsig_col]).groupby([clinsig_col, site_col], observed=True)[vep_col].mean().reset_index(name=vep_col)
 
@@ -3329,7 +3353,7 @@ def plot_vep_kde_with_arrows(
     else:
         legend_title = clinsig_col + "_label"
 
-    ax = sns.kdeplot(
+    sns.kdeplot(
         data=plot_df,
         x=vep_col,
         hue=legend_title,
@@ -3337,40 +3361,134 @@ def plot_vep_kde_with_arrows(
         fill=True,
         cut=0, 
         palette=palette_labeled,
+        ax=ax,
         **plot_kwargs
     )
     if hline_x is not None:
-        plt.axvline(x=hline_x, color='black', linestyle='--', linewidth=2, alpha=1)
-    plt.xlabel(x_label)
-    plt.ylabel(y_label)
-    plt.title(title)   
+        ax.axvline(x=hline_x, color='black', linestyle='--', linewidth=2, alpha=1)
+    ax.set_xlabel(x_label)
+    ax.set_ylabel(y_label)
+    
+    # Set title - use fig.suptitle when histogram is enabled to position it above
+    if add_histogram:
+        fig.suptitle(title, y=title_y, verticalalignment='bottom', **title_kwargs)
+        ax.set_title('')  # Remove title from KDE plot
+    else:
+        ax.set_title(title, **title_kwargs)
+
+    # Get the actual data range to set tight x-axis limits (remove white space)
+    # Use raw data (vep_df) for range calculation, not aggregated plot_df
+    # Use exact data range with no padding to eliminate whitespace
+    data_min = vep_df[vep_col].dropna().min()
+    data_max = vep_df[vep_col].dropna().max()
+    xlim_min = data_min
+    xlim_max = data_max
+
+    # Add histogram on top if requested
+    if add_histogram:
+        # Plot histogram on top axes
+        # Use lighter grey as default, but allow override via hist_kwargs
+        hist_color = hist_kwargs.pop('color', 'lightgrey')
+        vep_df[vep_col].dropna().hist(ax=ax_hist, color=hist_color, **hist_kwargs)
+        
+        # Format y-axis in thousands
+        def format_thousands(x, pos):
+            """Format number in thousands with 'k' suffix"""
+            if x >= 1000:
+                return f'{x/1000:.0f}k'
+            else:
+                return f'{x:.0f}'
+        ax_hist.yaxis.set_major_formatter(mticker.FuncFormatter(format_thousands))
+        
+        # Set log scale for y-axis if requested
+        if hist_log_y:
+            ax_hist.set_yscale('log')
+        
+        # Set exactly 2 y-tick labels: one in the middle and one at the top
+        # Get current y-axis limits after any scaling
+        ymin, ymax = ax_hist.get_ylim()
+        if hist_log_y:
+            # For log scale, use geometric mean for middle
+            y_middle = np.sqrt(ymin * ymax)
+        else:
+            # For linear scale, use arithmetic mean for middle
+            y_middle = (ymin + ymax) / 2
+        
+        # Round to nearest 100k (100,000)
+        y_middle_rounded = np.round(y_middle / 100000) * 100000
+        ymax_rounded = np.round(ymax / 100000) * 100000
+        
+        ax_hist.set_yticks([y_middle_rounded, ymax_rounded])
+        
+        # Remove grid lines
+        ax_hist.grid(False)
+        
+        ax_hist.set_ylabel('Count')
+        ax_hist.spines['top'].set_visible(False)
+        ax_hist.spines['right'].set_visible(False)
+        ax_hist.set_xlabel('')  # Remove x-label from top plot
+        ax_hist.set_xticklabels([])  # Remove x-axis tick labels
+
+    # Set tight x-axis limits to remove white space
+    # Set limits on both axes explicitly to ensure they match
+    ax.set_xlim(xlim_min, xlim_max)
+    if add_histogram:
+        ax_hist.set_xlim(xlim_min, xlim_max)
+
+    _draw_vep_direction_arrows(ax, palette)
 
     # Flip the x-axis if requested
     if flip_xaxis:
         ax.invert_xaxis()
+        if add_histogram:
+            ax_hist.invert_xaxis()
+    
+    # Set legend location and title (do this LAST, after all other operations)
+    legend = ax.get_legend()
+    if legend is not None:
+        # Get handles and labels - this should work correctly with seaborn
+        handles, labels = ax.get_legend_handles_labels()
+        
+        # Only proceed if we have valid handles and labels
+        if len(handles) > 0 and len(labels) > 0:
+            # Remove the old legend
+            legend.remove()
+            
+            # Re-add legend with user-specified location, preserving all labels
+            new_legend = ax.legend(
+                handles, labels, 
+                title=legend_title, 
+                loc=legend_loc, 
+                **legend_kwargs
+            )
 
-    # Set legend location and title
-    # legend = ax.get_legend()
-    # if legend is not None:
-    #     legend.set_title(legend_title)
-    #     # Remove the default legend so we can re-add it with user control
-    #     handles, labels = ax.get_legend_handles_labels()
-    #     legend.remove() 
-    #     ax.legend(
-    #         handles, labels, 
-    #         title=legend_title, 
-    #         loc=legend_loc, 
-    #         **legend_kwargs
-    #     )
-
-    _draw_vep_direction_arrows(ax, palette)
+    # Adjust layout to accommodate title when histogram is enabled
+    if add_histogram:
+        fig.tight_layout(rect=[0, 0, 1, 0.96])  # Leave space at top for suptitle
+    
+    # Re-apply legend location after tight_layout (tight_layout can reposition it)
+    legend = ax.get_legend()
+    if legend is not None and legend_loc != "best":
+        # Get handles and labels
+        handles, labels = ax.get_legend_handles_labels()
+        if len(handles) > 0 and len(labels) > 0:
+            legend.remove()
+            ax.legend(
+                handles, labels, 
+                title=legend_title, 
+                loc=legend_loc, 
+                **legend_kwargs
+            )
 
     if save_path is not None:
-        ax.figure.savefig(save_path, **save_kwargs)
+        fig.savefig(save_path, **save_kwargs)
 
     plt.show()
 
-    return {'fig': ax, 'axes': ax, 'data': plot_df}
+    result = {'fig': fig, 'axes': ax, 'data': plot_df}
+    if add_histogram:
+        result['hist_axes'] = ax_hist
+    return result
 
 
 def test_vep_clinsig_separation(

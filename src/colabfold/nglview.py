@@ -208,3 +208,69 @@ def visualize_interactions_on_structure(
         return view
     else:
         return view
+
+def save_view_to_html(view, output_path="interactive_structure_viewer.html", title="Protein Structure Viewer"):
+    """
+    Save an NGLView widget to a standalone HTML file suitable for GitHub Pages.
+    
+    Args:
+        view: nglview.View widget to save
+        output_path: Path where to save the HTML file
+        title: Title for the HTML page
+        
+    Returns:
+        str: Path to the saved HTML file
+        
+    Example:
+        >>> view = visualize_interactions_on_structure(...)
+        >>> save_view_to_html(view, "docs/structure_viewer.html")
+    """
+    import nglview
+    
+    # Ensure output directory exists
+    output_dir = os.path.dirname(output_path)
+    if output_dir and not os.path.exists(output_dir):
+        os.makedirs(output_dir, exist_ok=True)
+    
+    # Try to use nglview.write_html if available (preferred method)
+    if hasattr(nglview, 'write_html'):
+        try:
+            nglview.write_html(output_path, views=[view], title=title)
+        except TypeError:
+            # Some versions might not support title parameter
+            nglview.write_html(output_path, views=[view])
+    else:
+        # Fallback: use the widget's HTML representation
+        html_content = view._repr_html_()
+        full_html = f"""<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>{title}</title>
+    <style>
+        body {{
+            margin: 0;
+            padding: 20px;
+            font-family: Arial, sans-serif;
+        }}
+        h1 {{
+            margin-bottom: 20px;
+        }}
+    </style>
+</head>
+<body>
+    <h1>{title}</h1>
+    {html_content}
+</body>
+</html>"""
+        with open(output_path, 'w', encoding='utf-8') as f:
+            f.write(full_html)
+    
+    print(f"✓ Interactive structure viewer saved to: {os.path.abspath(output_path)}")
+    print(f"✓ File is ready for GitHub Pages hosting!")
+    print(f"\nTo host on GitHub Pages:")
+    print(f"  1. Add the file to your repository")
+    print(f"  2. Enable GitHub Pages in repository settings")
+    print(f"  3. Access at: https://yourusername.github.io/repo-name/{os.path.basename(output_path)}")
+    
+    return output_path

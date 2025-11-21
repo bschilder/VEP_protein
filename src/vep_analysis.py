@@ -3945,7 +3945,7 @@ def plot_variant_type_and_clinsig(
     hue_var = "clinsig_simple",
     x_label = "Clinical Variant Type",
     y_label = r"VEP$_{mean}$",
-    title = r"VEP$_{mean}$ by Clinical Variant Type",
+    title = "VEP by Clinical Variant Type",
     legend_title = "Clinical Significance", 
     palette=utils.get_clinsig_palette(),
     figsize=(3, 5),
@@ -3998,6 +3998,8 @@ def plot_variant_type_and_clinsig(
             palette=palette,
             order=mc_terms,
             legend=legend,
+            edgecolor="black",
+            linewidth=1,
         )
     else:
         ax = sns.barplot(
@@ -4009,6 +4011,8 @@ def plot_variant_type_and_clinsig(
             order=mc_terms,
             hue_order=clinsig_simple_cats,
             legend=legend,
+            edgecolor="black",
+            linewidth=1,
         )
     ax.set_xlabel(x_label)
     ax.set_ylabel(y_label)
