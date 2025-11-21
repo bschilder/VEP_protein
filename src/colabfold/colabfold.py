@@ -69,6 +69,8 @@ from tqdm import tqdm
 import os
 import glob
 import math
+from scipy import stats
+import sys
 
 import src.utils as utils
 import src.analysis.matrices as mc
@@ -1517,26 +1519,27 @@ def create_bokeh_interactive_umap(af2_meta, contact_maps,
 def get_ref_key(contact_maps, pattern="REF", error=True):
     """
     Find and return the key from contact_maps whose filename contains the given pattern
-    in the second underscore-separated field.
+    anywhere in its basename path.
 
     Args:
-        contact_maps (dict): Dictionary where keys are file paths or names.
-        pattern (str): Pattern to search for in the second field of the filename (default: "REF").
+        contact_maps (dict or list): Dictionary where keys are file paths/names, or list of such strings.
+        pattern (str): Pattern to search for (default: "REF").
+        error (bool): Whether to raise ValueError or return None on error.
 
     Returns:
-        str: The first key matching the pattern.
+        str: The first key whose basename contains the pattern.
 
     Raises:
-        ValueError: If no key matches the pattern.
-        ValueError: If the filename does not have at least two underscore-separated fields.
+        ValueError: If no key matches the pattern and error=True.
+        ValueError: If more than one file matches and error=True.
 
     Example:
         >>> contact_maps = {
-        ...     '/path/to/sample_REF_001.npy': ...,
-        ...     '/path/to/sample_ALT_002.npy': ...,
+        ...     '/path/to/ENSP00000350283_REF_unrelaxed_rank_002_alphafold2_ptm_model_1_seed_000.pdb': ...,
+        ...     '/path/to/ENSP00000350283_ALT_unrelaxed_rank_002_alphafold2_ptm_model_1_seed_000.pdb': ...,
         ... }
         >>> get_ref_key(contact_maps)
-        '/path/to/sample_REF_001.npy'
+        '/path/to/ENSP00000350283_REF_unrelaxed_rank_002_alphafold2_ptm_model_1_seed_000.pdb'
     """
     import os
     if isinstance(contact_maps, dict):
@@ -1549,25 +1552,22 @@ def get_ref_key(contact_maps, pattern="REF", error=True):
     matches = []
     for x in names:
         base = os.path.basename(x)
-        fields = base.split("_")
-        if len(fields) < 2:
-            if error:
-                raise ValueError(f"Filename '{base}' does not have at least two underscore-separated fields.")
-            else:
-                continue
-        if pattern in fields[1]:
+        if pattern in base:
             matches.append(x)
     if not matches:
         if error:
-            raise ValueError(f"No key found in contact_maps with pattern '{pattern}' in the second underscore-separated field.")
+            raise ValueError(
+                f"No key found in contact_maps with pattern '{pattern}' in basename."
+            )
         else:
             return None
     if len(matches) > 1:
-        if error:
-            raise ValueError(f"Multiple keys found in contact_maps with pattern '{pattern}' in the second underscore-separated field.")
-        else:
-            return None
-    return matches[0]
+        import warnings
+        warnings.warn(
+            f"Multiple keys found in contact_maps with pattern '{pattern}' in basename: {matches}. Using the last match."
+        )
+        return matches[-1]
+    return matches[-1]
 
 
 def plot_contact_map_entropy(
@@ -2001,7 +2001,7 @@ def plot_contact_map_diff_barplot_grouped(
                 label_parts.append(f"{count_val}")
             if "percent" in text_label_info:
                 percent_val = row["Percent"].values[0]
-                label_parts.append(f"({percent_val:.2f}%)")
+                label_parts.append(f"{percent_val:.2f}%")
             label = "\n".join(label_parts) if label_parts else ""
             
             # Position the annotation at the top of the bar
@@ -2023,6 +2023,7 @@ def plot_contact_map_diff_barplot_grouped(
 
     
     plt.tight_layout()
+    bar_df["superpopulation_clean"] = bar_df["superpopulation"].str.replace("\n"," ")
     
     return {'fig':fig, 'axes':ax, 'data':bar_df}
 
@@ -3692,23 +3693,98 @@ def plot_contact_map_and_zooms(
     main_plot_above=False,
     max_highlights=12,
     highlight_size=100,
-    zoom_nrows = 6,
+    zoom_nrows=6,
     zoom_ncols=None,
-    zoom_subplot_size = 2,
-    main_nrows = 2,
-    main_ncols = 2,
+    zoom_subplot_size=2,
+    main_nrows=2,
+    main_ncols=2,
     linewidth=1,
     pow=1/2,
-    main_padding=0.25,
+    main_padding_v=0.05,  # Vertical padding around main plot (when stacked or in shared grid)
+    main_padding_h=0.05,  # Horizontal padding around main plot (in shared grid layout)
+    zoom_hspace=0.1,  # Vertical spacing between zoom plots and between main plot and zooms
+    zoom_wspace=0.1,  # Horizontal spacing between zoom plots
     save_path=None,
     palette="gnuplot2_r",
     title="AlphaFold Distance Map", 
-    highlight_colors=None,  # NEW: Option to specify colors for highlights
-    zoom_rect_white_outline=False,  # NEW ARG: add white outline to zoomed rectangles
-    zoom_rect_white_outline_width=2,  # NEW ARG: width of white outline
-    zoom_show_ticks=False,  # NEW ARG: show x- and y-tick labels for zoomed plots
-    zoom_tick_density=5,  # NEW ARG: number of ticks to show in zoomed plots
+    highlight_colors=None,
+    color_by_interaction_score=True,
+    white_border=True,
+    white_border_width=2,
+    zoom_rect_white_outline=False,
+    zoom_rect_white_outline_width=3,
+    zoom_show_ticks=False,
+    zoom_tick_density=5,
+    zoom_show_ylabel=True,  # Show y-axis label for zoom plots (only on leftmost if True)
+    zoom_show_xlabel=True,  # Show x-axis label for zoom plots
+    zoom_highlight_marker_scale=1.0,           # NEW: scale factor for size of zoom highlight marker
+    zoom_highlight_linewidth=3,                # NEW: color (non-border) marker linewidth in zoom
+    zoom_highlight_white_linewidth=5,           # NEW: white border linewidth in zoom
+    zoom_effect_label_prefix=r"$E_{\text{WT-Clin}}$"    # NEW: prefix label for interaction strength in zoom plot titles
 ):
+    """
+    Visualize a contact (distance) map with highlighted variant positions and detail zooms.
+
+    This function creates a main contact map plot, overlays highlight rectangles with crosshairs
+    for selected variant pairs, and provides detailed zoomed-in subplots for each highlighted region.
+    It supports flexible coloring, grid arrangements, and customizable annotation.
+
+    Args:
+        contact_maps_wt (dict): Dictionary of contact maps, keyed by haplotype/ref identifier.
+        ridge_df (pd.DataFrame): Dataframe with rows describing highlights, must contain
+            'clinical_position', 'wt_position', 'wt_variant', 'clinical_variant', and
+            'interaction_strength_signed' columns for each variant pair to highlight.
+        main_plot_above (bool|int): If True, main plot appears above zooms; if -1, below. 
+            Otherwise, main plot shares grid with zooms in left/top block.
+        max_highlights (int): Maximum number of highlight regions/zooms to display.
+        highlight_size (int): Size (in pixels) of side of the square region to highlight and zoom in.
+        zoom_nrows (int): Number of rows for zoomed-in subplots.
+        zoom_ncols (int or None): Number of columns for zoom subplots. If None, computed based on max_highlights/zoom_nrows.
+        zoom_subplot_size (int): Width (in inches) of each zoomed-in subplot.
+        main_nrows (int): Rows occupied by the main plot in grid (when sharing grid).
+        main_ncols (int): Columns occupied by the main plot in grid (when sharing grid).
+        linewidth (float): Linewidth for highlight rectangle/crosshair coloring (main plot).
+        pow (float): Power (gamma) for colormap scaling (default: 1/2 for sqrt scaling).
+        main_padding_v (float): Vertical padding around main plot (when stacked or in shared grid).
+        main_padding_h (float): Horizontal padding around main plot (in shared grid layout).
+        zoom_hspace (float): Vertical spacing between zoom plots and between main plot and zooms.
+        zoom_wspace (float): Horizontal spacing between zoom plots.
+        save_path (str or None): If not None, path to which the resulting figure is saved.
+        palette (str or matplotlib colormap): Colormap to use for distance map visualization.
+        title (str): Title for the main plot.
+        highlight_colors (list/str/cmap/callable, optional): Colors for each highlight box/crosshair.
+            If None, uses blue/red by sign of effect or 'lime' by default.
+        color_by_interaction_score (bool): If True, colors highlights by sign of interaction score.
+        white_border (bool): If True, draws a white border and white crosshairs around highlights for contrast.
+        white_border_width (int): Width of the white border for highlights (main plot).
+        zoom_rect_white_outline (bool): If True, draws a white outline around each zoomed-in square in zooms.
+        zoom_rect_white_outline_width (int): Width of the zoomed rectangle outline in zoom subplots.
+        zoom_show_ticks (bool): If True, shows tick labels and coordinates in zoom.
+        zoom_tick_density (int): Number of tick marks (x & y) to show in each zoom.
+        zoom_show_ylabel (bool or list): If bool, applies to all zoom plots. If list, one bool per zoom plot.
+            Shows y-axis label on leftmost zoom plot(s) when True (default: True).
+        zoom_show_xlabel (bool or list): If bool, applies to all zoom plots. If list, one bool per zoom plot.
+            Shows x-axis label on zoom plot(s) when True (default: True).
+        zoom_highlight_marker_scale (float): Relative scale for highlight marker size in zoom subplots (default: 1.0).
+        zoom_highlight_linewidth (float): Line thickness for color highlight marker in zoom (default: 3).
+        zoom_highlight_white_linewidth (float): Line thickness for white outline marker in zoom (default: 5).
+        zoom_effect_label_prefix (str): Prefix label for interaction strength in zoom plot titles (default: "Joint Effect").
+
+    Returns:
+        dict: A dictionary with one entry for the reference haplotype; each entry contains:
+            - 'fig': the matplotlib Figure object
+            - 'axes': the main Axes object (main contact map)
+            - 'data': dict with 'contact_map' (the plotted matrix)
+
+    Example:
+        results = plot_contact_map_and_zooms(
+            contact_maps_wt,
+            ridge_df,
+            max_highlights=9,
+            highlight_size=90,
+            palette='viridis'
+        )
+    """
     import matplotlib.pyplot as plt
     import matplotlib.patches as patches
     import numpy as np
@@ -3721,38 +3797,48 @@ def plot_contact_map_and_zooms(
     
     # Determine highlight colors
     if highlight_colors is None:
-        # Default: all lime
-        highlight_colors = ['lime'] * max_highlights
+        if color_by_interaction_score:
+            # Colors highlights by interaction score sign (blue/red)
+            sorted_ridge_df = ridge_df.iloc[:max_highlights].sort_values('clinical_position')
+            highlight_colors = []
+            for idx, row in sorted_ridge_df.iterrows():
+                interaction_score = row.get('interaction_strength_signed', 0)
+                if interaction_score >= 0:
+                    highlight_colors.append('blue')
+                else:
+                    highlight_colors.append('red')
+            # Padding if fewer than max_highlights (shouldn't happen)
+            while len(highlight_colors) < max_highlights:
+                highlight_colors.append('blue')
+        else:
+            highlight_colors = ['lime'] * max_highlights
     else:
-        # If a colormap or palette is provided, or a list shorter than max_highlights, repeat as needed
+        # Accepts colormap, str, or iterable; pads as needed
         import seaborn as sns
         if callable(highlight_colors):
-            # If a function (e.g., matplotlib colormap), sample it
             cmap = highlight_colors
             highlight_colors = [mpl.colors.to_hex(cmap(i / max_highlights)) for i in range(max_highlights)]
         elif isinstance(highlight_colors, str):
             highlight_colors = [highlight_colors] * max_highlights
         elif hasattr(highlight_colors, "as_hex") and callable(getattr(highlight_colors, "as_hex", None)):
-            # seaborn color palette object (e.g., sns.color_palette())
             palette_colors = highlight_colors.as_hex()
             highlight_colors = list(palette_colors) * (max_highlights // len(palette_colors) + 1)
             highlight_colors = highlight_colors[:max_highlights]
         elif hasattr(highlight_colors, "__iter__") and not isinstance(highlight_colors, dict):
-            # List or tuple of colors (including seaborn palette lists)
             highlight_colors = list(highlight_colors) * (max_highlights // len(highlight_colors) + 1)
             highlight_colors = highlight_colors[:max_highlights]
 
     ref_key = get_ref_key(contact_maps_wt)
 
     def get_gamma_cmap(base_cmap, gamma):
-        """Return a colormap that applies a power-law (gamma) transformation to the input."""
+        """
+        Returns a new colormap that applies a gamma/power correction
+        to the input colormap intensity scale.
+        """
         base = mpl.cm.get_cmap(base_cmap)
-        # Sample the base colormap
         colors = base(np.linspace(0, 1, 256))
-        # Apply gamma correction to the mapping
         x = np.linspace(0, 1, 256)
         x_gamma = x**gamma
-        # Interpolate the original colormap at the gamma-corrected positions
         from scipy.interpolate import interp1d
         new_colors = np.empty_like(colors)
         for i in range(colors.shape[1]):
@@ -3763,108 +3849,168 @@ def plot_contact_map_and_zooms(
 
     gamma_cmap = get_gamma_cmap(palette, pow)
 
-    def plot_contact_map_and_zooms_i(v, hap_id, main_plot_above=main_plot_above, main_padding=0.25):
-        # Set up figure and gridspec
+    def plot_contact_map_and_zooms_i(v, hap_id, main_plot_above=main_plot_above, main_padding_v=0.25, main_padding_h=0.25):
+        """
+        Core subroutine: plots one contact map (v) with highlight rects/crosshairs and zooms.
+        """
+        # Figure/grid setup depending on main_plot_above mode
         if main_plot_above == -1:
-            # Zooms above main plot
+            # Main plot is below zooms
             fig = plt.figure(
                 figsize=(max(6, zoom_subplot_size * zoom_ncols), 6 + zoom_subplot_size * zoom_nrows + 0.5)
             )
-            # Add a padding row (height_ratios: [zoom, zoom, zoom, pad, main])
-            height_ratios = [zoom_subplot_size] * zoom_nrows + [main_padding, 6]
+            height_ratios = [zoom_subplot_size] * zoom_nrows + [main_padding_v, 6]
             gs = fig.add_gridspec(
                 zoom_nrows + 2, zoom_ncols,
                 height_ratios=height_ratios,
-                hspace=0.1
+                hspace=zoom_hspace,
+                wspace=zoom_wspace
             )
-            # Main plot is at the bottom
             ax_main = fig.add_subplot(gs[zoom_nrows + 1, :])
-            # The padding axis (not shown) is gs[zoom_nrows, :]
             zoom_subplot_indices = []
             for i in range(max_highlights):
-                row_idx = i // zoom_ncols  # Zooms start from row 0
+                row_idx = i // zoom_ncols
                 col_idx = i % zoom_ncols
                 if row_idx < zoom_nrows and col_idx < zoom_ncols:
                     zoom_subplot_indices.append((row_idx, col_idx))
         elif main_plot_above:
-            # Add an extra row for padding under the main plot
+            # Main plot above zooms
             fig = plt.figure(
                 figsize=(max(6, zoom_subplot_size * zoom_ncols), 6 + zoom_subplot_size * zoom_nrows + 0.5)
             )
-            # Add a padding row (height_ratios: [main, pad, zoom, zoom, zoom])
-            height_ratios = [6, main_padding] + [zoom_subplot_size] * zoom_nrows
+            height_ratios = [6, main_padding_v] + [zoom_subplot_size] * zoom_nrows
             gs = fig.add_gridspec(
                 zoom_nrows + 2, zoom_ncols,
                 height_ratios=height_ratios,
-                hspace=0.25
+                hspace=zoom_hspace,
+                wspace=zoom_wspace
             )
             ax_main = fig.add_subplot(gs[0, :])
-            # The padding axis (not shown) is gs[1, :]
             zoom_subplot_indices = []
             for i in range(max_highlights):
-                row_idx = (i // zoom_ncols) + 2  # +2 because row 0 is main, row 1 is padding
+                row_idx = (i // zoom_ncols) + 2
                 col_idx = i % zoom_ncols
                 if row_idx <= zoom_nrows + 1 and col_idx < zoom_ncols:
                     zoom_subplot_indices.append((row_idx, col_idx))
         else:
-            # Main plot takes up the 4 subplot positions in the upper left (2x2)
-            # The rest of the subplots are filled with zoomed-in subplots
-            # We'll use a (zoom_nrows, zoom_ncols + 2) grid, with the main plot in (0:2, 0:2)
-            # and zooms in the remaining positions
-
-            # FIX: Make all zoomed-in subplots the same size by using a uniform grid for zooms
-            # Place main plot in (0:main_nrows, 0:main_ncols), zooms in (0:zoom_nrows, main_ncols:main_ncols+zoom_ncols)
-            
-            total_nrows = max(zoom_nrows, main_nrows)
-            total_ncols = main_ncols + zoom_ncols
-            fig = plt.figure(
-                figsize=(main_ncols * 3 + zoom_subplot_size * zoom_ncols, total_nrows * zoom_subplot_size)
-            )
-            # Build width_ratios: main_ncols for main plot, then zoom_ncols for zooms
-            width_ratios = [3] * main_ncols + [zoom_subplot_size] * zoom_ncols
+            # Shared grid; main plot occupies upper left, zooms fill remainder to the right
+            # Zooms should start at the same vertical level as main plot (row 0)
+            # Total rows = max of (main plot rows, zoom rows needed)
+            total_nrows = max(main_nrows, zoom_nrows)
+            # Add a padding column between main plot and zooms if main_padding_h > 0
+            total_ncols = main_ncols + (1 if main_padding_h > 0 else 0) + zoom_ncols
+            # Calculate figure size - main plot should be square-ish, zooms to the right
+            # Use zoom_subplot_size for height calculation to ensure consistent zoom sizes
+            main_plot_width = 6  # Fixed width per column for main plot to prevent squishing
+            fig_width = main_plot_width * main_ncols + (main_padding_h if main_padding_h > 0 else 0) + zoom_subplot_size * zoom_ncols
+            fig_height = zoom_subplot_size * total_nrows
+            fig = plt.figure(figsize=(fig_width, fig_height))
+            if main_padding_h > 0:
+                width_ratios = [main_plot_width] * main_ncols + [main_padding_h] + [zoom_subplot_size] * zoom_ncols
+            else:
+                width_ratios = [main_plot_width] * main_ncols + [zoom_subplot_size] * zoom_ncols
+            # Height ratios: all rows should use zoom_subplot_size for consistent zoom plot sizing
+            # The main plot will span multiple rows but that's fine - it will just be larger
             height_ratios = [zoom_subplot_size] * total_nrows
             gs = fig.add_gridspec(
                 total_nrows, total_ncols,
                 width_ratios=width_ratios,
                 height_ratios=height_ratios,
-                hspace=0.275, wspace=0.25
+                hspace=zoom_hspace,
+                wspace=zoom_wspace
             )
-            # Main plot occupies (0:main_nrows, 0:main_ncols)
             ax_main = fig.add_subplot(gs[0:main_nrows, 0:main_ncols])
-            # Prepare zoom subplot indices: fill left-to-right, top-to-bottom, skipping main plot area
             zoom_subplot_indices = []
             for i in range(max_highlights):
-                # Linear index among zoom subplots
                 zoom_idx = i
-                # Compute row and col in the zoom grid (excluding main plot area)
-                # We fill left-to-right, top-to-bottom, starting at (0, main_ncols)
+                # Zooms start at row 0, same vertical level as main plot
                 row = zoom_idx // zoom_ncols
-                col = zoom_idx % zoom_ncols + main_ncols
+                # Account for padding column if it exists
+                col_offset = main_ncols + (1 if main_padding_h > 0 else 0)
+                col = zoom_idx % zoom_ncols + col_offset
                 if row < total_nrows and col < total_ncols:
                     zoom_subplot_indices.append((row, col))
 
         im = ax_main.imshow(v, cmap=gamma_cmap, origin='upper')
         cbar = fig.colorbar(im, ax=ax_main, fraction=0.046, pad=0.04)
         cbar.set_label("3D Distance (Ångstroms)")
- 
 
-        # Sort by clinical position (lowest to highest) for left-to-right ordering
+        # Normalize zoom_show_xlabel and zoom_show_ylabel to lists if they're single bools
+        # Use separate variable names to avoid UnboundLocalError
+        if isinstance(zoom_show_xlabel, bool):
+            zoom_show_xlabel_list = [zoom_show_xlabel] * max_highlights
+        elif isinstance(zoom_show_xlabel, (list, tuple)):
+            zoom_show_xlabel_list = list(zoom_show_xlabel)
+            if len(zoom_show_xlabel_list) < max_highlights:
+                # Pad with last value if list is shorter than max_highlights
+                last_val = zoom_show_xlabel_list[-1] if zoom_show_xlabel_list else False
+                zoom_show_xlabel_list = zoom_show_xlabel_list + [last_val] * (max_highlights - len(zoom_show_xlabel_list))
+        else:
+            # Fallback: treat as False
+            zoom_show_xlabel_list = [False] * max_highlights
+        
+        if isinstance(zoom_show_ylabel, bool):
+            zoom_show_ylabel_list = [zoom_show_ylabel] * max_highlights
+        elif isinstance(zoom_show_ylabel, (list, tuple)):
+            zoom_show_ylabel_list = list(zoom_show_ylabel)
+            if len(zoom_show_ylabel_list) < max_highlights:
+                # Pad with last value if list is shorter than max_highlights
+                last_val = zoom_show_ylabel_list[-1] if zoom_show_ylabel_list else False
+                zoom_show_ylabel_list = zoom_show_ylabel_list + [last_val] * (max_highlights - len(zoom_show_ylabel_list))
+        else:
+            # Fallback: treat as False
+            zoom_show_ylabel_list = [False] * max_highlights
+
+        # Sort highlights for display order
         sorted_ridge_df = ridge_df.iloc[:max_highlights].sort_values('clinical_position')
         
         for i, (idx, row) in enumerate(sorted_ridge_df.iterrows()):
             x = int(row['clinical_position'])
             y = int(row['wt_position'])
             color = highlight_colors[i] if i < len(highlight_colors) else 'lime'
+
+            # Draw white border for contrast behind highlights (rectangle and crosshairs)
+            if white_border:
+                white_border_rect = patches.Rectangle(
+                    (x - half_size, y - half_size),
+                    highlight_size, highlight_size,
+                    linewidth=white_border_width, edgecolor='white', facecolor='none',
+                    zorder=9
+                )
+                ax_main.add_patch(white_border_rect)
+            # Top highlight rectangle
             rect = patches.Rectangle(
                 (x - half_size, y - half_size),
                 highlight_size, highlight_size,
-                linewidth=linewidth, edgecolor=color, facecolor='none'
+                linewidth=linewidth, edgecolor=color, facecolor='none',
+                zorder=10
             )
             ax_main.add_patch(rect)
-            # Draw crosshairs: horizontal through rectangle, vertical from bottom to rectangle
-            # Horizontal line: extend from far left (beyond plot) to far right (beyond plot)
-            # Draw crosshairs: horizontal and vertical lines that stop at the rectangle's edge (do not extend into the rectangle)
-            # Horizontal line: from left edge to left side of rectangle, and from right side of rectangle to right edge
+
+            # Draw white crosshair lines under colored crosshairs
+            if white_border:
+                crosshair_border_width = 3
+                ax_main.plot(
+                    [-0.5, x - half_size], [y, y],
+                    color='white', linewidth=linewidth + crosshair_border_width, linestyle='-',
+                    zorder=8, clip_on=False
+                )
+                ax_main.plot(
+                    [x + half_size + 1, v.shape[1] - 0.5], [y, y],
+                    color='white', linewidth=linewidth + crosshair_border_width, linestyle='-',
+                    zorder=8, clip_on=False
+                )
+                ax_main.plot(
+                    [x, x], [v.shape[0] - 0.5, y + half_size + 1],
+                    color='white', linewidth=linewidth + crosshair_border_width, linestyle='-',
+                    zorder=8, clip_on=False
+                )
+                ax_main.plot(
+                    [x, x], [y - half_size, -0.5],
+                    color='white', linewidth=linewidth + crosshair_border_width, linestyle='-',
+                    zorder=8, clip_on=False
+                )
+            # Draw colored crosshair lines
             ax_main.plot(
                 [-0.5, x - half_size], [y, y],
                 color=color, linewidth=linewidth, linestyle='-',
@@ -3875,7 +4021,6 @@ def plot_contact_map_and_zooms(
                 color=color, linewidth=linewidth, linestyle='-',
                 zorder=10, clip_on=False
             )
-            # Vertical line: from bottom edge to bottom of rectangle, and from top of rectangle to top edge
             ax_main.plot(
                 [x, x], [v.shape[0] - 0.5, y + half_size + 1],
                 color=color, linewidth=linewidth, linestyle='-',
@@ -3891,27 +4036,20 @@ def plot_contact_map_and_zooms(
             ax_main.spines['left'].set_visible(False)
             ax_main.spines['right'].set_visible(False)
 
-            # Always extract a zoom of the same size, padding with zeros if needed
+            # Extract zoom region and pad if at edge
             x_start = x - half_size
             x_end = x + half_size + 1
             y_start = y - half_size
             y_end = y + half_size + 1
-
-            # Pad the array if the window goes out of bounds
             pad_left = max(0, -x_start)
             pad_right = max(0, x_end - v.shape[1])
             pad_top = max(0, -y_start)
             pad_bottom = max(0, y_end - v.shape[0])
-
-            # Compute the valid region in the original array
             x_start_valid = max(x_start, 0)
             x_end_valid = min(x_end, v.shape[1])
             y_start_valid = max(y_start, 0)
             y_end_valid = min(y_end, v.shape[0])
-
             zoomed = v[y_start_valid:y_end_valid, x_start_valid:x_end_valid]
-
-            # Pad as needed to get to (highlight_size, highlight_size)
             zoomed = np.pad(
                 zoomed,
                 ((pad_top, pad_bottom), (pad_left, pad_right)),
@@ -3919,87 +4057,102 @@ def plot_contact_map_and_zooms(
                 constant_values=0
             )
 
-            # Place zoomed subplot
             if i < len(zoom_subplot_indices):
                 gs_idx = zoom_subplot_indices[i]
                 ax_zoom = fig.add_subplot(gs[gs_idx])
                 ax_zoom.imshow(zoomed, cmap=gamma_cmap, origin='upper')
                 ax_zoom.set_title(
-                    f"{row['wt_variant']} | {row['clinical_variant']}\n(Joint Effect={row['interaction_strength_signed']:.2f})",
+                    f"{row['wt_variant']} | {row['clinical_variant']}\n{zoom_effect_label_prefix}={row['interaction_strength_signed']:.2f}",
                     fontsize=8
                 )
                 center_x = highlight_size // 2
                 center_y = highlight_size // 2
-                ax_zoom.scatter([center_x], [center_y], facecolors='none', edgecolors=color, marker='s', s=200, linewidths=3)
+
+                # Compute size of marker symbol based on highlight size and scaling factor
+                s_base = 200
+                s = s_base * (zoom_highlight_marker_scale ** 2)
+
+                if white_border:
+                    ax_zoom.scatter(
+                        [center_x], [center_y],
+                        facecolors='none', edgecolors='white',
+                        marker='s', s=s,
+                        linewidths=zoom_highlight_white_linewidth,
+                        zorder=10
+                    )
+                ax_zoom.scatter(
+                    [center_x], [center_y],
+                    facecolors='none', edgecolors=color,
+                    marker='s', s=s,
+                    linewidths=zoom_highlight_linewidth,
+                    zorder=11
+                )
                 
-                # Add tick labels if requested
                 if zoom_show_ticks:
-                    # Calculate the actual coordinates in the main plot coordinate system
-                    # The zoomed region spans from (x_start, y_start) to (x_end, y_end) in main coordinates
                     x_start_actual = x - half_size
                     x_end_actual = x + half_size + 1
                     y_start_actual = y - half_size
                     y_end_actual = y + half_size + 1
-                    
-                    # Create tick positions and labels
-                    # For x-axis (clinical variant position)
+
                     x_ticks = np.linspace(0, highlight_size - 1, zoom_tick_density)
                     x_tick_labels = [str(int(x_start_actual + (x_end_actual - x_start_actual) * tick / (highlight_size - 1))) 
                                    for tick in x_ticks]
                     ax_zoom.set_xticks(x_ticks)
                     ax_zoom.set_xticklabels(x_tick_labels, fontsize=6)
-                    
-                    # For y-axis (WT variant position) - note: origin='upper' means y=0 is at top
+
                     y_ticks = np.linspace(0, highlight_size - 1, zoom_tick_density)
                     y_tick_labels = [str(int(y_start_actual + (y_end_actual - y_start_actual) * tick / (highlight_size - 1))) 
                                    for tick in y_ticks]
                     ax_zoom.set_yticks(y_ticks)
                     ax_zoom.set_yticklabels(y_tick_labels, fontsize=6)
-                    # Move y-tick labels closer to the axis
                     ax_zoom.tick_params(axis='y', which='major', pad=1)
-                    
-                    # Add axis labels for zoomed plots
-                    ax_zoom.set_xlabel("Clinical Variant Position", fontsize=6)
-                    # Only add y-axis label for the leftmost zoom
-                    # If gs_idx is a tuple (e.g., for multi-dimensional gridspec), use its first element for the column index
-                    col_idx = gs_idx[1] if isinstance(gs_idx, tuple) and len(gs_idx) > 1 else (gs_idx % zoom_ncols)
-                    if col_idx == 0:
+                    # Use per-plot setting for xlabel
+                    if zoom_show_xlabel_list[i]:
+                        ax_zoom.set_xlabel("Clinical Variant Position", fontsize=6)
+                    # Calculate relative column index within zoom grid (not absolute grid column)
+                    if isinstance(gs_idx, tuple) and len(gs_idx) > 1:
+                        # gs_idx is (row, col) where col is absolute column in full grid
+                        # Need to subtract the column offset to get relative position in zoom grid
+                        col_offset = main_ncols + (1 if main_padding_h > 0 else 0)
+                        col_idx = gs_idx[1] - col_offset
+                    else:
+                        col_idx = gs_idx % zoom_ncols
+                    # Use per-plot setting for ylabel (only show on leftmost column)
+                    if zoom_show_ylabel_list[i] and col_idx == 0:
                         ax_zoom.set_ylabel("WT Variant Position", fontsize=6)
                 else:
                     ax_zoom.set_xticks([])
                     ax_zoom.set_yticks([])
 
-                # Add a white outline rectangle around the edge if requested
-                if zoom_rect_white_outline:
+                # Outline zoomed region in white, if requested
+                if white_border or zoom_rect_white_outline:
+                    if white_border:
+                        outline_width = 4
+                    else:
+                        outline_width = zoom_rect_white_outline_width
                     outline_rect = patches.Rectangle(
                         (0, 0),
                         highlight_size, highlight_size,
-                        linewidth=zoom_rect_white_outline_width,
+                        linewidth=outline_width,
                         edgecolor='white',
                         facecolor='none',
                         zorder=11
                     )
                     ax_zoom.add_patch(outline_rect)
 
-        ax_main.set_title(f"{title}") 
+        ax_main.set_title(f"{title}")
         ax_main.set_xlabel("Clinical Variant Position")
         ax_main.set_ylabel("WT Variant Position")
 
-        # Prevent x-axis and y-axis tick labels from going beyond the max coordinates of the original data
-        # Set the limits to the shape of the data
+        # Restrict axis limits/ticks to valid region in contact map
         ax_main.set_xlim(-0.5, v.shape[1] - 0.5)
         ax_main.set_ylim(v.shape[0] - 0.5, -0.5)
-
-        # Set x and y ticks to be within the data range
-        # Only show ticks that are within the data shape
-        xticks = ax_main.get_xticks()
-        yticks = ax_main.get_yticks()
-        xticks = [tick for tick in xticks if 0 <= tick < v.shape[1]]
-        yticks = [tick for tick in yticks if 0 <= tick < v.shape[0]]
+        xticks = [tick for tick in ax_main.get_xticks() if 0 <= tick < v.shape[1]]
+        yticks = [tick for tick in ax_main.get_yticks() if 0 <= tick < v.shape[0]]
         ax_main.set_xticks(xticks)
         ax_main.set_yticks(yticks)
 
-        # Hide the padding axis if main_plot_above
+        # Hide unwanted axes in padding zone if using stack layouts
         if main_plot_above == -1:
             for col in range(zoom_ncols):
                 ax_pad = fig.add_subplot(gs[zoom_nrows, col])
@@ -4008,27 +4161,31 @@ def plot_contact_map_and_zooms(
             for col in range(zoom_ncols):
                 ax_pad = fig.add_subplot(gs[1, col])
                 ax_pad.axis('off')
+        else:
+            # Hide padding column in shared grid layout (no padding row in side-by-side layout)
+            if main_padding_h > 0:
+                for row in range(total_nrows):
+                    ax_pad = fig.add_subplot(gs[row, main_ncols])
+                    ax_pad.axis('off')
 
         plt.tight_layout()
         if save_path is not None:
             plt.savefig(save_path, **utils.FIG_SAVE_KWARGS)
         plt.show()
-        return {'fig':fig, 'axes':ax_main, 'data':{'contact_map':v}}
+        return {'fig': fig, 'axes': ax_main, 'data': {'contact_map': v}}
 
     results = {}
     for k, v in contact_maps_wt.items():
         if k == ref_key:
             hap_id = get_haplotype_ids(k)[0]
-            results[k] = plot_contact_map_and_zooms_i(v, hap_id, main_plot_above=main_plot_above, main_padding=main_padding)
+            results[k] = plot_contact_map_and_zooms_i(
+                v, hap_id,
+                main_plot_above=main_plot_above,
+                main_padding_v=main_padding_v,
+                main_padding_h=main_padding_h
+            )
 
     return results
-
-import matplotlib.pyplot as plt
-import numpy as np
-from sklearn.linear_model import LinearRegression
-from sklearn.metrics import r2_score
-from sklearn.preprocessing import FunctionTransformer
-from sklearn.pipeline import make_pipeline
 
 def test_pae_variance_correlation(
     pae_matrix, 
@@ -4243,3 +4400,88 @@ def test_pae_variance_correlation(
             return {"fig": fig, 'axes': ax, 'data':{'pae_matrix': pae_matrix, 'variance_map': variance_map}}
     else:
         print("Cannot test correlation: pae_matrix or variance_map not available")
+
+def analyze_target_group_contact_loss(
+    barplot_df,
+    target_group="EAS",
+    percent_col="Percent",
+    group_col="superpopulation",
+    type_col="Type",
+    lost_type_value="Lost",
+    verbose=True
+):
+    """
+    Analyze contact loss percent for a specified target group vs others,
+    with outlier detection via z-score.
+    """
+    # Select the percent of contacts lost for the target group and for all others
+    target_mask = (
+        barplot_df[group_col].str.contains(target_group, case=False, na=False)
+        & (barplot_df[type_col] == lost_type_value)
+    )
+    other_mask = (
+        ~barplot_df[group_col].str.contains(target_group, case=False, na=False)
+        & (barplot_df[type_col] == lost_type_value)
+    )
+
+    target_lost = barplot_df[target_mask][percent_col].values
+    other_lost = barplot_df[other_mask][percent_col].values
+
+    target_val = float(target_lost[0]) if len(target_lost) > 0 else np.nan
+    other_mean = np.mean(other_lost) if len(other_lost) > 0 else np.nan
+    fold_change = target_val / other_mean if other_mean != 0 else np.nan
+
+    if verbose:
+        print(f"{target_group} lost contact %: {target_val:.8f}")
+        print(f"Other populations lost contact % (mean): {other_mean:.8f}")
+        print(f"Fold-change ({target_group}/others): {fold_change:.2f}")
+
+    # Outlier detection (treat target group as a single value)
+    if len(other_lost) > 1 and not np.isnan(target_val):
+        mu = np.mean(other_lost)
+        sigma = np.std(other_lost, ddof=1)
+        if sigma == 0:
+            zscore = 0
+            pval = 1.0
+        else:
+            zscore = abs(target_val - mu) / sigma
+            # p-value for a two-sided Gaussian (assuming normality)
+            pval = 2 * stats.norm.sf(zscore)
+
+        # If pval is exactly 0, set to sys.float_info.min for reporting.
+        pval_to_report = pval if pval != 0 else sys.float_info.min
+        p_print = f"{pval_to_report:.2e}" if pval_to_report < 1e-6 else f"{pval_to_report:.6f}"
+
+        if verbose:
+            print(f"{target_group} z-score (relative to others): {zscore:.2f}")
+            print(f"Outlier p-value (two-sided, normal): {p_print}")
+
+            # Interpret outlier status (using alpha=0.05)
+            if pval_to_report < 0.05:
+                print(f"{target_group} lost contact % is a statistical outlier compared to the other superpopulations (p < 0.05).")
+            else:
+                print(f"{target_group} lost contact % is not a statistical outlier compared to the other superpopulations (p >= 0.05).")
+    else:
+        if verbose:
+            print("Not enough comparison groups to perform outlier test or value is missing.")
+
+    if verbose:
+        if np.isnan(fold_change):
+            print("Unable to compute fold-change due to missing data.")
+        else:
+            if fold_change > 1.2:
+                print(f"{target_group} superpopulation has a higher percent of lost contacts compared to the mean of other superpopulations.")
+            elif fold_change < 0.8:
+                print(f"{target_group} superpopulation has a lower percent of lost contacts compared to the mean of other superpopulations.")
+            else:
+                print(f"{target_group} superpopulation is similar to other superpopulations in percent of lost contacts.")
+       
+
+    # Optionally, return results for further use
+    return {
+        "target_val": target_val,
+        "other_mean": other_mean,
+        "fold_change": fold_change,
+        "zscore": zscore if len(other_lost) > 1 and not np.isnan(target_val) else np.nan,
+        "pval": pval if len(other_lost) > 1 and not np.isnan(target_val) else np.nan
+    }

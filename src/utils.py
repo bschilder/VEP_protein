@@ -1865,14 +1865,18 @@ FIG_SAVE_KWARGS = {
     "pad_inches":0.1, 
     "facecolor":"None", 
 }
-
+ 
 
 def rasterize_figure(fig, types=["PathCollection", "Line2D", "Rectangle"]):
     """
     Rasterize all PathCollection (scatter), Line2D (lines), etc. at high resolution
     """
     axes = None
-    if "axes" in fig:
+    
+    # Handle case where fig is a matplotlib Axes object directly
+    if hasattr(fig, 'get_children'):
+        axes = [fig]
+    elif "axes" in fig:
         axes = fig["axes"].values()
     elif "ax" in fig:
         # Single axis
@@ -1905,3 +1909,56 @@ def rasterize_figure(fig, types=["PathCollection", "Line2D", "Rectangle"]):
                 if artist.__class__.__name__ == "Rectangle" and artist.get_label() == "" and artist.__class__.__name__ in types:
                     artist.set_rasterized(True)
             # Do NOT rasterize text
+
+    return fig
+
+def standardize_variant(variant):
+    """
+    Standardize a variant string to a canonical format.
+
+    This function converts common variant representations into a standard format.
+    Specifically, it recognizes and transforms:
+
+    1. Protein variant with NP (RefSeq) ID:
+       'NP_009225.1:A102G' => 'NP_009225.1:102A>G'
+
+    2. Simple protein variant:
+       'S1722F' => '1722S>F'
+
+    If the input variant does not match any recognized patterns, it is returned unchanged.
+
+    Parameters
+    ----------
+    variant : str
+        Variant string to standardize.
+
+    Returns
+    -------
+    str
+        Canonicalized variant string.
+
+    Examples
+    --------
+    >>> standardize_variant("NP_009225.1:A102G")
+    'NP_009225.1:102A>G'
+    >>> standardize_variant("S1722F")
+    '1722S>F'
+    >>> standardize_variant("ENST000002:10A>G")  # Not matched, returned as is
+    'ENST000002:10A>G'
+    """
+    import re
+    s = str(variant)
+
+    # Handle format: NP_009225.1:A102G -> NP_009225.1:102A>G (include NP ID)
+    m = re.match(r"^([^:]+):([A-Z])(\d+)([A-Z])$", s)
+    if m:
+        np_id, ref, pos, alt = m.groups()
+        return f"{np_id}:{pos}{ref}>{alt}"
+
+    # Handle format: S1722F -> 1722S>F
+    m = re.match(r"^([A-Z])(\d+)([A-Z])$", s)
+    if m:
+        ref, pos, alt = m.groups()
+        return f"{pos}{ref}>{alt}"
+
+    return variant

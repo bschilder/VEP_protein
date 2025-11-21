@@ -1,5 +1,7 @@
 import numpy as np
 import matplotlib.pyplot as plt
+import matplotlib as mpl
+import matplotlib.ticker as mticker
 import seaborn as sns
 from tqdm import tqdm
 import pandas as pd
@@ -659,11 +661,6 @@ def get_overlapping_variants(vep_df, plot=True):
     else:
         print("\nInsufficient data to analyze haplotype-specific VEP overlaps.")
 
-import matplotlib.pyplot as plt
-import seaborn as sns
-import numpy as np
-import matplotlib as mpl
-import matplotlib.ticker as mticker
 
 def plot_vep_histograms_with_boundaries(
     vep_df,
@@ -678,15 +675,31 @@ def plot_vep_histograms_with_boundaries(
     facet_col=None,
     title="VEP Distributions with Decision Boundaries",
     x_label="VEP",
-    y1_label="Haplotype Count",
+    y1_label="Haplotypes",
     y2_label="Density",
-    x_offset = 0.1,
+    x_offset = 0.01,
     y_offset_factor = 0.725,
     sharex=True,
     sharey=False,
     flip_xaxis=False,
-     palette=["blue", "red"],
-    show=True
+    palette=["blue", "red"],
+    show=True,
+    show_superpops=False,
+    superpop_height_ratio=0.2,
+    superpop_binwidth=None,
+    superpop_bins=None,
+    superpop_default_bins=30,
+    show_superpop_legend=True,
+    superpop_legend_x=0.5,
+    superpop_legend_y=-0.05,
+    superpop_legend_row=1,
+    format_variant_p_notation=False,
+    show_superpop_legend_title=False,
+    superpop_legend_border=False,
+    superpop_legend_border_padding=(0.04, 0.015, 0.015, 0.015),
+    facet_row_spacing=0.4,
+    show_twinx_labels=True,
+    facet_title_x=0.5
 ):
     """
     Plot histograms of VEP scores for selected sites, coloring bars by distance from decision boundary,
@@ -710,14 +723,88 @@ def plot_vep_histograms_with_boundaries(
         Aspect ratio of each facet.
     col_wrap : int
         Number of columns in the facet grid.
+    facet_row_spacing : float, default=0.4
+        Vertical spacing (padding) between facet rows, as a fraction of the
+        average subplot height. Higher values create more space between rows.
+        This controls the `hspace` parameter in `plt.subplots_adjust()`.
     show : bool
         Whether to call plt.show() at the end.
     flip_xaxis : bool
         Whether to flip the x-axis.
+    show_superpops : bool, default=False
+        If True, add a thin row of stacked barplots (colored by superpopulation) 
+        underneath each corresponding density/histogram plot.
+    superpop_height_ratio : float, default=0.15
+        Height of superpopulation subplots relative to main plot height.
+        A value of 0.15 means superpop bars are 15% of the main plot height.
+    superpop_binwidth : float or None, default=None
+        Bin width for superpopulation histograms. If None, automatically calculates
+        based on the main plot bins (using wider bins for cleaner stacked bars).
+        If specified, uses this exact bin width. Ignored if superpop_bins is specified.
+    superpop_bins : int or None, default=None
+        Number of bins for superpopulation histograms. If specified, calculates
+        binwidth from the maximum VEP range across all facets to ensure visual
+        consistency. Takes precedence over superpop_binwidth.
+        If None, uses superpop_binwidth or automatic calculation based on
+        superpop_default_bins.
+    superpop_default_bins : int, default=30
+        Default number of bins to use for superpopulation stacked histograms
+        when neither superpop_bins nor superpop_binwidth is specified.
+        Binwidth will be calculated per-facet based on each facet's VEP range.
+        Only used when show_superpops=True and both superpop_bins and
+        superpop_binwidth are None.
+    show_superpop_legend : bool, default=True
+        Whether to show the superpopulation legend. Only used when show_superpops=True.
+    superpop_legend_x : float, default=0.5
+        X position for the superpopulation legend (bbox_to_anchor x-coordinate).
+        Value of 0.5 centers the legend horizontally. Values > 1.0 place the legend
+        outside the plot boundaries to the right.
+    superpop_legend_y : float or None, default=-0.05
+        Y position for the superpopulation legend (bbox_to_anchor y-coordinate).
+        Value between 0 and 1 places it within the figure, where 1.0 is the top edge.
+        Negative values (e.g., -0.05) place it below the plot boundaries.
+        If None, defaults to -0.05 (below the plot).
+    superpop_legend_row : int or None, default=None
+        Number of rows for the superpopulation legend layout.
+        If None, automatically determines:
+        - Single row if ≤4 superpopulations
+        - Two rows if >4 superpopulations
+    format_variant_p_notation : bool, default=False
+        If True, reformat the clinical variant in facet title from format like "C121F"
+        to protein notation format like "p.F>121C" (p.alt>positionref).
+        Only applies when facet_col is None (default facet label generation).
+    show_superpop_legend_title : bool, default=True
+        Whether to show the "Superpopulation" title above the legend.
+        Only used when show_superpop_legend=True.
+    superpop_legend_border : bool, default=False
+        Whether to draw a border around the entire legend frame.
+        Only used when show_superpop_legend=True.
+    superpop_legend_border_padding : tuple, default=(0.04, 0.015, 0.015, 0.015)
+        Padding within the legend border as (top, right, bottom, left) in figure coordinates.
+        Only used when superpop_legend_border=True and show_superpop_legend=True.
+        Default provides extra padding at top (0.04) to accommodate labels above patches
+        in single-row layout, and equal padding (0.015) on other sides.
+    show_twinx_labels : bool, default=True
+        Whether to show the y-axis labels and tick labels on the twinx axis (KDE density axis).
+        If False, the twinx axis will still be created for the KDE plot, but labels and ticks
+        will be hidden.
+    x_offset : float, default=0.01
+        Horizontal offset for vertical line labels, as a fraction of the x-axis range.
+        For example, 0.1 means the label will be offset by 10% of the x-axis range to the right
+        (or left if flip_xaxis=True). This ensures consistent visual spacing across subplots
+        with different x-axis scales.
+    y_offset_factor : float, default=0.725
+        Vertical position factor for labels. Labels are placed at ymax * y_offset_factor,
+        where ymax is the maximum y-axis value.
+    facet_title_x : float, default=0.5
+        X-position of facet subplot titles in axes coordinates (0-1). 
+        Value of 0.5 centers the title horizontally. Values < 0.5 move the title left,
+        values > 0.5 move it right.
     Returns
     -------
-    g : sns.FacetGrid
-        The FacetGrid object.
+    dict
+        Dictionary with keys 'fig', 'axes', and 'data' containing the figure,
+        axes (including superpop axes if show_superpops=True), and the plot DataFrame.
     """
  
     if target_sites is not None:
@@ -731,15 +818,36 @@ def plot_vep_histograms_with_boundaries(
     if facet_col is not None:
         plot_df["facet_label"] = plot_df[facet_col]
     else:
+        # Format variant if requested
+        if format_variant_p_notation: 
+            
+            formatted_variant = plot_df[mutant_col].apply(utils.standardize_variant)
+        else:
+            formatted_variant = plot_df[mutant_col]
+        
         plot_df["facet_label"] = (
-        "Gene: " + plot_df["GENEINFO"].str.split(":").str[0]
-        + " Clinical Variant: " + plot_df[mutant_col]
-        + " (Haplotypes: " + plot_df["n_haplotypes"].astype(str) + ")")
+            "Gene: " + plot_df["GENEINFO"].str.split(":").str[0]
+            + ", Variant: " + formatted_variant
+            + " (Haplotypes: " + plot_df["n_haplotypes"].astype(str) + ")")
 
 
     if flip_xaxis:
         x_offset = -x_offset
 
+    # Add superpopulation column if show_superpops is True
+    if show_superpops:
+        # Check if superpopulation column exists, if not try to extract from top_superpopulation
+        if "superpopulation" not in plot_df.columns:
+            if "top_superpopulation" in plot_df.columns:
+                plot_df["superpopulation"] = plot_df["top_superpopulation"].str.split(":").str[-1]
+            else:
+                # Try to add haplotype frequencies which should include top_superpopulation
+                print("Adding haplotype frequencies to extract superpopulation data...")
+                plot_df = hs.add_haplotype_freqs(plot_df)
+                if "top_superpopulation" in plot_df.columns:
+                    plot_df["superpopulation"] = plot_df["top_superpopulation"].str.split(":").str[-1]
+                else:
+                    raise ValueError("Could not extract superpopulation data. Ensure 'top_superpopulation' column exists or can be added via hs.add_haplotype_freqs()")
 
     if boundary_crossing_df is not None:
         # Merge with boundary_crossing_df, but also get decision boundaries for all proteins
@@ -799,10 +907,18 @@ def plot_vep_histograms_with_boundaries(
         ax.set_ylabel(y1_label)
         ax.set_xlabel(x_label)
 
-        # Set y-axis ticks to discrete integers only
+        # Set y-axis ticks to discrete integers only, ensuring 0 is NOT included in labels
         max_count = counts.max() if len(counts) > 0 else 0
         ax.set_ylim(bottom=0, top=max(1, max_count + 0.5))
-        ax.yaxis.set_major_locator(mticker.MaxNLocator(integer=True, prune=None, nbins='auto', steps=[1,2,5,10]))
+        # Use MaxNLocator
+        locator = mticker.MaxNLocator(integer=True, prune=None, nbins='auto', steps=[1,2,5,10])
+        # Get tick values
+        ticks = locator.tick_values(0, max(1, max_count + 0.5))
+        # Filter to only include ticks > 0 (exclude 0 from labels but keep y-axis starting at 0)
+        ticks = ticks[ticks > 0]
+        # Sort and remove duplicates
+        ticks = np.unique(np.sort(ticks))
+        ax.set_yticks(ticks)
 
         # Add KDE on top, but scale it to match the histogram counts
         if len(values) > 1:
@@ -817,8 +933,12 @@ def plot_vep_histograms_with_boundaries(
                 edgecolor=None,
                 common_norm=False,
             )
-            ax2.set_ylabel(y2_label, color="gray")
-            ax2.tick_params(axis='y', labelcolor='gray')
+            if show_twinx_labels:
+                ax2.set_ylabel(y2_label, color="gray")
+                ax2.tick_params(axis='y', labelcolor='gray')
+            else:
+                ax2.set_ylabel("")
+                ax2.tick_params(axis='y', left=False, right=False, labelleft=False, labelright=False)
             ax2.set_ylim(bottom=0)
             for line in ax2.get_lines():
                 if line.get_color() == "gray":
@@ -847,6 +967,13 @@ def plot_vep_histograms_with_boundaries(
         dy_frac = label_yspacing if label_yspacing is not None else 0.15
         delta_y = ymax * dy_frac  # Stagger distance down from the top
 
+        # Calculate relative x_offset based on x-axis range to ensure consistent visual spacing
+        # across subplots with different x-axis scales
+        # x_offset is interpreted as a fraction of the x-axis range (e.g., 0.1 = 10% of range)
+        xlim = ax.get_xlim()
+        x_range = xlim[1] - xlim[0]
+        relative_x_offset = x_offset * x_range if x_range > 0 else 0
+
         halign = "left"
         valign = "center"
         xlabels = []
@@ -865,7 +992,7 @@ def plot_vep_histograms_with_boundaries(
             ax.axvline(xpos, color=color, linestyle="--", label=label)
             y_text = ymax - delta_y * i
             ax.text(
-                xpos + x_offset, y_text, label, color=color, rotation=0,
+                xpos + relative_x_offset, y_text, label, color=color, rotation=0,
                 va=valign, ha=halign, fontsize="medium",
                 bbox=dict(facecolor="white", alpha=.95, edgecolor=color, boxstyle="round,pad=0.1")
             )
@@ -887,6 +1014,13 @@ def plot_vep_histograms_with_boundaries(
     g.map_dataframe(add_vep_ref_and_mean_lines)
     g.set_titles(col_template="{col_name}")
 
+    # Adjust facet title x-positions
+    for ax in g.axes.flatten():
+        if ax.title.get_text():  # Only adjust if title exists
+            # Get current title position (y-coordinate) and set new x-position
+            current_y = ax.title.get_position()[1]
+            ax.title.set_position((facet_title_x, current_y))
+
     # Fix for x-axis inversion not working in some cases
     for ax in g.axes.flatten():
         ax.spines['top'].set_visible(False)
@@ -907,9 +1041,451 @@ def plot_vep_histograms_with_boundaries(
         # Adjust layout to make room for suptitle
         plt.subplots_adjust(top=0.88)
     
+    # Adjust bottom margin early if legend will be below the plot
+    # This needs to happen BEFORE tight_layout so superpop axes are positioned correctly
+    if show_superpops and show_superpop_legend:
+        if superpop_legend_y is None or superpop_legend_y < 0:
+            # Legend will be below - make room for it early
+            current_bottom = g.fig.subplotpars.bottom
+            legend_space = 0.1  # ~10% of figure height for legend
+            new_bottom = max(0.05, current_bottom - legend_space)
+            plt.subplots_adjust(bottom=new_bottom)
+    
+    # Do initial tight_layout to establish main axes positions
     plt.tight_layout()
+    # Add padding between facet rows
+    plt.subplots_adjust(hspace=facet_row_spacing)
+    
+    # Add superpopulation stacked barplots below each facet if requested
+    superpop_axes = []
+    # Get the figure and existing axes (needed in both branches)
+    fig = g.figure
+    main_axes = g.axes.flatten()
+    
+    if show_superpops:
+        # Get superpopulation palette
+        superpop_palette = utils.get_superpop_palette()
+        
+        # Create a mapping from facet_label to data
+        facet_labels = plot_df["facet_label"].unique()
+        
+        # Pre-calculate a standardized binwidth for visual consistency across facets
+        # This ensures bins appear the same width visually regardless of x-axis range
+        standardized_binwidth = None
+        if superpop_bins is not None:
+            # Calculate binwidth based on the maximum range across ALL facets
+            # This ensures visual consistency - all facets use the same absolute binwidth
+            all_vep_ranges = []
+            for facet_label in facet_labels:
+                facet_data = plot_df[plot_df["facet_label"] == facet_label]
+                facet_data_filtered = facet_data.loc[
+                    (facet_data["superpopulation"] != "REF") & 
+                    (facet_data["superpopulation"].notna())
+                ]
+                if len(facet_data_filtered) > 0:
+                    vep_min = facet_data_filtered["VEP"].min()
+                    vep_max = facet_data_filtered["VEP"].max()
+                    if vep_max > vep_min:
+                        all_vep_ranges.append(vep_max - vep_min)
+            
+            if all_vep_ranges:
+                max_range = max(all_vep_ranges)
+                standardized_binwidth = max_range / superpop_bins
+            else:
+                standardized_binwidth = 0.1  # Fallback
+        elif superpop_binwidth is not None:
+            # Use user-specified fixed binwidth (same for all facets)
+            standardized_binwidth = superpop_binwidth
+        
+        # Store original positions and calculate new layout
+        # We'll create superpop axes below each main axis using the specified height ratio
+        
+        # For each main axis, create a corresponding superpop axis below it
+        for idx, main_ax in enumerate(main_axes):
+            if idx >= len(facet_labels):
+                break
+                
+            facet_label = facet_labels[idx]
+            facet_data = plot_df[plot_df["facet_label"] == facet_label]
+            
+            # Get position of main axis (after tight_layout)
+            pos = main_ax.get_position()
+            
+            # Create new axis below the main one
+            # Calculate new position: same left, right, but lower and thinner
+            new_bottom = pos.y0 - pos.height * superpop_height_ratio
+            new_height = pos.height * superpop_height_ratio * 0.8  # Slightly smaller to avoid overlap (80% of ratio)
+            
+            superpop_ax = fig.add_axes([pos.x0, new_bottom, pos.width, new_height])
+            superpop_axes.append(superpop_ax)
+            
+            # Filter out REF if present
+            facet_data_filtered = facet_data.loc[
+                (facet_data["superpopulation"] != "REF") & 
+                (facet_data["superpopulation"].notna())
+            ].copy()
+            
+            # Calculate binwidth for this specific facet
+            if len(facet_data_filtered) > 0:
+                # Get VEP range for this facet
+                vep_min_facet = facet_data_filtered["VEP"].min()
+                vep_max_facet = facet_data_filtered["VEP"].max()
+                
+                if standardized_binwidth is not None:
+                    # Use the standardized binwidth calculated above (ensures visual consistency)
+                    binwidth_superpop = standardized_binwidth
+                else:
+                    # Calculate binwidth per-facet based on this facet's range
+                    # This ensures appropriate binning for each facet's data distribution
+                    if vep_max_facet > vep_min_facet:
+                        binwidth_superpop = (vep_max_facet - vep_min_facet) / superpop_default_bins
+                    else:
+                        binwidth_superpop = 0.1
+                
+                # Plot stacked histogram by superpopulation
+                sns.histplot(
+                    facet_data_filtered,
+                    x="VEP",
+                    hue="superpopulation",
+                    palette=superpop_palette,
+                    multiple="fill",
+                    binwidth=binwidth_superpop,
+                    legend=False,
+                    ax=superpop_ax
+                )
+                
+                # Style the superpop axis
+                # Get font size from main axis labels and tick labels to match them
+                main_ylabel = main_ax.get_ylabel()
+                main_xlabel = main_ax.get_xlabel()
+                # Get font size from main axis y-label
+                main_ylabel_obj = main_ax.yaxis.label
+                if main_ylabel_obj:
+                    main_label_fontsize = main_ylabel_obj.get_fontsize()
+                else:
+                    main_label_fontsize = 10  # Default fallback
+                
+                main_ytick_labels = main_ax.get_yticklabels()
+                if len(main_ytick_labels) > 0:
+                    main_tick_fontsize = main_ytick_labels[0].get_fontsize()
+                else:
+                    main_tick_fontsize = 10  # Default fallback
+                
+                superpop_ax.set_ylabel("Prop.", fontsize=main_label_fontsize)
+                superpop_ax.set_xlabel("")
+                superpop_ax.tick_params(labelsize=main_tick_fontsize)
+                # Set y-axis to only show tick label at 0.5
+                superpop_ax.set_yticks([0.5])
+                superpop_ax.spines['top'].set_visible(False)
+                superpop_ax.spines['right'].set_visible(False)
+                
+                # Set x-axis limits to match main axis
+                superpop_ax.set_xlim(main_ax.get_xlim())
+                
+                # Remove x-axis tick labels except for the bottom row
+                # We'll handle this after all axes are created
+                if flip_xaxis:
+                    xlim = superpop_ax.get_xlim()
+                    if xlim[0] < xlim[1]:
+                        superpop_ax.set_xlim(xlim[1], xlim[0])
+            else:
+                # No data to plot, just style the empty axis
+                # Get font size from main axis labels and tick labels to match them
+                main_ylabel_obj = main_ax.yaxis.label
+                if main_ylabel_obj:
+                    main_label_fontsize = main_ylabel_obj.get_fontsize()
+                else:
+                    main_label_fontsize = 10  # Default fallback
+                
+                main_ytick_labels = main_ax.get_yticklabels()
+                if len(main_ytick_labels) > 0:
+                    main_tick_fontsize = main_ytick_labels[0].get_fontsize()
+                else:
+                    main_tick_fontsize = 10  # Default fallback
+                
+                superpop_ax.set_ylabel("Prop.", fontsize=main_label_fontsize)
+                superpop_ax.set_xlabel("")
+                superpop_ax.tick_params(labelsize=main_tick_fontsize)
+                # Set y-axis to only show tick label at 0.5
+                superpop_ax.set_yticks([0.5])
+                superpop_ax.spines['top'].set_visible(False)
+                superpop_ax.spines['right'].set_visible(False)
+                superpop_ax.set_xlim(main_ax.get_xlim())
+        
+        # Since each facet has different scales (sharex=False), show x-axis tick labels on ALL facets
+        # But only show axis titles on the bottom row
+        # Calculate which superpop axes are in the bottom row
+        n_main = len(main_axes)
+        n_rows = (n_main + col_wrap - 1) // col_wrap  # Ceiling division
+        bottom_row_start = (n_rows - 1) * col_wrap
+        
+        # Get font size from main axis x-label to match it
+        main_axes_xlabel_obj = main_axes[0].xaxis.label if len(main_axes) > 0 else None
+        if main_axes_xlabel_obj:
+            main_xlabel_fontsize = main_axes_xlabel_obj.get_fontsize()
+        else:
+            main_xlabel_fontsize = 10  # Default fallback
+        
+        for idx, superpop_ax in enumerate(superpop_axes):
+            if idx >= bottom_row_start:
+                # Bottom row - show axis title with same font size as main axes
+                superpop_ax.set_xlabel(x_label, fontsize=main_xlabel_fontsize)
+            else:
+                # Not bottom row - no axis title, but tick labels will be visible
+                superpop_ax.set_xlabel("")
+        
+        # Remove x-axis labels and tick labels from main axes (since superpop axes will have tick labels)
+        for main_ax in main_axes:
+            main_ax.set_xlabel("")
+            main_ax.tick_params(labelbottom=False)  # Hide x-tick labels
+            # Also hide x-tick labels on any twin axes (e.g., KDE plot axes)
+            for twin_ax in main_ax.figure.axes:
+                if twin_ax is not main_ax:
+                    if twin_ax.get_position().bounds == main_ax.get_position().bounds:
+                        twin_ax.tick_params(labelbottom=False)  # Hide x-tick labels on twin axes
+        
+        # Add a single legend for superpopulations in the upper right
+        if show_superpop_legend:
+            # Get all unique superpopulations from the data (excluding REF)
+            all_superpops = plot_df.loc[
+                (plot_df["superpopulation"] != "REF") & 
+                (plot_df["superpopulation"].notna())
+            ]["superpopulation"].unique()
+            
+            if len(all_superpops) > 0:
+                # Sort superpops for consistent legend order
+                all_superpops = sorted(all_superpops)
+                
+                # Create legend handles with border lines around each rectangle
+                handles = [plt.Rectangle((0, 0), 1, 1, 
+                                         facecolor=superpop_palette.get(sp, "gray"),
+                                         edgecolor='black',
+                                         linewidth=0.5) 
+                          for sp in all_superpops]
+                labels = all_superpops
+                
+                # Determine number of columns for legend layout based on rows
+                if superpop_legend_row is not None:
+                    # Calculate columns from rows: ncol = ceil(n_items / n_rows)
+                    ncol = (len(labels) + superpop_legend_row - 1) // superpop_legend_row
+                    is_single_row = (superpop_legend_row == 1)
+                else:
+                    # Auto-determine: single row if ≤4 superpops, two rows if >4
+                    # For single row: ncol = n_items
+                    # For two rows: ncol = ceil(n_items / 2)
+                    if len(labels) <= 4:
+                        ncol = len(labels)  # Single row
+                        is_single_row = True
+                    else:
+                        ncol = (len(labels) + 1) // 2  # Two rows
+                        is_single_row = False
+                
+                # Determine legend y-position
+                if superpop_legend_y is not None:
+                    legend_y = superpop_legend_y
+                else:
+                    # Default: position below the plot (negative y is below figure)
+                    legend_y = -0.05
+                
+                # Adjust legend parameters for single-row layout
+                if is_single_row:
+                    # Reduce horizontal spacing between items
+                    columnspacing = 0.5  # Reduced from default ~1.0
+                    # Use empty labels initially, we'll add text above
+                    legend_labels = [''] * len(labels)
+                else:
+                    columnspacing = 1.0  # Default spacing
+                    legend_labels = labels
+                
+                # Add legend to figure at bottom center
+                # Use 'upper center' loc to center the legend horizontally
+                legend_kwargs = {
+                    'handles': handles,
+                    'labels': legend_labels,
+                    'loc': 'upper center',
+                    'bbox_to_anchor': (superpop_legend_x, legend_y),
+                    'ncol': ncol,
+                    'columnspacing': columnspacing,
+                    'frameon': superpop_legend_border,
+                    'fancybox': False,
+                    'shadow': False,
+                    'fontsize': 8
+                }
+                
+                # Add title only if requested
+                if show_superpop_legend_title:
+                    legend_kwargs['title'] = 'Superpopulation'
+                    legend_kwargs['title_fontsize'] = 9
+                
+                legend = fig.legend(**legend_kwargs)
+                
+                # For single-row layout, add labels above the patches
+                label_texts = []
+                if is_single_row:
+                    # Force a layout calculation to get accurate patch positions
+                    fig.canvas.draw_idle()
+                    
+                    # Get the actual legend bounding box in figure coordinates
+                    legend_bbox = legend.get_window_extent(fig.canvas.get_renderer())
+                    legend_bbox_fig = legend_bbox.transformed(fig.transFigure.inverted())
+                    
+                    # Get the individual patch positions
+                    legend_patches = legend.get_patches()
+                    if len(legend_patches) == len(labels):
+                        # Calculate positions from actual patch locations
+                        for patch, label in zip(legend_patches, labels):
+                            # Get patch bounding box in display coordinates
+                            patch_bbox = patch.get_window_extent(fig.canvas.get_renderer())
+                            
+                            # Convert to figure coordinates
+                            patch_bbox_fig = patch_bbox.transformed(fig.transFigure.inverted())
+                            
+                            # Get center x position of the patch
+                            patch_center_x = (patch_bbox_fig.x0 + patch_bbox_fig.x1) / 2
+                            
+                            # Position label above the patch (slightly above the top)
+                            patch_top_y = patch_bbox_fig.y1
+                            label_y = patch_top_y + 0.01  # Small offset above patch
+                            
+                            # Add text label centered above the patch
+                            text_obj = fig.text(patch_center_x, label_y, label,
+                                               ha='center', va='bottom',
+                                               fontsize=8, transform=fig.transFigure)
+                            label_texts.append(text_obj)
+                    else:
+                        # Fallback: use estimated positions if patch count doesn't match
+                        n_items = len(labels)
+                        # Use the legend bbox to estimate spacing
+                        legend_width = legend_bbox_fig.width
+                        patch_width_est = legend_width / (n_items + (n_items - 1) * columnspacing)
+                        spacing_est = patch_width_est * columnspacing
+                        
+                        # Calculate starting position
+                        start_x = legend_bbox_fig.x0 + patch_width_est / 2
+                        label_y = legend_bbox_fig.y1 + 0.01
+                        
+                        # Add text labels above each patch
+                        for i, label in enumerate(labels):
+                            x_pos = start_x + i * (patch_width_est + spacing_est)
+                            text_obj = fig.text(x_pos, label_y, label,
+                                               ha='center', va='bottom',
+                                               fontsize=8, transform=fig.transFigure)
+                            label_texts.append(text_obj)
+                else:
+                    # Left-justify the legend text for multi-row layout
+                    for t in legend.get_texts():
+                        t.set_ha('left')
+                
+                # Configure border and background fill based on argument
+                if superpop_legend_border:
+                    # Show border with default styling
+                    legend.get_frame().set_linewidth(1)
+                    legend.get_frame().set_edgecolor('black')
+                    legend.get_frame().set_facecolor('white')
+                    
+                    # If single-row with labels above, expand frame to include them
+                    if is_single_row and label_texts:
+                        # Redraw to get updated positions after labels are added
+                        fig.canvas.draw_idle()
+                        
+                        # Get bounding box of legend patches
+                        legend_bbox = legend.get_window_extent(fig.canvas.get_renderer())
+                        legend_bbox_fig = legend_bbox.transformed(fig.transFigure.inverted())
+                        
+                        # Get bounding box of all label texts
+                        from matplotlib.transforms import Bbox
+                        label_bboxes = [t.get_window_extent(fig.canvas.get_renderer()) 
+                                       for t in label_texts]
+                        if label_bboxes:
+                            label_bbox = Bbox.union([b for b in label_bboxes])
+                            label_bbox_fig = label_bbox.transformed(fig.transFigure.inverted())
+                            
+                            # Calculate expanded bounds to include labels above
+                            # Use padding tuple (top, right, bottom, left)
+                            padding_top, padding_right, padding_bottom, padding_left = superpop_legend_border_padding
+                            
+                            # Calculate the union of legend and label bounding boxes
+                            combined_left = min(legend_bbox_fig.x0, label_bbox_fig.x0)
+                            combined_right = max(legend_bbox_fig.x1, label_bbox_fig.x1)
+                            combined_bottom = legend_bbox_fig.y0  # Bottom is the legend patches
+                            combined_top = label_bbox_fig.y1  # Top is the label text
+                            
+                            # Apply padding from tuple
+                            new_left = combined_left - padding_left
+                            new_right = combined_right + padding_right
+                            new_bottom = combined_bottom - padding_bottom
+                            new_top = combined_top + padding_top
+                            
+                            # Update frame bounds to include labels
+                            # Manually create a border rectangle that encompasses everything
+                            from matplotlib.patches import Rectangle
+                            
+                            legend_frame = legend.get_frame()
+                            frame_width = new_right - new_left
+                            frame_height = new_top - new_bottom
+                            
+                            # Hide the original legend frame
+                            legend_frame.set_visible(False)
+                            
+                            # Create a custom border rectangle in figure coordinates
+                            border_rect = Rectangle(
+                                (new_left, new_bottom), frame_width, frame_height,
+                                transform=fig.transFigure,
+                                linewidth=1,
+                                edgecolor='lightgray',
+                                facecolor='white',
+                                zorder=legend_frame.get_zorder() - 1  # Behind legend content
+                            )
+                            fig.patches.append(border_rect)
+                else:
+                    # No border or background fill
+                    legend.get_frame().set_linewidth(0)
+                    legend.get_frame().set_facecolor('none')
+                    legend.get_frame().set_edgecolor('none')
+                
+                # Adjust spacing between title and legend items to avoid overlap (only if title is shown)
+                if show_superpop_legend_title:
+                    if hasattr(legend, '_legend_box'):
+                        # Increase the separator between title and legend items
+                        legend._legend_box.sep = 15  # Increase vertical spacing (default is typically 5-7)
+                    
+                    # Additionally, adjust the title's vertical position upward
+                    title = legend.get_title()
+                    if title:
+                        # Get current title position and move it up
+                        title.set_y(title.get_position()[1] + 0.02)  # Move title up by 0.02 in normalized coordinates
+                
+                # Adjust layout to make room for external legend if it's outside plot boundaries
+                # Note: Bottom margin was already adjusted earlier if legend is below
+                if superpop_legend_x > 1.0:
+                    # Legend is on the right side - adjust right margin
+                    current_right = fig.subplotpars.right
+                    legend_space = 0.15
+                    new_right = max(0.75, current_right - legend_space)
+                    fig.subplots_adjust(right=new_right)
+                # Bottom margin adjustment was already done earlier before superpop axes creation
+    else:
+        # No superpop plots - show x-axis tick labels on all main axes
+        # But only show axis titles on the bottom row
+        # Calculate which main axes are in the bottom row
+        n_main = len(main_axes)
+        n_rows = (n_main + col_wrap - 1) // col_wrap  # Ceiling division
+        bottom_row_start = (n_rows - 1) * col_wrap
+        
+        for idx, main_ax in enumerate(main_axes):
+            if idx >= bottom_row_start:
+                # Bottom row - show axis title
+                main_ax.set_xlabel(x_label, fontsize=9)
+            else:
+                # Not bottom row - no axis title, but tick labels will be visible
+                main_ax.set_xlabel("")
     
     if show:
         plt.show()
 
-    return {'fig':g.figure, 'axes':g.axes, 'data':plot_df}
+    # Return both main axes and superpop axes
+    if show_superpops:
+        all_axes = list(g.axes.flatten()) + superpop_axes
+    else:
+        all_axes = list(g.axes.flatten())
+    return {'fig':g.figure, 'axes':all_axes, 'data':plot_df}

@@ -350,6 +350,8 @@ def wtvariants_to_vep_neural_network(vep_df,
     return interaction_df, model
 
 
+
+
 def wtvariants_to_vep_linear_model(
         vep_df,
         target="VEP",
@@ -362,6 +364,7 @@ def wtvariants_to_vep_linear_model(
         model_kwargs={},
         pivot_table_kwargs={},
         add_positions=True,
+        standardize_variants=True,
     ):
     """
     Fit a Ridge or Lasso regression model to predict VEP values from wt_variant features,
@@ -390,12 +393,24 @@ def wtvariants_to_vep_linear_model(
         Additional keyword arguments to pass to the pivot table function.
     add_positions : bool, default=True
         If True, add positions to the interaction_df.
-
+    standardize_variants : bool, default=True
+        If True, standardize the variant names first.
+    
     Returns
     -------
     interaction_df : pd.DataFrame
         DataFrame with columns ['wt_variant', 'site', 'interaction_strength', 'interaction_strength_signed', 'n_haplotypes', 'interaction_strength_weighted']
     model : fitted sklearn model
+    X_wt_clean : pd.DataFrame
+        Cleaned input matrix (haplotype x wt_variant: binary matrix)
+    y_vep_clean : pd.DataFrame
+        Cleaned target matrix (haplotype x site: VEP)
+    coef_matrix_signed : pd.DataFrame
+        Signed interaction strength matrix (wt_variant x site)
+    coef_matrix_abs : pd.DataFrame
+        Absolute interaction strength matrix (wt_variant x site)
+    metrics : pd.DataFrame
+        Metrics for the model
     """
     from sklearn.linear_model import Ridge, Lasso
 
@@ -409,6 +424,10 @@ def wtvariants_to_vep_linear_model(
         target=target,
         **pivot_table_kwargs
     )
+    # Standardize column names of y_vep using standardize_variant
+    if standardize_variants:
+        y_vep.columns = [utils.standardize_variant(col) for col in y_vep.columns]
+    
 
     # Prepare input matrix (haplotype x wt_variant: binary matrix)
     X_wt = get_wt_variant_matrix(
@@ -416,6 +435,10 @@ def wtvariants_to_vep_linear_model(
         haplotype_col=haplotype_col,
         wt_variant_split=wt_variant_split
     )
+    # Standardize column names of X_wt using standardize_variant
+    if standardize_variants:
+        X_wt.columns = [utils.standardize_variant(col) for col in X_wt.columns]
+    
 
     # Remove any rows with NaNs in X or y and report how many rows were dropped
     nan_mask = (~X_wt.isna().any(axis=1)) & (~y_vep.isna().any(axis=1))
@@ -458,6 +481,7 @@ def wtvariants_to_vep_linear_model(
         index=input_features,
         columns=output_sites
     ).stack().reset_index(drop=True)
+
     interaction_df["interaction_strength_signed"] = interaction_df_signed
     interaction_df["outlier_type"] = interaction_df["interaction_strength_signed"].apply(
         lambda x: "more pathogenic" if x < 0 else ("neutral" if x == 0 else "more benign")
@@ -472,7 +496,7 @@ def wtvariants_to_vep_linear_model(
     )
     interaction_df = interaction_df.sort_values('interaction_strength', ascending=False)
     interaction_df["clinical_variant"] = interaction_df["site"].str.split(":").str[1]
-
+  
     if add_positions: 
         interaction_df = utils.variants_to_positions(interaction_df, 
                                                     variant_col="wt_variant", 
@@ -497,10 +521,35 @@ def wtvariants_to_vep_linear_model(
         columns=output_sites
     )
 
+    # REport
+    from sklearn.metrics import r2_score, mean_squared_error, mean_absolute_error, explained_variance_score
+
+    # Predict values for the training set 
+    y_pred = model.predict(X_wt_clean)
+
+    # Calculate metrics
+    metrics = {
+        # Note: In regression, R2 and explained variance score can be different if predictions or targets are not centered or have non-constant residuals. In typical use with linear models and centered data they are often equal, but in general:
+        #   R2 = 1 - (sum((y_true - y_pred)^2) / sum((y_true - y_true.mean())^2))
+        #   Explained variance = 1 - (Var(y_true - y_pred) / Var(y_true))
+        # They are equal when errors have zero mean and are homoscedastic, but can differ otherwise.
+        "R2": r2_score(y_vep_clean, y_pred),
+        "Explained Variance": explained_variance_score(y_vep_clean, y_pred),
+        "MSE": mean_squared_error(y_vep_clean, y_pred),
+        # mean_squared_error does not support 'squared' argument in your version.
+        # Instead, compute RMSE by taking the square root of MSE.
+        "RMSE": mean_squared_error(y_vep_clean, y_pred) ** 0.5,
+        "MAE": mean_absolute_error(y_vep_clean, y_pred)
+    }
+
+    metrics_df = pd.DataFrame([metrics])
+
+
     return {"interaction_df": interaction_df, "model": model, 
             "X_wt_clean": X_wt_clean, "y_vep_clean": y_vep_clean,
             "coef_matrix_signed": coef_matrix_signed_df, 
-            "coef_matrix_abs": coef_matrix_abs_df}
+            "coef_matrix_abs": coef_matrix_abs_df,
+            "metrics": metrics_df}
 
 
 def wtvariants_to_vep_autoencoder(model,
@@ -1075,7 +1124,7 @@ def plot_enrichment_vs_interactions(
             label_y = arrow_y - arrow_label_padding
             if arrow_label_fontsize is None:
                 title_obj = ax1.title
-                title_fontsize = title_obj.get_fontsize() if title_obj else 12
+                title_fontsize = title_obj.get_fontsize() if title_obj else "large"
                 label_fontsize = title_fontsize
             else:
                 label_fontsize = arrow_label_fontsize
@@ -1296,6 +1345,50 @@ def plot_enrichment_vs_interactions(
                 x, y_disp, f"{int(y)}", 
                 **y2_label_kwargs
             )
+
+    # Add buffer to y-axis limits to prevent labels from being cut off
+    # Calculate max y-value including label offsets for ax1 (enrichment)
+    y1_vals = results_df["enrichment"].values
+    if log_y1_axis:
+        y1_vals_pos = y1_vals[y1_vals > 0]
+        if len(y1_vals_pos) > 0:
+            y1_max = y1_vals_pos.max()
+            y1_range_log = np.log10(y1_vals_pos).max() - np.log10(y1_vals_pos).min()
+            # Add buffer in log space (multiplicative)
+            y1_upper = y1_max * (10 ** (0.1 * y1_range_log))  # 10% buffer in log space
+        else:
+            y1_upper = None
+    else:
+        y1_max = y1_vals.max()
+        y1_range = y1_vals.max() - y1_vals.min()
+        # Add buffer for labels (accounting for offset_y which adds ~1.5-2% of range)
+        y1_upper = y1_max + (0.15 * y1_range if y1_range > 0 else y1_max * 0.15)
+    
+    # Calculate max y-value including label offsets for ax2 (n_interactions)
+    y2_vals = results_df["n_interactions"].values
+    if log_y2_axis:
+        y2_vals_pos = y2_vals[y2_vals > 0]
+        if len(y2_vals_pos) > 0:
+            y2_max = y2_vals_pos.max()
+            y2_range_log = np.log10(y2_vals_pos).max() - np.log10(y2_vals_pos).min()
+            # Add buffer in log space (multiplicative)
+            y2_upper = y2_max * (10 ** (0.1 * y2_range_log))  # 10% buffer in log space
+        else:
+            y2_upper = None
+    else:
+        y2_max = y2_vals.max()
+        y2_range = y2_vals.max() - y2_vals.min()
+        # Add buffer for labels (accounting for offset_y which adds ~1.5-2% of range)
+        y2_upper = y2_max + (0.15 * y2_range if y2_range > 0 else y2_max * 0.15)
+    
+    # Set y-axis limits with buffer
+    if y1_upper is not None:
+        y1_lims = ax1.get_ylim()
+        ax1.set_ylim([y1_lims[0], y1_upper])
+    
+    if y2_upper is not None:
+        y2_lims = ax2.get_ylim()
+        ax2.set_ylim([y2_lims[0], y2_upper])
 
     # Remove the top spines from both axes
     ax1.spines['top'].set_visible(False)
@@ -2357,6 +2450,31 @@ def plot_sensitization_maps(
 
 
 
+def mask_by_percentile(matrix, percentile=50, invert=False):
+    """
+    Create a boolean mask for matrix values below a certain percentile.
+    
+    Parameters
+    ----------
+    matrix : np.ndarray or pd.DataFrame
+        Matrix whose values to mask.
+    percentile : float, default 50
+        Percentile at which to mask (values below the percentile are masked).
+    invert : bool, default False
+        If True, invert the mask (mask values above the percentile).
+    
+    Returns
+    -------
+    mask : np.ndarray (dtype=bool)
+        Boolean mask array.
+    """
+    m_arr = matrix.values if hasattr(matrix, "values") else matrix
+    masking_threshold = np.percentile(m_arr[~np.isnan(m_arr)], q=percentile)
+    mask = m_arr < masking_threshold
+    if invert:
+        mask = ~mask
+    return mask
+
 def plot_contact_and_sensitization_maps(
     contact_map_binned,
     outlier_sig,
@@ -2380,6 +2498,8 @@ def plot_contact_and_sensitization_maps(
     dpi=300,
     save_fig=False,
     save_path=None,
+    pow1=1,
+    pow2=1,
 ):
     """
     Plot contact map and overlay sensitization map with optional rectangles.
@@ -2412,13 +2532,15 @@ def plot_contact_and_sensitization_maps(
         Color for masked values.
     show_plot : tuple of bool, default (True, True)
         Tuple indicating which plots to show: (show_plot1, show_plot2)
+    pow1 : float, default 1
+        Power/exponent to apply to contact_map for plot 1.
+    pow2 : float, default 1
+        Power/exponent to apply to contact_map for plot 2.
     """
 
     outlier_sig = outlier_sig.copy()
     
-    contact_map_unbinned= contact_map_binned
-    # contact_map_unbinned = mc.expand_matrix(contact_map_binned)
-    # print(contact_map_unbinned.shape)
+    contact_map_unbinned = contact_map_binned
 
     if save_path is None:
         save_path = f"contact_map_{'sensitization_map' if add_rect else ''}.png"
@@ -2426,15 +2548,10 @@ def plot_contact_and_sensitization_maps(
     if heatmap_alpha is None:
         heatmap_alpha = 0.5 if add_rect else 1
 
-
     outlier_sig = outlier_sig.dropna(subset=["wt_position", "clinical_position","outlier_type"])
-    
 
-    # Calculate threshold for bottom 50% of values for masking
-    masking_threshold = np.percentile(contact_map_unbinned[~np.isnan(contact_map_unbinned)], q=masking_percentile1)  
-    mask = contact_map_unbinned < masking_threshold
-    if invert_mask:
-        mask = ~mask
+    # Get mask for plot 1
+    mask = mask_by_percentile(contact_map_unbinned, percentile=masking_percentile1, invert=invert_mask)
 
     def add_plot_labels(g, 
                         bin_size,
@@ -2464,7 +2581,9 @@ def plot_contact_and_sensitization_maps(
     ##### PLOT 1 #####
     if show_plot[0]:
         fig1, ax1 = plt.subplots(figsize=figsize)
-        g1 = sns.heatmap(contact_map_unbinned,
+        # Apply pow1 if necessary
+        matrix_plot1 = np.power(contact_map_unbinned, pow1) if pow1 != 1 else contact_map_unbinned
+        g1 = sns.heatmap(matrix_plot1,
                         cmap=cmap[0],
                         mask=mask,
                         alpha=1) 
@@ -2482,17 +2601,15 @@ def plot_contact_and_sensitization_maps(
     if show_plot[1]:
         fig2, ax2 = plt.subplots(figsize=figsize)
         if masking_percentile2 is not None:
-            masking_threshold_2 = np.percentile(contact_map_unbinned[~np.isnan(contact_map_unbinned)], q=masking_percentile2)
-            mask_2 = contact_map_unbinned < masking_threshold_2
-            if invert_mask:
-                mask_2 = ~mask_2
+            mask_2 = mask_by_percentile(contact_map_unbinned, percentile=masking_percentile2, invert=invert_mask)
         else:
             mask_2 = None
+        # Apply pow2 if necessary
+        matrix_plot2 = np.power(contact_map_unbinned, pow2) if pow2 != 1 else contact_map_unbinned
         g2 = ax2.imshow(
-            np.ma.masked_array(contact_map_unbinned, mask=mask_2) if mask_2 is not None else contact_map_unbinned,
+            np.ma.masked_array(matrix_plot2, mask=mask_2) if mask_2 is not None else matrix_plot2,
             cmap=cmap[1],
             alpha=heatmap_alpha,
-            # aspect='auto',
             interpolation='nearest'
         )
         # Add colorbar for the imshow plot
@@ -2524,8 +2641,6 @@ def plot_contact_and_sensitization_maps(
             )
     else:
         fig2, ax2 = None, None
-
-        
 
     if save_fig:
         plt.savefig(save_path, dpi=dpi)
@@ -2565,12 +2680,17 @@ def plot_clinsig_interaction_strength(
     from itertools import combinations 
     import pandas as pd
 
+    ridge_df = ridge_df.copy()
+    annot_df = annot_df.copy()
+
     # Prepare bar_df
     if x in ridge_df.columns:
         bar_df = ridge_df.groupby(["clinical_variant", x])[y].agg(agg_func).reset_index()
     else:
         if annot_df is None:
             raise ValueError("annot_df is required when x is not in ridge_df.columns")
+        annot_df[site_col] = annot_df[site_col].apply(utils.standardize_variant)
+        ridge_df[y] = ridge_df[y].apply(utils.standardize_variant)
         bar_df = ridge_df.groupby("clinical_variant")[y].agg(agg_func).reset_index().merge(
             annot_df[[site_col, x]].drop_duplicates().rename(columns={site_col: "clinical_variant"})
         )
@@ -2744,7 +2864,7 @@ def plot_variant_sensitization_schematic(
 
     plot1_title="Haplotype x WT Variant Matrix",
     plot2_title="Haplotype x Clinical Variant VEP Matrix",
-    plot3_title="WT x Clinical Variant Coefficients",
+    plot3_title="Variant Sensitization Map",
     
     plot1_kwargs={},
     plot2_kwargs={},
@@ -2771,8 +2891,11 @@ def plot_variant_sensitization_schematic(
     facecolor='none',
     
     # New arguments
-    show_haplotype_labels_plot3=True,
-    show_text_labels=(True, True, True)
+    show_wt_labels_plot3=True,
+    show_text_labels=(True, True, True),
+    show_train_predictor_arrow=True,
+    show_extract_coefficients_arrow=True,
+    xlabel=[None, None, None]
     
 ):
     """
@@ -2849,9 +2972,7 @@ def plot_variant_sensitization_schematic(
         Keyword arguments for the grey box outline/edge. If None, no outline is drawn. 
         Common options include: {'edgecolor': 'black', 'linewidth': 2, 'linestyle': '--'}, default {'edgecolor': 'black', 'linewidth': 3, 'linestyle': ':'}.
     title_pad : float, optional
-        Vertical padding/offset for all plot titles, default 20.
-    xlabel_pad : float, optional
-        Padding between x-axis tick labels and x-axis titles for all plots, default 4.
+        Vertical padding/offset for all plot titles, default 20. 
     rotate_x_labels : bool, optional
         Whether to rotate x-axis tick labels by 45 degrees and left-justify them, default False.
     title_y_position : float or None, optional
@@ -2867,12 +2988,16 @@ def plot_variant_sensitization_schematic(
         - heatmap_aspect=(1.0, 2.0, 0.5)  # Different ratios for each heatmap
     facecolor : str, optional
         Face color for the figure, default 'none'.
-    show_haplotype_labels_plot3 : bool, optional
+    show_wt_labels_plot3 : bool, optional
         Whether to show haplotype row labels in the third (rightmost) heatmap, default True.
     show_text_labels : tuple of bool, optional
         Tuple of three boolean values to control text label display in each heatmap.
         Format: (plot1_show_labels, plot2_show_labels, plot3_show_labels).
         Default (True, True, True) shows labels in all three heatmaps.
+    show_train_predictor_arrow : bool, optional
+        Whether to show the "Train Predictor" arrows and label between the first and second plots, default True.
+    show_extract_coefficients_arrow : bool, optional
+        Whether to show the "Extract Coefficients" arrow and label between the second and third plots, default True.
     
     Returns
     -------
@@ -2936,9 +3061,9 @@ def plot_variant_sensitization_schematic(
         **plot1_kwargs
     )
     # Set aspect ratio for first heatmap
-    axes[0].set_aspect(aspect_values[0])
-    axes[0].set_xlabel("WT Variant", fontsize=12, labelpad=xlabel_pad)
+    axes[0].set_aspect(aspect_values[0]) 
     axes[0].set_ylabel("Haplotype", fontsize=12)
+    axes[0].set_xlabel("WT Variant", fontsize=12)
     # Set title with consistent positioning
     if title_y_position is not None:
         # Calculate pad to achieve the desired y-position
@@ -2991,9 +3116,7 @@ def plot_variant_sensitization_schematic(
         **plot2_kwargs
     )
     # Set aspect ratio for second heatmap
-    axes[1].set_aspect(aspect_values[1])
-    axes[1].set_xlabel("Clinical Variant", fontsize=12, labelpad=xlabel_pad)
-    axes[1].set_ylabel(None, fontsize=12)
+    axes[1].set_aspect(aspect_values[1]) 
     # Set title with consistent positioning
     if title_y_position is not None:
         # Calculate pad to achieve the desired y-position
@@ -3005,6 +3128,8 @@ def plot_variant_sensitization_schematic(
     else:
         axes[1].set_title(plot2_title, fontsize=14, pad=title_pad)
     axes[1].xaxis.set_label_position('top')
+    axes[1].set_ylabel("Haplotype", fontsize=12)
+    axes[1].set_xlabel("Clinical Variant", fontsize=12)
     axes[1].xaxis.tick_top()
     
     # Rotate x-axis tick labels if requested
@@ -3059,8 +3184,8 @@ def plot_variant_sensitization_schematic(
     )
     # Set aspect ratio for third heatmap
     axes[2].set_aspect(aspect_values[2])
-    axes[2].set_xlabel("Clinical Variant", fontsize=12, labelpad=xlabel_pad)
     axes[2].set_ylabel("WT Variant", fontsize=12)
+    axes[2].set_xlabel("Clinical Variant", fontsize=12)
     # Set title with consistent positioning
     if title_y_position is not None:
         # Calculate pad to achieve the desired y-position
@@ -3085,7 +3210,7 @@ def plot_variant_sensitization_schematic(
     axes[1].set_yticklabels([])
     
     # Control haplotype labels in the third plot
-    if not show_haplotype_labels_plot3:
+    if not show_wt_labels_plot3:
         axes[2].set_yticklabels([])
 
     # Add grey box around first two plots if requested
@@ -3132,89 +3257,91 @@ def plot_variant_sensitization_schematic(
 
     # Add arrows between the first and second plots, aligned with each row
     # Note: add_extra_row_col adds an extra spacer row, so total rows = n_haplotypes + 1
-    fig.canvas.draw()
-    total_rows = len(haplotypes_to_plot) + 1
-    for i in range(total_rows):
-        y_frac = (i + 0.5) / total_rows
-        x0_fig, y0_fig = axes[0].transAxes.transform((1.0, y_frac))
-        x1_fig, y1_fig = axes[1].transAxes.transform((0.0, y_frac))
-        inv = fig.transFigure.inverted()
-        x0_fig_frac, y0_fig_frac = inv.transform((x0_fig, y0_fig))
-        x1_fig_frac, y1_fig_frac = inv.transform((x1_fig, y1_fig))
-        arrow = FancyArrowPatch(
-            (x0_fig_frac, y0_fig_frac), (x1_fig_frac, y1_fig_frac),
-            transform=fig.transFigure,
-            arrowstyle="->",
-            color="black",
-            linewidth=1.5,
-            shrinkA=6,
-            shrinkB=6,
-            mutation_scale=15,
-            clip_on=False
-        )
-        fig.patches.append(arrow)
-        if i == total_rows - 1:
-            label_y_offset = 0.02
-            fig.text(
-                (x0_fig_frac + x1_fig_frac) / 2,
-                y0_fig_frac + label_y_offset,
-                "Train\nPredictor",
-                ha="center",
-                va="bottom",
-                fontsize=13,
-                fontweight="bold"
+    if show_train_predictor_arrow:
+        fig.canvas.draw()
+        total_rows = len(haplotypes_to_plot) + 1
+        for i in range(total_rows):
+            y_frac = (i + 0.5) / total_rows
+            x0_fig, y0_fig = axes[0].transAxes.transform((1.0, y_frac))
+            x1_fig, y1_fig = axes[1].transAxes.transform((0.0, y_frac))
+            inv = fig.transFigure.inverted()
+            x0_fig_frac, y0_fig_frac = inv.transform((x0_fig, y0_fig))
+            x1_fig_frac, y1_fig_frac = inv.transform((x1_fig, y1_fig))
+            arrow = FancyArrowPatch(
+                (x0_fig_frac, y0_fig_frac), (x1_fig_frac, y1_fig_frac),
+                transform=fig.transFigure,
+                arrowstyle="->",
+                color="black",
+                linewidth=1.5,
+                shrinkA=6,
+                shrinkB=6,
+                mutation_scale=15,
+                clip_on=False
             )
+            fig.patches.append(arrow)
+            if i == total_rows - 1:
+                label_y_offset = 0.02
+                fig.text(
+                    (x0_fig_frac + x1_fig_frac) / 2,
+                    y0_fig_frac + label_y_offset,
+                    "Train\nPredictor",
+                    ha="center",
+                    va="bottom",
+                    fontsize=13,
+                    fontweight="bold"
+                )
 
     # Add one big arrow between the middle plot and the rightmost plot
-    y_center = 0.5
-    x1_fig, y1_fig = axes[1].transAxes.transform((1.0, y_center))
-    x2_fig, y2_fig = axes[2].transAxes.transform((0.0, y_center))
-    inv = fig.transFigure.inverted()
-    x1_fig_frac, y1_fig_frac = inv.transform((x1_fig, y1_fig))
-    x2_fig_frac, y2_fig_frac = inv.transform((x2_fig, y2_fig))
+    if show_extract_coefficients_arrow:
+        y_center = 0.5
+        x1_fig, y1_fig = axes[1].transAxes.transform((1.0, y_center))
+        x2_fig, y2_fig = axes[2].transAxes.transform((0.0, y_center))
+        inv = fig.transFigure.inverted()
+        x1_fig_frac, y1_fig_frac = inv.transform((x1_fig, y1_fig))
+        x2_fig_frac, y2_fig_frac = inv.transform((x2_fig, y2_fig))
 
-    arrowstyle = (
-        f"simple,"
-        f"head_length={15*big_arrow_height},"
-        f"head_width={15*big_arrow_width},"
-        f"tail_width={5*big_arrow_width}"
-    )
-    linewidth = 2.5 * big_arrow_width
-    mutation_scale = 30 * big_arrow_height
-    shrinkA = 10 * big_arrow_width
-    shrinkB = 10 * big_arrow_width
+        arrowstyle = (
+            f"simple,"
+            f"head_length={15*big_arrow_height},"
+            f"head_width={15*big_arrow_width},"
+            f"tail_width={5*big_arrow_width}"
+        )
+        linewidth = 2.5 * big_arrow_width
+        mutation_scale = 30 * big_arrow_height
+        shrinkA = 10 * big_arrow_width
+        shrinkB = 10 * big_arrow_width
 
-    # Apply horizontal offset to the arrow and label positions
-    x1_fig_frac_offset = x1_fig_frac + big_arrow_horizontal_offset
-    x2_fig_frac_offset = x2_fig_frac + big_arrow_horizontal_offset
-    
-    big_arrow = FancyArrowPatch(
-        (x1_fig_frac_offset, y1_fig_frac), (x2_fig_frac_offset, y2_fig_frac),
-        transform=fig.transFigure,
-        arrowstyle=arrowstyle,
-        color="black",
-        linewidth=linewidth,
-        mutation_scale=mutation_scale,
-        shrinkA=shrinkA,
-        shrinkB=shrinkB,
-        clip_on=False,
-        zorder=20
-    )
-    fig.patches.append(big_arrow)
+        # Apply horizontal offset to the arrow and label positions
+        x1_fig_frac_offset = x1_fig_frac + big_arrow_horizontal_offset
+        x2_fig_frac_offset = x2_fig_frac + big_arrow_horizontal_offset
+        
+        big_arrow = FancyArrowPatch(
+            (x1_fig_frac_offset, y1_fig_frac), (x2_fig_frac_offset, y2_fig_frac),
+            transform=fig.transFigure,
+            arrowstyle=arrowstyle,
+            color="black",
+            linewidth=linewidth,
+            mutation_scale=mutation_scale,
+            shrinkA=shrinkA,
+            shrinkB=shrinkB,
+            clip_on=False,
+            zorder=20
+        )
+        fig.patches.append(big_arrow)
 
-    # Add a label above the big arrow
-    label_x = (x1_fig_frac_offset + x2_fig_frac_offset) / 2
-    label_y = max(y1_fig_frac, y2_fig_frac) + 0.2 * big_arrow_height
-    fig.text(
-        label_x,
-        label_y,
-        "Extract\nCoefficients",
-        ha="center",
-        va="bottom",
-        fontsize=13,
-        fontweight="bold",
-        zorder=30
-    )
+        # Add a label above the big arrow
+        label_x = (x1_fig_frac_offset + x2_fig_frac_offset) / 2
+        label_y = max(y1_fig_frac, y2_fig_frac) + 0.2 * big_arrow_height
+        fig.text(
+            label_x,
+            label_y,
+            "Extract\nCoefficients",
+            ha="center",
+            va="bottom",
+            fontsize=13,
+            fontweight="bold",
+            zorder=30
+        )
 
     # Adjust subplot spacing and move axes[2] to the right
     fig.subplots_adjust(wspace=0.3)
@@ -3222,7 +3349,52 @@ def plot_variant_sensitization_schematic(
     axes[2].set_position([
         pos2.x0 + extra_space, pos2.y0, pos2.width, pos2.height
     ])
-    plt.tight_layout()
+    
+    # If title_y_position is set and > 1.0, adjust top margin to accommodate titles
+    # Calculate rect for tight_layout to preserve space for titles
+    if title_y_position is not None and title_y_position > 1.0:
+        # Reserve extra space at the top for titles positioned above axes
+        extra_top = (title_y_position - 1.0) * 0.15  # Convert to figure fraction
+        top_margin = 1.0 - extra_top
+        plt.tight_layout(rect=[0, 0, 1, top_margin])
+    else:
+        plt.tight_layout()
+    
+    # Re-set titles after tight_layout to ensure they're visible
+    # This is especially important when title_y_position > 1.0
+    if title_y_position is not None:
+        for i, (ax, title) in enumerate([(axes[0], plot1_title), (axes[1], plot2_title), (axes[2], plot3_title)]):
+            desired_y_points = title_y_position * fig.get_figheight() * 72
+            current_y_points = ax.get_position().y1 * fig.get_figheight() * 72
+            pad_points = desired_y_points - current_y_points
+            ax.set_title(title, fontsize=14, pad=pad_points)
+    
+    # Re-set xlabels after tight_layout to ensure they're visible
+    # This ensures xlabels positioned at the top remain visible
+    # When title_y_position > 1.0, use fig.text to manually position xlabels
+    # to ensure they're visible between the title and the top of the axes
+    if title_y_position is not None and title_y_position > 1.0:
+        # Position xlabels manually using fig.text to ensure visibility
+        for i, ax in enumerate(axes):
+            if xlabel[i] is not None:
+                # Get axis position in figure coordinates
+                pos = ax.get_position()
+                # Position xlabel between title and top of axis
+                # Use a position slightly below where the title would be, but above the axis
+                xlabel_y = pos.y1 + 0.02  # Position just above the axis top
+                xlabel_x = pos.x0 + pos.width / 2  # Center horizontally
+                fig.text(xlabel_x, xlabel_y, xlabel[i], 
+                        fontsize=12, ha='center', va='bottom',
+                        transform=fig.transFigure)
+                # Also set on axis for consistency (though it might be clipped)
+                ax.set_xlabel(xlabel[i], fontsize=12, labelpad=xlabel_pad)
+                ax.xaxis.set_label_position('top')
+    else:
+        # Normal case: just re-set xlabels
+        for i, ax in enumerate(axes):
+            if xlabel[i] is not None:
+                ax.set_xlabel(xlabel[i], fontsize=12, labelpad=xlabel_pad)
+                ax.xaxis.set_label_position('top')
 
     return {'fig': fig, 'axes': axes, 'data': {'wtvariants_to_vep_linear_model_out': wtvariants_to_vep_linear_model_out,
                                                 'Xwt_with_extra': Xwt_with_extra,
@@ -3259,11 +3431,12 @@ def plot_wt_clinical_interaction_vs_angstroms(
     palette=None,
     show=True,
     x_title="3D Distance (Ångstroms)",
-    y_title="Joint Effect",
+    y_title=r"$E_{\text{WT-Clin}}$",
     title="WT-Clinical Variant Joint Effect Size vs. 3D Distance",
     legend_outside=False,
     label_fontsize=10,
     adjust_text_kwargs={},
+    rasterize_scatter=True,
 ):
     """
     Plot WT-Clinical Variant Interaction Strength vs. 3D Distance.
@@ -3284,6 +3457,9 @@ def plot_wt_clinical_interaction_vs_angstroms(
         Color palette for clinical significance.
     show : bool
         Whether to call plt.show().
+    rasterize_scatter : bool
+        If True, rasterize only the scatter points (not text labels or other elements).
+        Useful for reducing file size when saving vector graphics with many points.
     """
     import matplotlib.pyplot as plt
     from adjustText import adjust_text
@@ -3344,6 +3520,13 @@ def plot_wt_clinical_interaction_vs_angstroms(
     plt.ylabel(y_title)
     plt.title(title)
 
+    # Rasterize scatter points if requested (but not text labels or other elements)
+    if rasterize_scatter:
+        from matplotlib.collections import PathCollection
+        for collection in ax.collections:
+            if isinstance(collection, PathCollection):
+                collection.set_rasterized(True)
+
     # Option to put legend inside or outside the plot
     if legend_outside:
         legend = ax.legend(bbox_to_anchor=(1.05, 1), loc='upper left', borderaxespad=0.)
@@ -3357,7 +3540,7 @@ def plot_wt_clinical_interaction_vs_angstroms(
         if "contact_score" in leg.get_text().lower() or "size" in leg.get_text().lower():
             leg.set_text("Contact Score")
         if "interaction_strength" in leg.get_text().lower():
-            leg.set_text("Joint Effect Size")
+            leg.set_text(r"$|E_{\text{WT-Clin}}|$")
         if "is_contact" in leg.get_text().lower():
             leg.set_text("Contact")
         if "Angstroms_inverted" in leg.get_text().lower():
@@ -3410,3 +3593,447 @@ def plot_wt_clinical_interaction_vs_angstroms(
         plt.show()
     return {'fig': ax.figure, 'ax': ax, 'data': top_interactions}
 
+import matplotlib.pyplot as plt
+import seaborn as sns
+import numpy as np
+import matplotlib.patches as mpatches
+
+def plot_vep_scatter_kde(
+    vep_prot, 
+    ridge_df=None,
+    position_axis="x",   # "y" for Protein_position on y-axis, "x" for Protein_position on x-axis
+    vep_col="VEP", 
+    position_col="Protein_position", 
+    clinsig_col="clinsig",
+    title=None,
+    palette = None,
+    figsize=(5,5),
+    ridge_kwargs=None,  # NOTE: changed default to None, see below
+    ridge_y_label=r"$|E_{\text{Clin}}|$",
+    grid_row_ratios=(3, 1, 1, 1),  # default: [scatter=3, kde=1, wt_ridge=1, clin_ridge=1], ignored if no ridge_df
+    grid_spacer=0.07, 
+    rasterize=True,
+    show_wt_margin=True,  # If True and ridge_df has wt_position, show WT margin effect row
+    wt_margin_position="bottom"  # "top" or "bottom" - position of WT margin effect relative to clinical margin effect
+):
+    """
+    Plot scatter + KDE comparing VEP vs. position, with clinical significance colormaps.
+    Optionally, if ridge_df is provided, plots margin effect facets for interactions vs. clinical_position
+    and/or wt_position.
+
+    Parameters
+    ----------
+    vep_prot : pd.DataFrame
+        Must contain columns: position_col, vep_col, clinsig_col
+    position_axis : {"y", "x"}
+        Whether position is on y ("y", default) or x ("x") axis.
+    vep_col : str
+        Column name for VEP scores.
+    position_col : str
+        Column name to use for protein position.
+    clinsig_col : str
+        Column name for clinical significance.
+    palette : dict, optional
+        Color palette for clinical significance. Defaults to utils.get_clinsig_palette().
+    figsize : tuple
+        Figure size.
+    title : str
+        Title for the plot.
+    ridge_kwargs : dict
+        Keyword arguments for the interaction (ridge) scatterplot.
+        Must contain at least "x" and "y" for which columns to use in ridge_df.
+    ridge_y_label : str
+        Label for the clinical margin effect facet (default: r"$|E_{\text{Clin}}|$").
+    grid_row_ratios : tuple of int
+        Proportions for the facet rows. Default (3, 1, 1, 1) for [scatter, kde, margin1, margin2].
+        Order depends on wt_margin_position. Ignored if no ridge_df.
+    grid_spacer : float
+        Spacing parameter for the grid facet specification.
+    rasterize : bool
+        Whether to rasterize the plots for better performance.
+    show_wt_margin : bool
+        If True and ridge_df has wt_position, show WT margin effect row.
+    wt_margin_position : {"top", "bottom"}
+        Position of WT margin effect relative to clinical margin effect.
+        "bottom" (default): scatter, kde, clinical, WT
+        "top": scatter, kde, WT, clinical
+    """
+    clinsig_order = ["path", "likely_path", "likely_benign", "benign"]
+    if palette is None:
+        palette = utils.get_clinsig_palette()
+
+    clinsig_legend_labels = {
+        "path": "pathogenic",
+        "likely_path": "likely pathogenic",
+        "likely_benign": "likely benign",
+        "benign": "benign"
+    }
+    vep_prot = vep_prot.copy()
+
+    vep_prot["site"] = vep_prot["site"].apply(utils.standardize_variant)
+    # Setup figure orientation and grid
+    sharey = position_axis == "y"
+    sharex = position_axis == "x"
+    has_interaction_ax = ridge_df is not None
+    has_wt_position = has_interaction_ax and "wt_position" in ridge_df.columns and show_wt_margin
+    
+    # Validate wt_margin_position
+    if wt_margin_position not in ["top", "bottom"]:
+        raise ValueError(f"wt_margin_position must be 'top' or 'bottom', got '{wt_margin_position}'")
+
+    # Define axes grid depending on requested plot
+    if position_axis == "x":
+        if has_wt_position:
+            nrows = 4  # scatter, kde, and two margin plots
+        elif has_interaction_ax:
+            nrows = 3  # scatter, kde, clin_margin
+        else:
+            nrows = 2  # scatter, kde
+        height_ratios = grid_row_ratios[:nrows]
+        fig, axs = plt.subplots(
+            nrows=nrows, ncols=1,
+            figsize=figsize,
+            sharex=sharex,
+            sharey=False,
+            gridspec_kw={'height_ratios': height_ratios, 'hspace': grid_spacer}
+        )
+        if nrows == 2:
+            ax_scatter, ax_kde = axs
+            ax_wt_interaction = None
+            ax_interaction = None
+        elif nrows == 3:
+            ax_scatter, ax_kde, ax_interaction = axs
+            ax_wt_interaction = None
+        else:  # nrows == 4
+            ax_scatter, ax_kde = axs[0], axs[1]
+            if wt_margin_position == "bottom":
+                # Order: scatter, kde, clinical, WT
+                ax_interaction, ax_wt_interaction = axs[2], axs[3]
+            else:  # wt_margin_position == "top"
+                # Order: scatter, kde, WT, clinical
+                ax_wt_interaction, ax_interaction = axs[2], axs[3]
+        bbox_to_anchor = (0.5, 0.88) if nrows == 2 else (0.5, 0.78) if nrows == 3 else (0.5, 0.72)
+    else:
+        if has_wt_position:
+            ncols = 4  # scatter, kde, and two margin plots
+        elif has_interaction_ax:
+            ncols = 3  # scatter, kde, clin_margin
+        else:
+            ncols = 2  # scatter, kde
+        width_ratios = grid_row_ratios[:ncols]
+        fig, axs = plt.subplots(
+            nrows=1, ncols=ncols, 
+            figsize=figsize,
+            sharex=False,
+            sharey=sharey,
+            gridspec_kw={'width_ratios': width_ratios, 'wspace': grid_spacer}
+        )
+        if ncols == 2:
+            ax_scatter, ax_kde = axs
+            ax_wt_interaction = None
+            ax_interaction = None
+        elif ncols == 3:
+            ax_scatter, ax_kde, ax_interaction = axs
+            ax_wt_interaction = None
+        else:  # ncols == 4
+            ax_scatter, ax_kde = axs[0], axs[1]
+            if wt_margin_position == "bottom":
+                # Order: scatter, kde, clinical, WT
+                ax_interaction, ax_wt_interaction = axs[2], axs[3]
+            else:  # wt_margin_position == "top"
+                # Order: scatter, kde, WT, clinical
+                ax_wt_interaction, ax_interaction = axs[2], axs[3]
+        bbox_to_anchor = (0.88, 0.5) if ncols == 2 else (1.0, 0.5) if ncols == 3 else (1.12, 0.5)
+
+    # --- Scatter ---
+    scatter_kwargs = {
+        "data": vep_prot,
+        "hue": clinsig_col,
+        "hue_order": clinsig_order,
+        "palette": palette,
+        # "edgecolor": 'none',
+        "alpha": 0.4,
+        "s": 12,
+        "ax": ax_scatter,
+        "legend": False
+    }
+    if position_axis == "y":
+        scatter_kwargs["y"] = position_col
+        scatter_kwargs["x"] = vep_col
+    else:
+        scatter_kwargs["x"] = position_col
+        scatter_kwargs["y"] = vep_col
+    sns.scatterplot(**scatter_kwargs)
+
+    # Reverse the scores axis so more negative is right/bottom
+    # (convention: higher VEP is more benign)
+    if position_axis == "y":
+        ax_scatter.invert_xaxis()
+    else:
+        ax_scatter.invert_yaxis()
+
+    # Set ticks and labels
+    ticks = np.linspace(
+        vep_prot[position_col].min(), 
+        vep_prot[position_col].max(), 
+        4, 
+        dtype=int
+    )
+    if position_axis == "y":
+        ax_scatter.set_yticks(ticks)
+        ax_scatter.set_yticklabels([str(y) for y in ticks], rotation=0)
+        ax_scatter.set_xlabel('VEP')
+        ax_scatter.set_ylabel('Residue Position')
+        ax_scatter.invert_yaxis()  # so residue # increases downward, as in seq
+    else:
+        ax_scatter.set_xticks(ticks)
+        ax_scatter.set_xticklabels([str(x) for x in ticks], rotation=0)
+        ax_scatter.set_xlabel('Residue Position')
+        ax_scatter.set_ylabel('VEP')
+        ax_scatter.invert_xaxis()  # so residue # increases right-to-left
+
+    # Pretty legend
+    handles = [
+        mpatches.Patch(
+            color=palette[c], 
+            label=clinsig_legend_labels.get(c, c.replace('_', ' '))
+        ) 
+        for c in clinsig_order
+    ]
+    ax_scatter.legend(
+        handles=handles, 
+        title="Clinical Significance", 
+        frameon=False,
+        loc='center', 
+        bbox_to_anchor=bbox_to_anchor
+    )
+
+    # --- KDE ---
+    kde_kwargs = {
+        "data": vep_prot,
+        "hue": clinsig_col,
+        "hue_order": clinsig_order,
+        "fill": True,
+        "multiple": "fill",
+        "alpha": 0.40,
+        "palette": palette,
+        "common_norm": False,
+        "cut": 0,
+        "bw_adjust": 0.5,
+        "ax": ax_kde
+    }
+    if position_axis == "y":
+        kde_kwargs["y"] = position_col
+    else:
+        kde_kwargs["x"] = position_col
+    sns.kdeplot(**kde_kwargs)
+
+    # Axis labels and despine for KDE
+    if position_axis == "y":
+        ax_kde.set_ylabel('Residue Position')
+        ax_kde.set_xlabel(None)
+        ax_kde.invert_yaxis()
+    else:
+        ax_kde.set_xlabel('Residue Position')
+        ax_kde.set_ylabel(None)
+        ax_kde.invert_xaxis()
+    
+    # Set consistent tick label sizes for all axes
+    tick_label_size = 10
+    ax_scatter.tick_params(axis='both', labelsize=tick_label_size)
+    ax_kde.tick_params(axis='both', labelsize=tick_label_size)
+    
+    sns.despine(ax=ax_scatter)
+    if position_axis == "y":
+        sns.despine(ax=ax_kde, left=True)
+    else:
+        sns.despine(ax=ax_kde, bottom=True)
+
+    # Only show legend in the left plot
+    ax_kde.legend().remove()
+
+    # --- WT margin effect plot (if ridge_df provided and has wt_position) ---
+    if has_wt_position and ax_wt_interaction is not None:
+        # Use ridge_kwargs properly. Set defaults for WT:
+        _default_wt_ridge_kwargs = {
+            "x": "wt_position",
+            "y": "interaction_strength",
+            "size": None,
+            "s": 14,
+            "alpha": 0.5,
+            "color": "black",  # Use black dots for WT
+            "hue": None,  # WT variants don't have clinsig
+            "palette": palette,
+        }
+        if ridge_kwargs is not None:
+            wt_ridgep = {**_default_wt_ridge_kwargs, **ridge_kwargs}
+        else:
+            wt_ridgep = _default_wt_ridge_kwargs.copy()
+        # Remove hue and palette if hue is None to ensure black color is used
+        if wt_ridgep.get("hue") is None:
+            wt_ridgep.pop("hue", None)
+            wt_ridgep.pop("palette", None)
+        # Extract mandatory x/y
+        wt_ridge_x = wt_ridgep.pop("x")
+        wt_ridge_y = wt_ridgep.pop("y")
+        wt_ridge_y_label = r"$|E_{\text{WT}}|$"
+
+        if wt_ridge_x not in ridge_df.columns or wt_ridge_y not in ridge_df.columns:
+            raise ValueError(f"ridge_df must contain columns: {wt_ridge_x} and {wt_ridge_y}")
+
+        # Aggregate ridge_df to compute mean yval per WT residue
+        ridge_df_wt_agg = (
+            ridge_df
+            .groupby([wt_ridge_x], as_index=False)[wt_ridge_y].mean()
+        )
+        ridge_df_wt_agg = ridge_df_wt_agg.sort_values(by=wt_ridge_x)
+
+        # scatterplot -- assign coordinates, axis
+        if position_axis == "x":
+            scatter_args = dict(
+                data=ridge_df_wt_agg,
+                x=wt_ridge_x,
+                y=wt_ridge_y,
+                ax=ax_wt_interaction,
+                legend=False,
+                zorder=2
+            )
+            scatter_args.update(wt_ridgep)
+            sns.scatterplot(**scatter_args)
+            ax_wt_interaction.set_xlabel('Residue Position')
+            ax_wt_interaction.set_ylabel(wt_ridge_y_label)
+            ax_wt_interaction.set_xlim(vep_prot[position_col].min(), vep_prot[position_col].max())
+        else:
+            scatter_args = dict(
+                data=ridge_df_wt_agg,
+                x=wt_ridge_y,
+                y=wt_ridge_x,
+                ax=ax_wt_interaction,
+                legend=False,
+                zorder=2
+            )
+            scatter_args.update(wt_ridgep)
+            sns.scatterplot(**scatter_args)
+            ax_wt_interaction.set_ylabel('Residue Position')
+            ax_wt_interaction.set_xlabel(wt_ridge_y_label)
+            ax_wt_interaction.set_ylim(vep_prot[position_col].min(), vep_prot[position_col].max()) 
+
+        # Layout and ticks
+        if position_axis == "x":
+            ax_wt_interaction.set_xticks(ticks)
+            ax_wt_interaction.set_xticklabels([str(x) for x in ticks], rotation=0)
+        else:
+            ax_wt_interaction.set_yticks(ticks)
+            ax_wt_interaction.set_yticklabels([str(y) for y in ticks], rotation=0)
+        # Set consistent tick label size for WT interaction plot
+        ax_wt_interaction.tick_params(axis='both', labelsize=tick_label_size)
+        sns.despine(ax=ax_wt_interaction)
+
+    # --- Interaction plot (if ridge_df provided) ---
+    if has_interaction_ax and ax_interaction is not None:
+        # Use ridge_kwargs properly. Set defaults:
+        _default_ridge_kwargs = {
+            "x": "clinical_position",
+            "y": "interaction_strength",
+            "size": None,
+            "s": 14,
+            "alpha": 0.5,
+            "hue": "clinsig",
+            "palette": palette,
+            # "sizes": (1e-8, 100)
+        }
+        if ridge_kwargs is not None:
+            ridgep = {**_default_ridge_kwargs, **ridge_kwargs}
+        else:
+            ridgep = _default_ridge_kwargs.copy()
+        # Extract mandatory x/y
+        ridge_x = ridgep.pop("x")
+        ridge_y = ridgep.pop("y")
+        # ridge_y_label is kept as argument
+
+        if ridge_x not in ridge_df.columns or ridge_y not in ridge_df.columns:
+            raise ValueError(f"ridge_df must contain columns: {ridge_x} and {ridge_y}")
+
+        # First, aggregate ridge_df to compute mean yval per residue (ridge_x)
+        
+        clinsig_order = utils.get_clinsig_order() 
+        ridge_df_agg = (
+            ridge_df
+            .merge(vep_prot[["site", "clinsig"]].drop_duplicates(), on="site", how="left")
+            .groupby(["site", "clinsig", ridge_x], as_index=False)[ridge_y].mean()
+        )
+        # Create Categorical for clinsig with correct order (just those present)
+        present_clinsigs = [c for c in clinsig_order if c in ridge_df_agg["clinsig"].unique()]
+        ridge_df_agg["clinsig"] = pd.Categorical(ridge_df_agg["clinsig"], categories=present_clinsigs, ordered=True)
+        ridge_df_agg = ridge_df_agg.sort_values(by=["site", "clinsig", ridge_x])
+
+        # scatterplot -- assign coordinates, axis
+        if position_axis == "x":
+            scatter_args = dict(
+                data=ridge_df_agg,
+                x=ridge_x,
+                y=ridge_y,
+                ax=ax_interaction,
+                legend=False,
+                zorder=2
+            )
+            scatter_args.update(ridgep)
+            sns.scatterplot(**scatter_args)
+            ax_interaction.set_xlabel('Residue Position')
+            ax_interaction.set_ylabel(ridge_y_label)
+            ax_interaction.set_xlim(vep_prot[position_col].min(), vep_prot[position_col].max())
+        else:
+            scatter_args = dict(
+                data=ridge_df_agg,
+                x=ridge_y,
+                y=ridge_x,
+                ax=ax_interaction,
+                legend=False,
+                zorder=2
+            )
+            scatter_args.update(ridgep)
+            sns.scatterplot(**scatter_args)
+            ax_interaction.set_ylabel('Residue Position')
+            ax_interaction.set_xlabel(ridge_y_label)
+            ax_interaction.set_ylim(vep_prot[position_col].min(), vep_prot[position_col].max()) 
+
+        # Layout and ticks
+        if position_axis == "x":
+            ax_interaction.set_xticks(ticks)
+            ax_interaction.set_xticklabels([str(x) for x in ticks], rotation=0)
+        else:
+            ax_interaction.set_yticks(ticks)
+            ax_interaction.set_yticklabels([str(y) for y in ticks], rotation=0)
+        # Set consistent tick label size for interaction plot
+        ax_interaction.tick_params(axis='both', labelsize=tick_label_size)
+        sns.despine(ax=ax_interaction)
+
+    # Set plot title if provided
+    if title is not None:
+        # Adjust title position based on number of rows
+        if has_wt_position:
+            title_y = 0.98  # 4 rows
+        elif has_interaction_ax:
+            title_y = 0.97  # 3 rows
+        else:
+            title_y = 0.95  # 2 rows
+        fig.suptitle(title, y=title_y)
+
+    if rasterize:
+        if ax_interaction is not None:
+            ax_interaction = utils.rasterize_figure(ax_interaction)
+        if ax_wt_interaction is not None:
+            ax_wt_interaction = utils.rasterize_figure(ax_wt_interaction)
+        ax_scatter = utils.rasterize_figure(ax_scatter) 
+
+    plt.tight_layout()
+    plt.show()
+    
+    # Prepare return data
+    return_data = {"vep_prot": vep_prot}
+    if has_interaction_ax and ax_interaction is not None:
+        return_data["ridge_df_agg"] = ridge_df_agg
+    if has_wt_position and ax_wt_interaction is not None:
+        return_data["ridge_df_wt_agg"] = ridge_df_wt_agg
+    
+    return {"fig": fig, "axs": axs, "data": return_data}

@@ -123,6 +123,74 @@ def get_peaks(x,
     n_peaks = len(peaks) if len(peaks) > 0 else 1
     return n_peaks
 
+def get_peaks_bgm(x,
+                  max_components=50,
+                  random_state=42,
+                  bgm_kwargs={}):
+    """
+    Get the peaks of a list of values using the Bayesian Gaussian Mixture Model.
+
+    Parameters
+    ----------
+    x : array-like
+        The input data as an array-like sequence (e.g., numpy array, pandas Series, or list).
+        This should be one-dimensional (shape (n_samples,)) as it will be reshaped for modeling.
+    max_components : int, optional
+        Maximum number of mixture components to consider in the Bayesian Gaussian Mixture.
+        If set higher than the number of data points, it is reduced to len(x).
+        Default is 50.
+    random_state : int, optional
+        Random seed for reproducibility. Default is 42.
+    bgm_kwargs : dict, optional
+        Additional keyword arguments to pass to sklearn.mixture.BayesianGaussianMixture.
+
+    Returns
+    -------
+    bgm : sklearn.mixture.BayesianGaussianMixture
+        The fitted BayesianGaussianMixture object.
+    component_labels : ndarray of shape (n_samples,)
+        Cluster/component assignments for each data point in x.
+    n_peaks : int
+        Number of unique mixture components assigned, i.e., the number of peaks found in x.
+
+    Notes
+    -----
+    This function fits a Bayesian Gaussian Mixture Model (BGM) to the univariate data ``x``.
+    Peaks are defined as unique mixture components assigned to the data.
+    The number of peaks is the count of unique predicted labels.
+
+    #### Parameters  ####
+    # Docs: https://scikit-learn.org/stable/modules/generated/sklearn.mixture.BayesianGaussianMixture.html
+    # Tweak parameters to reduce peak overestimation:
+    # - weight_concentration_prior_type="dirichlet_process" encourages fewer, more distinct components
+    # - weight_concentration_prior=0.8 (increase from default) for more sparsity (fewer active components)
+    # - covariance_type="full" for flexibility, but could use "diag" if desired
+    # - init_params="kmeans" can help with initialization
+
+    Example
+    -------
+    >>> x = np.array([1,2,3,10,11,12])
+    >>> bgm, component_labels, n_peaks = get_peaks_bgm(x)
+    >>> print(n_peaks)
+    2
+
+    """
+    from sklearn.mixture import BayesianGaussianMixture
+    # Make sure max_components is not greater than the number of data points
+    if max_components > len(x):
+        max_components = len(x)
+
+    bgm = BayesianGaussianMixture(
+        n_components=max_components,
+        random_state=random_state,
+        **bgm_kwargs
+    ).fit(np.array(x).reshape(-1, 1))
+    
+    component_labels = bgm.predict(np.array(x).reshape(-1, 1))
+    n_peaks = len(np.unique(component_labels))
+    
+    return bgm, component_labels, n_peaks
+
 def ecdf(x):
     #     x = np.sort(data)
     #     n = len(x)
@@ -138,6 +206,7 @@ def get_ecdf(x,
              grid_points=100,
              max_components=50,
              random_state=42,
+             bgm_kwargs={},
              title=None,
              error=True):
     """
@@ -155,13 +224,13 @@ def get_ecdf(x,
        #### KDE + scipy.signal method ####
         # Create a grid that extends beyond the data points to avoid the "Every data point must be inside of the grid" error
         kde_x, kde_y = FFTKDE(bw='ISJ').fit(x_array).evaluate(grid_points=grid_points)
-        # n_peaks = get_peaks(kde_y)
+        # n_peaks = get_peaks(kde_y) 
 
-        #### Bayesian Gaussian Mixture Model method ####
-        bgm = BayesianGaussianMixture(n_components=max_components, 
-                                      random_state=random_state).fit(x_array.reshape(-1, 1))
-        component_labels = bgm.predict(x_array.reshape(-1, 1))
-        n_peaks = len(np.unique(component_labels)) 
+        # Make sure max_components is not greater than the number of data points
+        bgm, component_labels, n_peaks = get_peaks_bgm(x_array, 
+                                                       max_components=max_components, 
+                                                       random_state=random_state, 
+                                                       bgm_kwargs=bgm_kwargs)
 
         # Get the ECDF as a dataframe
         ecdf_res = ecdf(x_array)
@@ -245,6 +314,7 @@ def estimate_modality(
     vep_col='VEP',
     save_path='results/vep_ecdf.parquet',
     max_components=50,
+    bgm_kwargs={},
     error=False,
     force=False
 ):
@@ -273,7 +343,11 @@ def estimate_modality(
     force : bool, optional
         If True, force recalculation even if a cached file exists. If False and the file exists,
         load the cached results. Default is False.
-
+    bgm_kwargs : dict, optional
+        Keyword arguments for the Bayesian Gaussian Mixture Model. Default is {}.
+        See https://scikit-learn.org/stable/modules/generated/sklearn.mixture.BayesianGaussianMixture.html
+        for available parameters.
+         
     Returns
     -------
     vep_ecdf : pd.DataFrame
@@ -307,6 +381,7 @@ def estimate_modality(
                 get_ecdf,
                 return_df=True,
                 max_components=max_components,
+                bgm_kwargs=bgm_kwargs,
                 error=error
             )
             .reset_index()
@@ -332,19 +407,47 @@ def plot_estimate_modality(vep_ecdf,
                            figsize=(8, 6),
                            min_haplotypes=20, 
                            title="VEP Modality",
-                           x_label="Peaks",
+                           x_label="Mixture Components (Peaks)",
                            y_label="Clinical Variants",
                            palette=utils.get_clinsig_palette(),
+                           flip_axes=False,
+                           legend_title="Clinical Significance",
+                           show_percentages=False,
+                           percentage_fmt=".1f",
                            **kwargs):
     """
     Plot the estimate modality of VEP scores as a stacked barplot.
+    
+    Parameters
+    ----------
+    flip_axes : bool, optional
+        If True, flip the x and y axes to create a horizontal barplot (default: False).
+    legend_title : str or None, optional
+        Title for the legend. If None, uses hue_col (default: None).
+    show_percentages : bool, optional
+        If True, show percentage labels above each bar (or to the right if flip_axes=True)
+        indicating the percentage of variants with that number of peaks (default: False).
+    percentage_fmt : str, optional
+        Format string for the percentage labels. Default is ".1f".
     """
     import matplotlib.ticker as mticker
 
     fig, ax = plt.subplots(figsize=figsize)
-    plot_df = vep_ecdf.loc[vep_ecdf['n_haplotypes'] >= min_haplotypes]
+    
+    plot_df = vep_ecdf.loc[vep_ecdf['n_haplotypes'] >= min_haplotypes].copy()
     # Get one row per "site"
     plot_df = plot_df.drop_duplicates(subset=[site_col])
+    
+    # Clean up clinsig labels: remove underscores and spell out "path" -> "pathogenic"
+    if hue_col in plot_df.columns:
+        plot_df[hue_col] = plot_df[hue_col].str.replace("path$", "pathogenic", regex=True).str.replace("_", " ")
+        # Update palette keys to match cleaned labels
+        if palette is not None:
+            palette_cleaned = {}
+            for k, v in palette.items():
+                k_cleaned = k.replace("path", "pathogenic").replace("_", " ")
+                palette_cleaned[k_cleaned] = v
+            palette = palette_cleaned
     
     numerator = plot_df.loc[(plot_df['n_haplotypes'] >= min_haplotypes) & (plot_df['n_peaks'] > 1), site_col].nunique()
     denominator = plot_df.loc[plot_df['n_haplotypes'] >= min_haplotypes, site_col].nunique()
@@ -365,39 +468,134 @@ def plot_estimate_modality(vep_ecdf,
     bottom = None
     for idx, clinsig in enumerate([x for x in stacked_data.columns if x != 'total']):
         values = stacked_data[clinsig]
-        ax.bar(
-            stacked_data.index,
-            values,
-            bottom=bottom,
-            label=clinsig,
-            color=palette[clinsig] if palette and clinsig in palette else None,
-            edgecolor='grey',  # Outline bars
-            linewidth=0.8,      # Set outline thickness
-            **kwargs
-        )
+        if flip_axes:
+            ax.barh(
+                stacked_data.index,
+                values,
+                left=bottom,
+                label=clinsig,
+                color=palette[clinsig] if palette and clinsig in palette else None,
+                edgecolor='grey',  # Outline bars
+                linewidth=0.8,      # Set outline thickness
+                **kwargs
+            )
+        else:
+            ax.bar(
+                stacked_data.index,
+                values,
+                bottom=bottom,
+                label=clinsig,
+                color=palette[clinsig] if palette and clinsig in palette else None,
+                edgecolor='grey',  # Outline bars
+                linewidth=0.8,      # Set outline thickness
+                **kwargs
+            )
         if bottom is None:
             bottom = values
         else:
             bottom = bottom + values
 
-    # Set y-axis to not use scientific notation
-    ax.yaxis.set_major_formatter(mticker.StrMethodFormatter('{x:,.0f}'))
+    # Add percentage labels if requested
+    if show_percentages:
+        total_variants = stacked_data['total'].sum()
+        percentages_raw = (stacked_data['total'] / total_variants * 100)
+        percentages = percentages_raw.round(1)
+        
+        # Helper function to convert number to superscript format
+        def to_superscript(value):
+            """Convert a number to superscript format (e.g., 1.23×10⁻²)"""
+            # Format in scientific notation first
+            sci_str = f'{value:.2e}'
+            # Parse mantissa and exponent
+            if 'e' in sci_str:
+                mantissa, exp_str = sci_str.split('e')
+                exp = int(exp_str)
+                
+                # Superscript Unicode characters
+                superscript_map = str.maketrans('0123456789-', '⁰¹²³⁴⁵⁶⁷⁸⁹⁻')
+                exp_superscript = str(exp).translate(superscript_map)
+                
+                return f'{mantissa}×10{exp_superscript}'
+            else:
+                return sci_str
+        
+        # Calculate offset based on data range for better positioning
+        max_value = stacked_data['total'].max()
+        offset = max_value * 0.02  # 2% of maximum bar value
+        
+        for peak_num in stacked_data.index:
+            pct_rounded = percentages[peak_num]
+            pct_raw = percentages_raw[peak_num]
+            
+            # If rounded percentage is 0.0 but raw value is non-zero, use superscript format
+            if abs(pct_rounded) < 0.05 and abs(pct_raw) > 1e-10:  # Rounded to 0.0 but raw value is non-zero
+                label_text = f'{to_superscript(pct_raw)}%'
+            else:
+                label_text = f'{pct_rounded:{percentage_fmt}}%'
+            
+            if flip_axes:
+                # For horizontal bars, place label to the right
+                bar_width = stacked_data.loc[peak_num, 'total']
+                ax.text(
+                    bar_width + offset,
+                    peak_num,
+                    label_text,
+                    ha='left',
+                    va='center',
+                    fontsize=9
+                )
+            else:
+                # For vertical bars, place label above
+                bar_height = stacked_data.loc[peak_num, 'total']
+                ax.text(
+                    peak_num,
+                    bar_height + offset,
+                    label_text,
+                    ha='center',
+                    va='bottom',
+                    fontsize=9
+                )
+
+    # Set axis formatter - use x-axis formatter when flipped, y-axis when not
+    # Format counts in units of 1000 (e.g., 5000 -> 5k)
+    def format_thousands(x, pos):
+        """Format number in thousands with 'k' suffix"""
+        if x >= 1000:
+            return f'{x/1000:.0f}k'
+        else:
+            return f'{x:.0f}'
+    
+    if flip_axes:
+        ax.xaxis.set_major_formatter(mticker.FuncFormatter(format_thousands))
+        ax.invert_yaxis()  # Invert y-axis for horizontal barplot
+    else:
+        ax.yaxis.set_major_formatter(mticker.FuncFormatter(format_thousands))
+    
     if title:
         plt.title(title)
-    if x_label:
-        plt.xlabel(x_label)
-    if y_label:
-        plt.ylabel(y_label)
+    
+    # Swap labels when axes are flipped
+    if flip_axes:
+        if y_label:
+            plt.xlabel(y_label)
+        if x_label:
+            plt.ylabel(x_label)
+    else:
+        if x_label:
+            plt.xlabel(x_label)
+        if y_label:
+            plt.ylabel(y_label)
 
     # Remove top and right borders (spines)
     ax.spines['top'].set_visible(False)
     ax.spines['right'].set_visible(False)
+
+    # Use legend_title parameter, defaulting to hue_col if None
+    legend_title_to_use = legend_title if legend_title is not None else hue_col
+    leg = ax.legend(title=legend_title_to_use)
     # Remove border around legend
-    leg = ax.get_legend()
     if leg is not None:
         leg.set_frame_on(False)
-
-    ax.legend(title=hue_col)
     plt.show()
     return {'fig': fig, 'axes': ax, "data": stacked_data}
 
@@ -985,7 +1183,10 @@ def plot_test_normality(normality_results,
                         legend_bbox_to_anchor=(1.4, 0.6),
                         legend_loc='upper right',
                         title=None,
-                        legend_left=False):
+                        legend_left=False,
+                        legend_columnspacing=0.5,
+                        legend_position='bottom',
+                        legend_title='Status'):
     """
     Plot the proportion of groups with normal, not normal, or not testable distributions,
     grouped by clinical significance.
@@ -1010,6 +1211,12 @@ def plot_test_normality(normality_results,
          Title of the plot.
      legend_left : bool, default False
          If True, place the legend on the left side of the plot. If False, place it on the right side.
+     legend_columnspacing : float, default 0.5
+         Horizontal spacing between legend columns (in units of font size).
+     legend_position : str, default 'bottom'
+         Position of the legend: 'bottom' or 'top'. Legend is always horizontal.
+     legend_title : str or None, default 'Status'
+         Title for the legend. Set to None to remove the legend title.
 
     Returns
     -------
@@ -1020,6 +1227,7 @@ def plot_test_normality(normality_results,
     import numpy as np
     from matplotlib.patches import Patch
     import pandas as pd
+    import re
 
     def normal_category(row):
         """
@@ -1095,40 +1303,49 @@ def plot_test_normality(normality_results,
         Patch(facecolor='white', edgecolor='black', hatch=hatch_map["Not testable"], label=label_map["Not testable"])
     ]
 
-    # Only show hatching legend by default; add clinsig legend if desired
-    # Adjust legend position based on figure size to avoid overlap
-    if legend_left:
-        # Place legend on the left side of the plot
-        if figsize[0] <= 5:  # For smaller figure widths, position legend outside plot with adjusted positioning
-            ax.legend(handles=hatch_patches, title='Status', loc='center right', bbox_to_anchor=(-0.25, 0.5))
-        else:  # For larger figure widths, position legend outside plot
-            ax.legend(handles=hatch_patches, title='Status', loc='center right', bbox_to_anchor=(-0.5, 0.5))
-    else:
-        # Place legend on the right side of the plot (default behavior)
-        if figsize[0] <= 5:  # For smaller figure widths, position legend outside plot with adjusted positioning
-            ax.legend(handles=hatch_patches, title='Status', loc='center left', bbox_to_anchor=(1.02, 0.5))
-        else:  # For larger figure widths, position legend outside plot
-            ax.legend(handles=hatch_patches, title='Status', loc=legend_loc, bbox_to_anchor=legend_bbox_to_anchor)
-
     ax.set_xticks(x)
-    ax.set_xticklabels(normality_by_clinsig_prop.index, rotation=30, ha='right')
+    # Format x-axis labels: remove underscores, replace "path" with "pathogenic", and break at spaces
+    formatted_labels = []
+    for label in normality_by_clinsig_prop.index:
+        # Remove underscores
+        formatted_label = label.replace('_', ' ')
+        # Replace "path" with "pathogenic" (handling word boundaries)
+        formatted_label = re.sub(r'\bpath\b', 'pathogenic', formatted_label)
+        # Break into multiple lines at spaces
+        formatted_label = formatted_label.replace(' ', '\n')
+        formatted_labels.append(formatted_label)
+    ax.set_xticklabels(formatted_labels)
     ax.set_ylabel('Proportion of Variants')
 
     if title is None:
         proportion_tested = 1 - normality_by_clinsig_prop["Not testable"].mean()
         title = f'Proportion of Variants\nwith Normal VEP Distributions\n({proportion_tested*100:.1f}% testable)'
-    ax.set_title(title)
     
-    # Adjust margins when legend is on the left to prevent overlap with y-axis title
-    if legend_left:
-        plt.subplots_adjust(left=0.25)
+    # Place legend horizontally (top or bottom based on legend_position)
+    # For top position, place legend below the title but above the plot
+    if legend_position == 'top':
+        # Set title higher to avoid overlap with legend
+        # Use y parameter to position title above the axes area
+        ax.set_title(title, y=1.08, pad=10)
+        # Position legend just below title in axes coordinates
+        ax.legend(handles=hatch_patches, title=legend_title, loc='lower center', 
+                 bbox_to_anchor=(0.5, 0.98), ncol=3, frameon=False, 
+                 columnspacing=legend_columnspacing)
+    else:  # 'bottom'
+        ax.set_title(title)
+        ax.legend(handles=hatch_patches, title=legend_title, loc='upper center', 
+                 bbox_to_anchor=(0.5, -0.15), ncol=3, frameon=False, 
+                 columnspacing=legend_columnspacing)
+    
+    # Adjust margins to accommodate legend (top or bottom)
+    if legend_position == 'top':
+        # Increase top margin to accommodate both title and legend
+        plt.subplots_adjust(top=0.80)
+    else:  # 'bottom'
+        plt.subplots_adjust(bottom=0.2)
     # Remove top and right borders (spines)
     ax.spines['top'].set_visible(False)
     ax.spines['right'].set_visible(False)
-    # Remove border around legend
-    leg = ax.get_legend()
-    if leg is not None:
-        leg.set_frame_on(False)
     plt.tight_layout()
     plt.show()
 
@@ -1153,10 +1370,18 @@ def plot_ref_percentile_schematic(
     show_xlabel=(True, True), 
     show_ylabel=(True, True),
     gradient_granularity=None,
+    ref_x_positions=(-2.2, 2.2), 
+    ref_label=r"$VEP_{ref}$",
+    ref_label_fontsize=10,
+    ref_label_color='grey',
+    ref_label_rotation=0,
+    ref_label_side=('left','right'),
+    ref_label_offset=None,
+    ref_label_y_position=(0.3, 0.3),
     ):
     """
     Plot a schematic showing how REF can under- or over-estimate pathogenicity
-    using a 3-row grid: top (REF far right), blank, bottom (REF far left).
+    using a 3-row grid: top (REF ref_x_positions[0]), blank, bottom (REF ref_x_positions[1]).
     If ax is provided, draws the schematic into that axis (as a single column).
     If ax is None, creates a new figure and axes.
 
@@ -1184,6 +1409,19 @@ def plot_ref_percentile_schematic(
         First boolean controls top schematic, second controls bottom schematic.
     gradient_granularity : int or None, optional
         If provided, controls the number of color steps in the gradient fill. If None, uses full resolution.
+    ref_x_positions : tuple or list, optional
+        X-axis position(s) for the REF line/text in the (top, bottom) subplots (default: (2.2, -2.2)).
+    ref_label_side : str, tuple, or None, optional
+        Which side of the vertical line to anchor the label on. Can be 'left' or 'right'.
+        If tuple, specifies (top, bottom) sides separately. If None, automatically determines
+        based on ref_x_positions (default: None).
+    ref_label_offset : float, tuple, or None, optional
+        Offset distance from the vertical line for the label. Positive values move the label
+        away from the line. If tuple, specifies (top, bottom) offsets separately. If None,
+        uses default offset of 0.1 (default: None).
+    ref_label_y_position : float, tuple, or None, optional
+        Y-axis position for the ref label in data coordinates. If tuple, specifies (top, bottom)
+        y-positions separately. If None, uses default y-position of 0.25 (default: None).
 
     Returns
     -------
@@ -1203,7 +1441,7 @@ def plot_ref_percentile_schematic(
     data = pd.DataFrame({"x": x, "y": y})
 
     palette = utils.get_clinsig_palette()
-    cmap = LinearSegmentedColormap.from_list("red_blue", [palette["path"], palette["benign"]])
+    cmap = LinearSegmentedColormap.from_list("red_blue", [palette["benign"], palette["path"]])
 
     def gradient_fill(ax, x, y, cmap, alpha=0.5, zorder=1, granularity=None):
         x_norm = (x - x.min()) / (x.max() - x.min())
@@ -1226,29 +1464,80 @@ def plot_ref_percentile_schematic(
                 color = cmap((bins[i] - x.min()) / (x.max() - x.min()))
                 ax.fill_between(x_bin, y_bin, color=color, alpha=alpha, zorder=zorder)
 
+    # Helper: get REF label text position alignment depending on ref_x location (left/right)
+    def get_ref_text_align(ref_x, side=None):
+        # If side is explicitly provided, use it
+        if side is not None:
+            return 'left' if side == 'right' else 'right'
+        # Otherwise, automatically determine: If REF marker at left, align text right; if at right, align left
+        return 'left' if ref_x > 0 else 'right'
+    
+    # Helper: calculate label position and alignment
+    def get_label_position_and_alignment(ref_x, side=None, offset=None):
+        """
+        Calculate the x position and horizontal alignment for the ref label.
+        
+        Returns:
+            x_pos: x coordinate for the label
+            ha: horizontal alignment ('left' or 'right')
+        """
+        # Determine side
+        if side is None:
+            # Auto-determine based on ref_x position
+            determined_side = 'right' if ref_x > 0 else 'left'
+        else:
+            determined_side = side
+        
+        # Determine offset
+        if offset is None:
+            offset = 0.1
+        
+        # Calculate position: if side is 'right', label goes to the right (positive offset)
+        # if side is 'left', label goes to the left (negative offset)
+        if determined_side == 'right':
+            x_pos = ref_x + offset
+            ha = 'left'
+        else:  # determined_side == 'left'
+            x_pos = ref_x - offset
+            ha = 'right'
+        
+        return x_pos, ha
+
     # The normal curve's max is about 0.4, min is 0
-    # We'll use this to map the barplot's y-axis to the schematic's y-axis
     schematic_ymin = 0
     schematic_ymax = 0.4
     if barplot_ylim is not None:
         barplot_ymin, barplot_ymax = barplot_ylim
-        # We'll map barplot_ymin to schematic_ymin and barplot_ymax to schematic_ymax
-        # For the schematic, set ylim to (schematic_ymin, schematic_ymax)
-        # But for the top and bottom axes, we want the top of the top schematic to align with barplot_ymax,
-        # and the bottom of the bottom schematic to align with barplot_ymin.
-        # So we set the ylims of both to (schematic_ymin, schematic_ymax)
-        # and set the position of the axes to fill the vertical space from 0 to 1 in the parent axis.
-        # This is handled below.
+
+    # Normalize ref_label_side and ref_label_offset to tuples (top, bottom)
+    if ref_label_side is None:
+        ref_label_side_top = None
+        ref_label_side_bottom = None
+    elif isinstance(ref_label_side, (tuple, list)) and len(ref_label_side) == 2:
+        ref_label_side_top, ref_label_side_bottom = ref_label_side
+    else:
+        ref_label_side_top = ref_label_side_bottom = ref_label_side
+    
+    if ref_label_offset is None:
+        ref_label_offset_top = None
+        ref_label_offset_bottom = None
+    elif isinstance(ref_label_offset, (tuple, list)) and len(ref_label_offset) == 2:
+        ref_label_offset_top, ref_label_offset_bottom = ref_label_offset
+    else:
+        ref_label_offset_top = ref_label_offset_bottom = ref_label_offset
+    
+    if ref_label_y_position is None:
+        ref_label_y_position_top = 0.25
+        ref_label_y_position_bottom = 0.25
+    elif isinstance(ref_label_y_position, (tuple, list)) and len(ref_label_y_position) == 2:
+        ref_label_y_position_top, ref_label_y_position_bottom = ref_label_y_position
+    else:
+        ref_label_y_position_top = ref_label_y_position_bottom = ref_label_y_position
 
     if ax is not None:
-        # Draw the schematic as a 3-row grid inside a single axis using manually positioned axes
-
         fig = ax.figure
         axs = []
 
-        # We'll use 3 axes positioned manually to align with the barplot
-        # The top schematic should align with the top of the barplot, bottom with bottom
-        # Add some spacing between the schematics
         heights = schematic_heights  # top, blank, bottom (configurable heights)
         
         # Get the parent axis position
@@ -1266,68 +1555,78 @@ def plot_ref_percentile_schematic(
             if i == 1:  # blank axis
                 blank_ax = fig.add_axes([parent_x0, y_pos, parent_width, height])
                 blank_ax.axis('off')
-                blank_ax.set_facecolor('none')  # Make background transparent
+                blank_ax.set_facecolor('none')
                 axs.append(blank_ax)
             else:
                 sub_ax = fig.add_axes([parent_x0, y_pos, parent_width, height])
-                sub_ax.set_facecolor('none')  # Make background transparent
+                sub_ax.set_facecolor('none')
                 axs.append(sub_ax)
 
         ax_top, ax_blank, ax_bottom = axs
 
         # Set ylims to align with barplot if provided
-        if barplot_ylim is not None:
-            barplot_ymin, barplot_ymax = barplot_ylim
-            # Keep the schematic's natural y-axis range for proper curve display
-            ax_top.set_ylim(schematic_ymin, schematic_ymax)
-            ax_bottom.set_ylim(schematic_ymin, schematic_ymax)
-        else:
-            ax_top.set_ylim(schematic_ymin, schematic_ymax)
-            ax_bottom.set_ylim(schematic_ymin, schematic_ymax)
+        ax_top.set_ylim(schematic_ymin, schematic_ymax)
+        ax_bottom.set_ylim(schematic_ymin, schematic_ymax)
 
-        # Top subplot: REF far right
+        # Top subplot: REF at custom x position
         ax_top.plot(x, y, color='black', lw=2)
         gradient_fill(ax_top, x, y, cmap, alpha=0.7, granularity=gradient_granularity)
-        ref_x = 2.2
-        ax_top.axvline(ref_x, color='grey', linestyle='--', lw=2, zorder=10)
-        ax_top.text(ref_x-0.1, 0.25, "REF", color='grey', fontsize=10, fontweight=None, va='center', ha='right', rotation=90)
-        if show_ylabel[0]:  # Show ylabel for top schematic if first boolean is True
+        ref_x_top = ref_x_positions[0]
+        ax_top.axvline(ref_x_top, color='grey', linestyle='--', lw=2, zorder=10)
+        label_x_top, label_ha_top = get_label_position_and_alignment(
+            ref_x_top, side=ref_label_side_top, offset=ref_label_offset_top
+        )
+        ax_top.text(label_x_top, ref_label_y_position_top, ref_label, 
+                    color=ref_label_color, fontsize=ref_label_fontsize, fontweight=None, va='center',
+                    ha=label_ha_top, rotation=ref_label_rotation)
+        if show_ylabel[0]:
             ax_top.set_ylabel("Density")
         ax_top.set_yticks([])
-        # fontweight does not apply to LaTeX text; use \mathbf{} for bold in LaTeX
-        ax_top.set_title(r"$\mathbf{VEP_{ref}\ underestimates}$" + "\n" + r"$\mathbf{pathogenicity}$", 
-                        fontsize=title_fontsize, 
-                        loc=title_loc,
-                        fontweight='bold')
-        if show_xlabel[0]:  # Show xlabel for top schematic if first boolean is True
+        ax_top.set_title(
+            r"$\mathbf{VEP_{ref}\ underestimates}$" + "\n" + r"$\mathbf{pathogenicity}$", 
+            fontsize=title_fontsize, 
+            loc=title_loc,
+            fontweight='bold'
+        )
+        if show_xlabel[0]:
             ax_top.set_xlabel(r"$VEP_{ref}$ percentile")
         ax_top.set_xlim(-3, 3)
         ax_top.set_xticks([-3, 0, 3])
-        ax_top.set_xticklabels([])  # Remove x-tick labels for top schematic
+        ax_top.set_xticklabels([])
         ax_top.spines['right'].set_visible(False)
         ax_top.spines['left'].set_visible(False)
         ax_top.spines['top'].set_visible(False)
 
-        # Middle subplot: blank space
         ax_blank.axis('off')
 
-        # Bottom subplot: REF far left
+        # Bottom subplot: REF at custom x position
         ax_bottom.plot(x, y, color='black', lw=2)
         gradient_fill(ax_bottom, x, y, cmap, alpha=0.7, granularity=gradient_granularity)
-        ref_x = -2.2
-        ax_bottom.axvline(ref_x, color='grey', linestyle='--', lw=2, zorder=10)
-        ax_bottom.text(ref_x-0.1, 0.25, "REF", color='grey', fontsize=10, fontweight=None, va='center', ha='right', rotation=90)
-        if show_ylabel[1]:  # Show ylabel for bottom schematic if second boolean is True
+        ref_x_bottom = ref_x_positions[1]
+        ax_bottom.axvline(ref_x_bottom, color='grey', linestyle='--', lw=2, zorder=10)
+        label_x_bottom, label_ha_bottom = get_label_position_and_alignment(
+            ref_x_bottom, side=ref_label_side_bottom, offset=ref_label_offset_bottom
+        )
+        ax_bottom.text(label_x_bottom, ref_label_y_position_bottom, ref_label,
+                       color=ref_label_color, fontsize=ref_label_fontsize, fontweight=None, va='center',
+                       ha=label_ha_bottom, rotation=ref_label_rotation)
+        if show_ylabel[1]:
             ax_bottom.set_ylabel("Density")
         ax_bottom.set_yticks([])
-        ax_bottom.set_title(r"$\mathbf{VEP_{ref}\ overestimates}$" + "\n" + r"$\mathbf{pathogenicity}$", 
-                            fontsize=title_fontsize, loc=title_loc,
-                            fontweight='bold')
-        if show_xlabel[1]:  # Show xlabel for bottom schematic if second boolean is True
+        ax_bottom.set_title(
+            r"$\mathbf{VEP_{ref}\ overestimates}$" + "\n" + r"$\mathbf{pathogenicity}$", 
+            fontsize=title_fontsize, loc=title_loc,
+            fontweight='bold'
+        )
+        if show_xlabel[1]:
             ax_bottom.set_xlabel(r"$VEP_{ref}$ percentile")
         ax_bottom.set_xlim(-3, 3)
         ax_bottom.set_xticks([-3, 0, 3])
-        ax_bottom.set_xticklabels(['0', '50', '100'])
+        # If near right, labels left-to-right, else right-to-left
+        if ref_x_bottom < 0:
+            ax_bottom.set_xticklabels(['0', '50', '100'])
+        else:
+            ax_bottom.set_xticklabels(['100', '50', '0'])
         ax_bottom.spines['right'].set_visible(False)
         ax_bottom.spines['left'].set_visible(False)
         ax_bottom.spines['top'].set_visible(False)
@@ -1345,57 +1644,69 @@ def plot_ref_percentile_schematic(
     else:
         # Standalone schematic as before
         fig = plt.figure(figsize=(4, 10.5))
-        fig.patch.set_facecolor('none')  # Make figure background transparent
+        fig.patch.set_facecolor('none')
         gs = gridspec.GridSpec(3, 1, height_ratios=[1, 1, 1], hspace=0.3)
         ax_top = fig.add_subplot(gs[0])
-        ax_top.set_facecolor('none')  # Make background transparent
+        ax_top.set_facecolor('none')
         ax_blank = fig.add_subplot(gs[1])
-        ax_blank.set_facecolor('none')  # Make background transparent
+        ax_blank.set_facecolor('none')
         ax_bottom = fig.add_subplot(gs[2], sharex=ax_top)
-        ax_bottom.set_facecolor('none')  # Make background transparent
+        ax_bottom.set_facecolor('none')
         axs = [ax_top, ax_blank, ax_bottom]
 
         ax_top.set_ylim(schematic_ymin, schematic_ymax)
         ax_bottom.set_ylim(schematic_ymin, schematic_ymax)
 
-        # Top subplot: REF far right
+        # Top subplot: REF at custom x position
         ax_top.plot(x, y, color='black', lw=2)
         gradient_fill(ax_top, x, y, cmap, alpha=0.7, granularity=gradient_granularity)
-        ref_x = 2.2
-        ax_top.axvline(ref_x, color='grey', linestyle='--', lw=2, zorder=10)
-        ax_top.text(ref_x-0.1, 0.25, "REF", color='grey', fontsize=10, fontweight=None, va='center', ha='right', rotation=90)
-        if show_ylabel[0]:  # Show ylabel for top schematic if first boolean is True
+        ref_x_top = ref_x_positions[0]
+        ax_top.axvline(ref_x_top, color='grey', linestyle='--', lw=2, zorder=10)
+        label_x_top, label_ha_top = get_label_position_and_alignment(
+            ref_x_top, side=ref_label_side_top, offset=ref_label_offset_top
+        )
+        ax_top.text(label_x_top, ref_label_y_position_top, ref_label,
+                    color=ref_label_color, fontsize=ref_label_fontsize, fontweight=None, va='center',
+                    ha=label_ha_top, rotation=ref_label_rotation)
+        if show_ylabel[0]:
             ax_top.set_ylabel("Density")
         ax_top.set_yticks([])
         ax_top.set_title(r"$VEP_{ref}$ underestimates\npathogenicity", fontweight='bold', loc=title_loc)
-        if show_xlabel[0]:  # Show xlabel for top schematic if first boolean is True
+        if show_xlabel[0]:
             ax_top.set_xlabel(r"$VEP_{ref}$ percentile")
         ax_top.set_xlim(-3, 3)
         ax_top.set_xticks([-3, 0, 3])
-        ax_top.set_xticklabels([])  # Remove x-tick labels for top schematic
+        ax_top.set_xticklabels([])
         ax_top.spines['right'].set_visible(False)
         ax_top.spines['top'].set_visible(False)
 
-        # Middle subplot: blank space
         ax_blank.axis('off')
 
-        # Bottom subplot: REF far left
+        # Bottom subplot: REF at custom x position
         ax_bottom.plot(x, y, color='black', lw=2)
         gradient_fill(ax_bottom, x, y, cmap, alpha=0.7, granularity=gradient_granularity)
-        ref_x = -2.2
-        ax_bottom.axvline(ref_x, color='grey', linestyle='--', lw=2, zorder=10)
-        ax_bottom.text(ref_x-0.1, 0.25, "REF", color='grey', fontsize=10, fontweight=None, va='center', ha='right', rotation=90)
-        if show_ylabel[1]:  # Show ylabel for bottom schematic if second boolean is True
+        ref_x_bottom = ref_x_positions[1]
+        ax_bottom.axvline(ref_x_bottom, color='grey', linestyle='--', lw=2, zorder=10)
+        label_x_bottom, label_ha_bottom = get_label_position_and_alignment(
+            ref_x_bottom, side=ref_label_side_bottom, offset=ref_label_offset_bottom
+        )
+        ax_bottom.text(label_x_bottom, ref_label_y_position_bottom, ref_label,
+                       color=ref_label_color, fontsize=ref_label_fontsize, fontweight=None, va='center',
+                       ha=label_ha_bottom, rotation=ref_label_rotation)
+        if show_ylabel[1]:
             ax_bottom.set_ylabel("Density")
         ax_bottom.set_yticks([])
         ax_bottom.set_title(r"$VEP_{ref}$ overestimates\npathogenicity", 
                             fontweight='bold', 
                             loc=title_loc)
-        if show_xlabel[1]:  # Show xlabel for bottom schematic if second boolean is True
+        if show_xlabel[1]:
             ax_bottom.set_xlabel(r"$VEP_{ref}$ percentile")
         ax_bottom.set_xlim(-3, 3)
         ax_bottom.set_xticks([-3, 0, 3])
-        ax_bottom.set_xticklabels(['0', '50', '100'])
+        if ref_x_bottom < 0:
+            ax_bottom.set_xticklabels(['0', '50', '100'])
+        else:
+            ax_bottom.set_xticklabels(['100', '50', '0'])
         ax_bottom.spines['right'].set_visible(False)
         ax_bottom.spines['top'].set_visible(False)
 
@@ -1403,6 +1714,7 @@ def plot_ref_percentile_schematic(
         if show:
             plt.show()
         return {"fig": fig, "axs": axs, "data": data}
+
 
 
 def plot_ref_vep_percentile_stacked_bar(
@@ -3142,3 +3454,159 @@ def test_vep_clinsig_separation(
     vep_diff_df = pd.DataFrame(results).sort_values(by=[model_col, 'group1', 'group2'])
     summary = vep_diff_df.groupby(model_col).agg({"pvalue": "mean", "statistic": "mean"}).sort_values(by="statistic", ascending=False)
     return vep_diff_df, summary
+
+import numpy as np
+import pandas as pd
+from scipy.stats import skew, kurtosis, median_abs_deviation
+
+def variant_embedding(
+    df: pd.DataFrame, 
+    score_col: str = "VEP", 
+    quantiles: list = None
+) -> dict:
+    """
+    Generate a numerical summary ('embedding') of variant effect scores within a group.
+
+    Parameters
+    ----------
+    df : pd.DataFrame
+        DataFrame containing variant effect score data for a single site.
+    score_col : str, default="VEP"
+        Column name holding the effect scores to embed.
+    quantiles : list of float, optional
+        List of quantile fractions (e.g., 0.01) to compute. If None, defaults to [0.01, 0.05, 0.10, 0.25, 0.50, 0.75, 0.90, 0.95, 0.99].
+
+    Returns
+    -------
+    emb : dict
+        Dictionary including quantiles, moments (mean, std, skew, kurtosis, min, max, mad), and missingness counts.
+    """
+    if quantiles is None:
+        quantiles = [0.01, 0.05, 0.10, 0.25, 0.50, 0.75, 0.90, 0.95, 0.99]
+
+    scores = df[score_col].values
+
+    # Exclude NaNs
+    scores_nonan = scores[~np.isnan(scores)]
+    n_total = len(scores)
+    n_nonan = len(scores_nonan)
+    n_nan = n_total - n_nonan
+
+    # Handle fully missing case
+    if n_nonan == 0:
+        # All values are NaN: provide np.nan in all keys, explicit missingness
+        emb = {f"q{int(q*100)}": np.nan for q in quantiles}
+        emb.update({
+            "mean": np.nan,
+            "std": np.nan,
+            "mad": np.nan,
+            "skew": np.nan,
+            "kurt": np.nan,
+            "min": np.nan,
+            "max": np.nan,
+            "n_nonan": 0,
+            "n_nan": n_total,
+            "prop_missing": 1.0,
+        })
+        return emb
+
+    # If only 1 or 2 values: quantiles/mean/mad/var ok, but skew/kurtosis undefined
+    if n_nonan < 3:
+        moments = {
+            "mean": np.nanmean(scores_nonan),
+            "std": np.nanstd(scores_nonan),
+            "mad": median_abs_deviation(scores_nonan, nan_policy="omit"),
+            "skew": np.nan,
+            "kurt": np.nan,
+            "min": np.nanmin(scores_nonan),
+            "max": np.nanmax(scores_nonan),
+        }
+    else:
+        moments = {
+            "mean": np.nanmean(scores_nonan),
+            "std": np.nanstd(scores_nonan),
+            "mad": median_abs_deviation(scores_nonan, nan_policy="omit"),
+            "skew": skew(scores_nonan, nan_policy="omit"),
+            "kurt": kurtosis(scores_nonan, nan_policy="omit"),
+            "min": np.nanmin(scores_nonan),
+            "max": np.nanmax(scores_nonan),
+        }
+
+    # Quantiles
+    emb = {f"q{int(q*100)}": np.nanquantile(scores_nonan, q) for q in quantiles}
+    emb.update(moments)
+    emb["n_nonan"] = n_nonan
+    emb["n_nan"] = n_nan
+    emb["prop_missing"] = n_nan / n_total if n_total > 0 else np.nan
+
+    return emb
+
+def build_variant_embeddings(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Build summary/embedding rows for each variant site in the provided DataFrame.
+
+    Parameters
+    ----------
+    df : pd.DataFrame
+        Input DataFrame with a 'site' column (e.g. unique variant key) and a score column.
+    
+    Returns
+    -------
+    pd.DataFrame
+        DataFrame of embeddings per site.
+    """
+    from tqdm import tqdm
+
+    rows = []
+    for var, sub in tqdm(df.groupby("site"), desc="Building variant embeddings"):
+        emb = variant_embedding(sub)
+        emb["site"] = var
+        rows.append(emb)
+    return pd.DataFrame(rows)
+
+def variant_embedding_umap(variant_embed: pd.DataFrame,
+umap_kwargs={"n_components": 3,
+        "random_state": 42}) -> pd.DataFrame:
+    """
+    Build UMAP embeddings for each variant site in the provided DataFrame.
+
+    Parameters
+    ----------
+    variant_embed : pd.DataFrame
+        Input DataFrame with a 'site' column (e.g. unique variant key) and a score column.
+    
+    Returns
+    -------
+    pd.DataFrame    
+
+    """
+    from sklearn.preprocessing import StandardScaler
+    from sklearn.decomposition import PCA
+    import umap
+
+    feature_cols = [c for c in variant_embed.columns if c.startswith("q") or c in ["mad","std","skew","kurt"]]
+
+    # Standardize
+    X = StandardScaler().fit_transform(variant_embed[feature_cols].dropna())
+
+    # PCA to 30–50 dims
+    # pca = PCA(n_components=10)
+    # X_pca = pca.fit_transform(X)
+    # variant_embed["PC1"] = X_pca[:, 0]
+    # variant_embed["PC2"] = X_pca[:, 1]
+ 
+    um = umap.UMAP( 
+        **umap_kwargs
+    )
+    X_umap = um.fit_transform(X)
+
+    # Create a UMAP DataFrame with only the variants that were not dropped for UMAP (i.e., same order as X_umap)
+    umap_df = variant_embed.loc[variant_embed[feature_cols].dropna().index].copy()
+    umap_df["UMAP1"] = X_umap[:, 0]
+    umap_df["UMAP2"] = X_umap[:, 1]
+    umap_df["UMAP3"] = X_umap[:, 2]
+    # for col in ["clinsig", "GENE", "protein", "mutant"]:
+    #     if col not in umap_df.columns:
+    #         umap_df[col] = umap_df["site"].map(dict(zip(vep_df["site"], vep_df[col])))
+
+    return umap_df

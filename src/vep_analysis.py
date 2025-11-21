@@ -1680,7 +1680,7 @@ def recompress_parquet(save_dir: str = os.path.join(config.DATA_DIR,"1KG","vep")
 def plot_population_vep_violin_weighted(df, 
                                         mutant=None, 
                                         min_freq=0, 
-                                        top_pop_col = 'top_superpop',
+                                        top_pop_col = 'top_superpopulation',
                                         freq_col = 'frequency',     
                                         log_fold_change=False,
                                         palette=None,
@@ -1724,7 +1724,7 @@ def plot_population_vep_violin_weighted(df,
     else:
         freq_col = 'frequency'
         plot_data = plot_data.loc[plot_data.apply(lambda row: row[row[top_pop_col]] > min_freq if row[top_pop_col] in row.index else False, axis=1)].copy()
-        # Remove the prefix from top_superpop for plotting
+        # Remove the prefix from top_superpopulation for plotting
         plot_data.loc[:, 'Top Superpopulation'] = plot_data[top_pop_col].str.replace('freq_1000GENOMES:phase_3:', '')
     
     plot_data.dropna(subset=[freq_col], inplace=True)
@@ -1851,7 +1851,7 @@ def plot_population_vep_violin_weighted(df,
 def plot_population_vep_violin_unweighted(df,
                                           mutant=None, 
                                           min_freq=0.005, 
-                                          top_pop_col = 'top_superpop',
+                                          top_pop_col = 'top_superpopulation',
                                           freq_col = 'frequency',
                                           palette=None):
     import seaborn as sns
@@ -1868,7 +1868,7 @@ def plot_population_vep_violin_unweighted(df,
     # Filter out haplotypes that don't have a frequency >0.01 in their top superpopulation
     plot_data = plot_data.loc[plot_data.apply(lambda row: row[row[top_pop_col]] > min_freq if row[top_pop_col] in row.index else False, axis=1)]
 
-    # Remove the prefix from top_superpop for plotting
+    # Remove the prefix from top_superpopulation for plotting
     plot_data['Top Superpopulation'] = plot_data[top_pop_col].str.replace('freq_1000GENOMES:phase_3:', '')
 
 
@@ -2006,10 +2006,10 @@ def compute_vep_mmr(df,
                             (df['scoring_strategy']==strategy)]
         
         # Pivot to get populations as columns
-        if 'top_superpop' in filtered_data.columns and not filtered_data['top_superpop'].isna().all():
+        if 'top_superpopulation' in filtered_data.columns and not filtered_data['top_superpopulation'].isna().all():
             pop_scores = filtered_data.pivot_table(
                 index='mutant', 
-                columns='top_superpop', 
+                columns='top_superpopulation', 
                 values='VEP',
                 aggfunc='mean'
             )
@@ -2209,7 +2209,7 @@ def plot_vep_by_superpop(
 
     # Prepare data for plotting: by unique haplotypes or by samples
     if unique_haplotypes:
-        plot_df["superpopulation"] = plot_df["top_superpop"].str.split(":").str[-1]
+        plot_df["superpopulation"] = plot_df["top_superpopulation"].str.split(":").str[-1]
     else:
         if haps_to_samples is None:
             raise ValueError("haps_to_samples must be provided if unique_haplotypes is False")
@@ -3448,7 +3448,7 @@ def plot_top_diff_variants(
 
     # Merge in mean_freq if freq_df is provided
     if freq_df is not None:
-        freq_cols = [col for col in freq_df.columns if col.endswith("_freq") and col != "top_superpopulation_freq"]
+        freq_cols = [col for col in freq_df.columns if col.endswith("_freq") and col != "top_superpopulationulation_freq"]
         total_hap_freqs = freq_df.set_index("haplotype")[freq_cols].mean(axis=1).reset_index().rename(columns={0: "mean_freq"})
         diff_df = diff_df.merge(total_hap_freqs, on=["haplotype"], how="left")
     
@@ -3972,22 +3972,44 @@ def plot_variant_type_and_clinsig(
     # Map MC_term for pretty labels
     df = df.copy()  # avoid modifying original
 
+    # Sort by clinsig to preserve ordering
     df = utils.sort_by_clinsig(df, clinsig_col=hue_var)
 
-    mc_terms = sorted(df[x_var].unique())
-    clinsig_simple_cats = list(df[hue_var].unique())
+    # Extract unique values preserving the order from the sorted dataframe
+    # This respects the clinsig ordering from sort_by_clinsig
+    if x_var == hue_var or x_var in ['clinsig', 'clinsig_simple']:
+        # For clinsig columns, preserve order from sorted dataframe
+        mc_terms = df[x_var].drop_duplicates().tolist()
+    else:
+        # For non-clinsig columns, sort normally
+        mc_terms = sorted(df[x_var].unique())
+    
+    # For hue_var, preserve order from sorted dataframe (already sorted by clinsig)
+    clinsig_simple_cats = df[hue_var].drop_duplicates().tolist()
 
     fig = plt.figure(figsize=figsize)
-    ax = sns.barplot(
-        data=df,
-        x=x_var,
-        y=y_var,
-        hue=hue_var,
-        palette=palette,
-        order=mc_terms,
-        hue_order=clinsig_simple_cats,
-        legend=legend,
-    )
+    
+    # Handle case where x_var == hue_var (no separate grouping)
+    if x_var == hue_var:
+        ax = sns.barplot(
+            data=df,
+            x=x_var,
+            y=y_var,
+            palette=palette,
+            order=mc_terms,
+            legend=legend,
+        )
+    else:
+        ax = sns.barplot(
+            data=df,
+            x=x_var,
+            y=y_var,
+            hue=hue_var,
+            palette=palette,
+            order=mc_terms,
+            hue_order=clinsig_simple_cats,
+            legend=legend,
+        )
     ax.set_xlabel(x_label)
     ax.set_ylabel(y_label)
     ax.set_title(title)
@@ -4001,37 +4023,56 @@ def plot_variant_type_and_clinsig(
 
     sns.despine(ax=ax, top=True, right=True)
 
-    # Prepare all pairwise comparisons within MC_term (between clinsigs)
-    pairs_within = [
-        ((mc_term, cat1), (mc_term, cat2))
-        for mc_term in mc_terms
-        for i, cat1 in enumerate(clinsig_simple_cats)
-        for j, cat2 in enumerate(clinsig_simple_cats)
-        if j > i
-    ]
+    # Handle case where x_var == hue_var (no separate grouping)
+    if x_var == hue_var:
+        # When x and hue are the same, generate simple pairs between categories
+        pairs = [
+            (cat1, cat2)
+            for i, cat1 in enumerate(clinsig_simple_cats)
+            for j, cat2 in enumerate(clinsig_simple_cats)
+            if j > i
+        ]
+        
+        annotator = Annotator(
+            ax=ax,
+            pairs=pairs,
+            data=df,
+            x=x_var,
+            y=y_var,
+            order=mc_terms,
+        )
+    else:
+        # Prepare all pairwise comparisons within MC_term (between clinsigs)
+        pairs_within = [
+            ((mc_term, cat1), (mc_term, cat2))
+            for mc_term in mc_terms
+            for i, cat1 in enumerate(clinsig_simple_cats)
+            for j, cat2 in enumerate(clinsig_simple_cats)
+            if j > i
+        ]
 
-    # Prepare all pairwise comparisons across MC_terms (between variant types, per clinsig group)
-    pairs_across = [
-        ((mc1, cln), (mc2, cln))
-        for cln in clinsig_simple_cats
-        for i, mc1 in enumerate(mc_terms)
-        for j, mc2 in enumerate(mc_terms)
-        if j > i
-    ]
+        # Prepare all pairwise comparisons across MC_terms (between variant types, per clinsig group)
+        pairs_across = [
+            ((mc1, cln), (mc2, cln))
+            for cln in clinsig_simple_cats
+            for i, mc1 in enumerate(mc_terms)
+            for j, mc2 in enumerate(mc_terms)
+            if j > i
+        ]
 
-    # Combine both within and across pairs
-    pairs = pairs_within + pairs_across
+        # Combine both within and across pairs
+        pairs = pairs_within + pairs_across
 
-    annotator = Annotator(
-        ax=ax,
-        pairs=pairs,
-        data=df,
-        x=x_var,
-        y=y_var,
-        hue=hue_var,
-        order=mc_terms,
-        hue_order=clinsig_simple_cats,
-    )
+        annotator = Annotator(
+            ax=ax,
+            pairs=pairs,
+            data=df,
+            x=x_var,
+            y=y_var,
+            hue=hue_var,
+            order=mc_terms,
+            hue_order=clinsig_simple_cats,
+        )
     annotator.configure(
         test='t-test_ind',
         text_format='star',
