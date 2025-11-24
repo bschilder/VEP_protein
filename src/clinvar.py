@@ -104,7 +104,7 @@ def vcf_to_df(
     if vcf_file is None:
         vcf_file = download_vcf()["vcf"]
 
-    if os.path.exists(cache) and not force:
+    if cache is not None and os.path.exists(cache) and not force:
         print(f"Reading from {cache}")
         return pl.read_parquet(cache)
 
@@ -144,8 +144,9 @@ def vcf_to_df(
     if extract_ids:
         vcf_df = _extract_id_cols(vcf_df)
 
-    print(f"Caching to {cache}")
-    vcf_df.write_parquet(cache)
+    if cache is not None:
+        print(f"Caching to {cache}")
+        vcf_df.write_parquet(cache)
 
     return vcf_df
 
@@ -175,121 +176,206 @@ def simplify_annotations(bed,
     if maps is None:
         if verbose:
             print("Using default maps.")
-        maps = [ 
-                {"input_col": "CLNSIG",
+        clnsig_map = {
+            'Benign': "benign",
+            'Likely_benign': "likely_benign",
+            'Benign/Likely_benign': "likely_benign",
+            'Pathogenic/Likely_pathogenic': "likely_path",
+            'Pathogenic': "path",
+            'Likely_pathogenic': "likely_path",
+            'Pathogenic/Likely_pathogenic/Pathogenic,_low_penetrance': "likely_path",
+            'Benign|other': "benign",
+            'Benign|confers_sensitivity': "benign",
+            'Benign|Affects|association|other': "benign",
+            'confers_sensitivity': "other",
+            'no_classification_for_the_single_variant': "other",
+            'Likely_pathogenic|other': "likely_path",
+            'Pathogenic/Likely_risk_allele': "likely_path",
+            'Benign|other': "benign",
+            'Benign': "benign",
+            'Benign/Likely_benign|risk_factor': "likely_benign",
+            'Conflicting_classifications_of_pathogenicity|drug_response': "conflicting",
+            'Pathogenic|association': "path",
+            'Uncertain_significance': "other",
+            'Pathogenic|confers_sensitivity': "path",
+            'Likely_benign|other': "likely_benign",
+            'Affects': "other",
+            'Likely_risk_allele': "likely_path",
+            'Pathogenic|association|protective': "path",
+            'Pathogenic|drug_response': "path",
+            'protective|risk_factor': "other",
+            'Pathogenic|risk_factor': "path",
+            'protective': "other",
+            'Conflicting_classifications_of_pathogenicity|drug_response|other': "conflicting",
+            'Benign/Likely_benign|drug_response|other': "likely_benign",
+            'Conflicting_classifications_of_pathogenicity|Affects': "conflicting",
+            'Likely_pathogenic|Affects': "likely_path",
+            'Benign/Likely_benign': "likely_benign",
+            'Likely_benign|drug_response': "likely_benign",
+            'Likely_benign|drug_response|other': "likely_benign",
+            'Conflicting_classifications_of_pathogenicity': "conflicting",
+            'Likely_benign': "likely_benign",
+            'Benign/Likely_benign|other|risk_factor': "likely_benign",
+            'association|risk_factor': "other",
+            'Uncertain_significance|association': "other",
+            'Benign/Likely_benign|drug_response': "likely_benign",
+            'Conflicting_classifications_of_pathogenicity|other|risk_factor': "conflicting",
+            'Benign/Likely_benign|association': "likely_benign",
+            'Likely_benign|Affects|association': "likely_benign",
+            'Pathogenic|other': "path",
+            'Uncertain_risk_allele': "other",
+            'Benign|confers_sensitivity': "benign",
+            'Benign|association': "benign",
+            'Likely_pathogenic|association': "likely_path",
+            'not_provided': "other",
+            'Pathogenic|Affects': "path",
+            'Pathogenic/Likely_pathogenic|risk_factor': "likely_path",
+            'drug_response': "other",
+            'Conflicting_classifications_of_pathogenicity|protective': "conflicting",
+            'Likely_pathogenic/Likely_risk_allele': "likely_path",
+            'Benign|Affects': "benign",
+            'confers_sensitivity|other': "other",
+            'association_not_found': "other",
+            'other': "other",
+            # None: "other",  -- handle this below explicitly
+            'Pathogenic/Likely_pathogenic|other': "likely_path",
+            'Benign|risk_factor': "benign",
+            'Likely_pathogenic|risk_factor': "likely_path",
+            'Pathogenic/Likely_pathogenic/Pathogenic,_low_penetrance': "likely_path",
+            'Uncertain_risk_allele|risk_factor': "other",
+            'Likely_benign|risk_factor': "likely_benign",
+            'Uncertain_significance|drug_response': "other",
+            'association|drug_response|risk_factor': "other",
+            'Conflicting_classifications_of_pathogenicity|association|risk_factor': "conflicting",
+            'Likely_pathogenic,_low_penetrance': "likely_path",
+            'risk_factor': "other",
+            'association': "other",
+            'no_classifications_from_unflagged_records': "other",
+            'Uncertain_significance|Affects': "other",
+            'Uncertain_significance|other': "other",
+            'Pathogenic|protective': "conflicting",
+            'Uncertain_significance/Uncertain_risk_allele': "other",
+            'Uncertain_significance|risk_factor': "other",
+            'Conflicting_classifications_of_pathogenicity|other': "conflicting",
+            'Conflicting_classifications_of_pathogenicity|association': "conflicting",
+            'Pathogenic/Likely_pathogenic/Pathogenic,_low_penetrance|risk_factor': "likely_path",
+            'Pathogenic/Likely_pathogenic/Likely_risk_allele': "likely_path",
+            'Benign/Likely_benign|other': "likely_benign",
+            'Benign|protective': "benign",
+            'Benign|drug_response': "benign",
+            'Pathogenic/Pathogenic,_low_penetrance|other|risk_factor': "path",
+            'Likely_benign|association': "likely_benign",
+            'Pathogenic/Likely_pathogenic': "likely_path",
+            'drug_response|other': "other",
+            'Conflicting_classifications_of_pathogenicity|risk_factor': "conflicting",
+            'drug_response|risk_factor': "other",
+            'Pathogenic/Pathogenic,_low_penetrance|other': "path",
+            'Likely_pathogenic': "likely_path",
+            'other|risk_factor': "other",
+            'Pathogenic': "path",
+            'Likely_pathogenic|drug_response': "likely_path",
+            'Pathogenic/Likely_pathogenic|association': "likely_path",
+            'Likely_pathogenic|protective': "conflicting",
+            "risk_factor,benign": "conflicting",
+            "risk_factor,benign,likely_benign": "conflicting",
+
+            # Below: ADDITIONS from prompt, with best guesses or rules
+            "benign": "benign",
+            "benign/likely_benign": "likely_benign",
+            "benign,likely_benign": "likely_benign",
+            "benign/likely_benign,benign": "likely_benign",
+            "benign,benign/likely_benign": "likely_benign",
+            "benign/likely_benign,benign,likely_benign": "likely_benign",
+            "benign,likely_benign,benign/likely_benign": "likely_benign",
+            "benign,not_provided": "benign",
+            "benign,risk_factor": "benign",
+            "benign,uncertain_risk_allele": "benign",
+            "benign,uncertain_significance": "benign",
+            "benign,uncertain_significance,likely_benign": "likely_benign",
+            "benign,uncertain_significance,_likely_benign,likely_benign,benign/likely_benign": "likely_benign",
+            "benign,association": "benign",
+            "confers_sensitivity,benign": "benign",
+            "drug_response,benign": "benign",
+            "likely_benign,benign/likely_benign": "likely_benign",
+            "likely_benign,not_provided": "likely_benign",
+            "not_provided,likely_benign": "likely_benign",
+            "not_provided,likely_pathogenic,pathogenic/likely_pathogenic": "likely_path",
+            "likely_benign": "likely_benign",
+            "likely_pathogenic,pathogenic": "likely_path",
+            "likely_pathogenic,pathogenic/likely_pathogenic": "likely_path",
+            "likely_pathogenic,pathogenic/likely_pathogenic,pathogenic": "likely_path",
+            "likely_pathogenic,uncertain_significance,pathogenic,_uncurrent_significance,uncertain_risk_allele": "likely_path",
+            "likely_pathogenic,_uncertain_significance": "likely_path",
+            "not_provided,pathogenic,likely_pathogenic": "likely_path",
+            "not_provided,pathogenic": "path",
+            "pathogenic": "path",
+            "pathogenic,_benign,benign": "conflicting",
+            "pathogenic,_likely_pathogenic,_uncertain_significance": "likely_path",
+            "pathogenic,_low_penetrance,pathogenic,likely_pathogenic": "likely_path",
+            "pathogenic,benign,likely_benign": "conflicting",
+            "pathogenic/likely_pathogenic": "likely_path",
+            "pathogenic/likely_pathogenic,pathogenic": "likely_path",
+            "pathogenic/likely_pathogenic,likely_pathogenic": "likely_path",
+            "pathogenic/likely_pathogenic,pathogenic,likely_pathogenic": "likely_path",
+            "pathogenic/likely_pathogenic,uncertain_significance,pathogenic": "likely_path",
+            "pathogenic,likely_benign,pathogenic/likely_pathogenic": "conflicting",
+            "pathogenic,pathogenic/likely_pathogenic": "likely_path",
+            "pathogenic,pathogenic/likely_pathogenic,likely_pathogenic": "likely_path",
+            "pathogenic,pathogenic/likely_pathogenic,not_provided": "likely_path",
+            "pathogenic,pathogenic,_uncertain_significance": "path",
+            "risk_factor,likely_benign": "likely_benign",
+            "risk_factor,uncertain_significance,benign/likely_benign,benign,pathogenic,likely_benign": "conflicting",
+            "uncertain_significance": "other",
+            "uncertain_significance,_benign,benign/likely_benign,uncertain_significance,likely_benign": "likely_benign",
+            "uncertain_significance,_benign,benign,likely_benign": "likely_benign",
+            "uncertain_significance,_likely_benign,likely_benign": "likely_benign",
+            "uncertain_significance,benign": "likely_benign",
+            "uncertain_significance,benign,likely_benign": "likely_benign",
+            "uncertain_significance,likely_benign": "likely_benign",
+            "uncertain_significance,likely_pathogenic,pathogenic": "likely_path",
+            "uncertain_significance,pathogenic": "likely_path",
+            "uncertain_significance,pathogenic,likely_pathogenic": "likely_path",
+            "not_provided,uncertain_significance,likely_benign": "likely_benign",
+            "not_provided,uncertain_significance,pathogenic,pathogenic/likely_pathogenic,likely_pathogenic": "likely_path",
+            None: "other",  # Explicit handling for None
+        }
+        maps = [
+            # Original CLNSIG mapping
+            {
+                "input_col": "CLNSIG",
                 "output_col": "CLNSIG_simple",
-                "map": {
-                    'Benign':"benign",
-                    'Likely_benign':"likely_benign",
-                    'Benign/Likely_benign':"likely_benign",
-                    'Pathogenic/Likely_pathogenic':"likely_path",
-                    'Pathogenic':"path",
-                    'Likely_pathogenic':"likely_path",
-                    'Pathogenic/Likely_pathogenic/Pathogenic,_low_penetrance':"likely_path",
-                    'Benign|other':"benign",
-                    'Benign|confers_sensitivity':"benign",
-                    'Benign|Affects|association|other': "benign",
-                    'confers_sensitivity': "other",
-                    'no_classification_for_the_single_variant': "other",
-                    'Likely_pathogenic|other': "likely_path",
-                    'Pathogenic/Likely_risk_allele': "likely_path",
-                    'Benign|other': "benign",
-                    'Benign': "benign",
-                    'Benign/Likely_benign|risk_factor': "likely_benign",
-                    'Conflicting_classifications_of_pathogenicity|drug_response': "conflicting",
-                    'Pathogenic|association': "path",
-                    'Uncertain_significance': "other",
-                    'Pathogenic|confers_sensitivity': "path",
-                    'Likely_benign|other': "likely_benign",
-                    'Affects': "other",
-                    'Likely_risk_allele': "likely_path",
-                    'Pathogenic|association|protective': "path",
-                    'Pathogenic|drug_response': "path",
-                    'protective|risk_factor': "other",
-                    'Pathogenic|risk_factor': "path",
-                    'protective': "other",
-                    'Conflicting_classifications_of_pathogenicity|drug_response|other': "conflicting",
-                    'Benign/Likely_benign|drug_response|other': "likely_benign",
-                    'Conflicting_classifications_of_pathogenicity|Affects': "conflicting",
-                    'Likely_pathogenic|Affects': "likely_path",
-                    'Benign/Likely_benign': "likely_benign",
-                    'Likely_benign|drug_response': "likely_benign",
-                    'Likely_benign|drug_response|other': "likely_benign",
-                    'Conflicting_classifications_of_pathogenicity': "conflicting",
-                    'Likely_benign': "likely_benign",
-                    'Benign/Likely_benign|other|risk_factor': "likely_benign",
-                    'association|risk_factor': "other",
-                    'Uncertain_significance|association': "other",
-                    'Benign/Likely_benign|drug_response': "likely_benign",
-                    'Conflicting_classifications_of_pathogenicity|other|risk_factor': "conflicting",
-                    'Benign/Likely_benign|association': "likely_benign",
-                    'Likely_benign|Affects|association': "likely_benign",
-                    'Pathogenic|other': "path",
-                    'Uncertain_risk_allele': "other",
-                    'Benign|confers_sensitivity': "benign",
-                    'Benign|association': "benign",
-                    'Likely_pathogenic|association': "likely_path",
-                    'not_provided': "other",
-                    'Pathogenic|Affects': "path",
-                    'Pathogenic/Likely_pathogenic|risk_factor': "likely_path",
-                    'drug_response': "other",
-                    'Conflicting_classifications_of_pathogenicity|protective': "conflicting",
-                    'Likely_pathogenic/Likely_risk_allele': "likely_path",
-                    'Benign|Affects': "benign",
-                    'confers_sensitivity|other': "other",
-                    'association_not_found': "other",
-                    'other': "other",
-                    # None: "other",
-                    'Pathogenic/Likely_pathogenic|other': "likely_path",
-                    'Benign|risk_factor': "benign",
-                    'Likely_pathogenic|risk_factor': "likely_path",
-                    'Pathogenic/Likely_pathogenic/Pathogenic,_low_penetrance': "likely_path",
-                    'Uncertain_risk_allele|risk_factor': "other",
-                    'Likely_benign|risk_factor': "likely_benign",
-                    'Uncertain_significance|drug_response': "other",
-                    'association|drug_response|risk_factor': "other",
-                    'Conflicting_classifications_of_pathogenicity|association|risk_factor': "conflicting",
-                    'Likely_pathogenic,_low_penetrance': "likely_path",
-                    'risk_factor': "other",
-                    'association': "other",
-                    'no_classifications_from_unflagged_records': "other",
-                    'Uncertain_significance|Affects': "other",
-                    'Uncertain_significance|other': "other",
-                    'Pathogenic|protective': "conflicting",
-                    'Uncertain_significance/Uncertain_risk_allele': "other",
-                    'Uncertain_significance|risk_factor': "other",
-                    'Conflicting_classifications_of_pathogenicity|other': "conflicting",
-                    'Conflicting_classifications_of_pathogenicity|association': "conflicting",
-                    'Pathogenic/Likely_pathogenic/Pathogenic,_low_penetrance|risk_factor': "likely_path",
-                    'Pathogenic/Likely_pathogenic/Likely_risk_allele': "likely_path",
-                    'Benign/Likely_benign|other': "likely_benign",
-                    'Benign|protective': "benign",
-                    'Benign|drug_response': "benign",
-                    'Pathogenic/Pathogenic,_low_penetrance|other|risk_factor': "path",
-                    'Likely_benign|association': "likely_benign",
-                    'Pathogenic/Likely_pathogenic': "likely_path",
-                    'drug_response|other': "other",
-                    'Conflicting_classifications_of_pathogenicity|risk_factor': "conflicting",
-                    'drug_response|risk_factor': "other",
-                    'Pathogenic/Pathogenic,_low_penetrance|other': "path",
-                    'Likely_pathogenic': "likely_path",
-                    'other|risk_factor': "other",
-                    'Pathogenic': "path",
-                    'Likely_pathogenic|drug_response': "likely_path",
-                    'Pathogenic/Likely_pathogenic|association': "likely_path",
-                    'Likely_pathogenic|protective': "likely_path"
-                    }},
-            
-                {"input_col": "CLNSIG_simple",
+                "map": clnsig_map,
+            },
+            # Also handle CLIN_SIG if present (do not duplicate the mapping dictionary)
+            {
+                "input_col": "CLIN_SIG",
+                "output_col": "CLNSIG_simple",
+                "map": clnsig_map,
+            },
+            {
+                "input_col": "CLNSIG_simple",
                 "output_col": "CLNSIG_super_simple",
                 "map": {
-                    'benign':"benign",
-                    'likely_benign':"benign",
-                    'pathogenic':"path",
-                    'likely_pathogenic':"path",
-                    'conflicting':"conflicting",
-                    'other':"other"
-                    }},
+                    'benign': "benign",
+                    'likely_benign': "benign",
+                    'pathogenic': "path",
+                    'likely_pathogenic': "path",
+                    'conflicting': "conflicting",
+                    'other': "other"
+                }
+            },
+            {
+                "input_col": "CLIN_SIG_simple",
+                "output_col": "CLIN_SIG_super_simple",
+                "map": {
+                    'benign': "benign",
+                    'likely_benign': "benign",
+                    'pathogenic': "path",
+                    'likely_pathogenic': "path",
+                    'conflicting': "conflicting",
+                    'other': "other"
+                }
+            },
         ]
 
     was_pandas = False
@@ -420,7 +506,7 @@ def df_to_sites(vcf_df):
     return sites
 
 
-def bed_to_sites(bed):
+def bed_to_sites(bed, chrom_col="chrom", start_col="chromStart", end_col="chromEnd", ref_col="REF", alt_col="ALT"):
     """Convert BED DataFrame to sites format.
     
     Args:
@@ -430,11 +516,19 @@ def bed_to_sites(bed):
     Returns:
         DataFrame in sites format
     """
+    
+    if isinstance(bed, pd.DataFrame):
+        bed = bed.copy()
+        bed = pl.DataFrame(bed)
+    
     sites =  bed.rename({
-        'chrom': 'CHROM',
-        'chromStart': 'POS',
-        'chromEnd': 'POS_END'
+        chrom_col: 'CHROM',
+        start_col: 'POS',
+        end_col: 'POS_END',
+        ref_col: 'REF',
+        alt_col: 'ALT'
     })
+    
 
     sites = sites.select([
         'CHROM',
@@ -443,6 +537,7 @@ def bed_to_sites(bed):
         'ALT',
         *[col for col in sites.columns if col not in ['CHROM', 'POS', 'REF', 'ALT']]
     ])
+    
     return sites
 
 def _extract_id_cols(df,

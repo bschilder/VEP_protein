@@ -365,6 +365,9 @@ def wtvariants_to_vep_linear_model(
         pivot_table_kwargs={},
         add_positions=True,
         standardize_variants=True,
+        test_epistasis=False,
+        epistasis_alpha=None,
+        epistasis_pvalue_threshold=0.05,
     ):
     """
     Fit a Ridge or Lasso regression model to predict VEP values from wt_variant features,
@@ -395,11 +398,23 @@ def wtvariants_to_vep_linear_model(
         If True, add positions to the interaction_df.
     standardize_variants : bool, default=True
         If True, standardize the variant names first.
+    test_epistasis : bool, default=False
+        If True, test whether each (wt_variant, clinical_variant) interaction is truly epistatic
+        (non-additive) rather than simply additive. This fits separate models for each pair and
+        compares additive vs interaction models using statistical tests.
+    epistasis_alpha : float, optional
+        Regularization strength for epistasis testing models. If None, uses the same alpha as the
+        main model. Only used when test_epistasis=True.
+    epistasis_pvalue_threshold : float, default=0.05
+        P-value threshold for determining epistatic vs additive interactions. Only used when
+        test_epistasis=True.
     
     Returns
     -------
     interaction_df : pd.DataFrame
         DataFrame with columns ['wt_variant', 'site', 'interaction_strength', 'interaction_strength_signed', 'n_haplotypes', 'interaction_strength_weighted']
+        If test_epistasis=True, also includes columns: 'is_epistatic', 'epistasis_pvalue', 'epistasis_fstat', 
+        'additive_r2', 'interaction_r2', 'delta_r2', 'additive_mse', 'interaction_mse', 'epistasis_coefficient'
     model : fitted sklearn model
     X_wt_clean : pd.DataFrame
         Cleaned input matrix (haplotype x wt_variant: binary matrix)
@@ -411,6 +426,8 @@ def wtvariants_to_vep_linear_model(
         Absolute interaction strength matrix (wt_variant x site)
     metrics : pd.DataFrame
         Metrics for the model
+    epistasis_results : dict, optional
+        If test_epistasis=True, contains summary statistics about epistatic vs additive interactions.
     """
     from sklearn.linear_model import Ridge, Lasso
 
@@ -544,12 +561,254 @@ def wtvariants_to_vep_linear_model(
 
     metrics_df = pd.DataFrame([metrics])
 
+    # Epistasis testing: test whether interactions are truly epistatic vs additive
+    epistasis_results = None
+    if test_epistasis:
+        from scipy.stats import f as f_distribution
+        from sklearn.metrics import r2_score, mean_squared_error
+        
+        if epistasis_alpha is None:
+            epistasis_alpha = alpha
+        
+        print("Testing epistasis for each (wt_variant, clinical_variant) pair...")
+        
+        # Initialize columns for epistasis results
+        interaction_df['is_epistatic'] = False
+        interaction_df['epistasis_pvalue'] = np.nan
+        interaction_df['epistasis_fstat'] = np.nan
+        interaction_df['additive_r2'] = np.nan
+        interaction_df['interaction_r2'] = np.nan
+        interaction_df['delta_r2'] = np.nan
+        interaction_df['additive_mse'] = np.nan
+        interaction_df['interaction_mse'] = np.nan
+        interaction_df['epistasis_coefficient'] = np.nan
+        
+        # For epistasis testing, we test whether the joint effect of (WT variant, clinical variant) is
+        # additive (sum of individual effects) or epistatic (non-additive, more or less than sum).
+        #
+        # For a given (WT variant i, clinical variant j) pair:
+        # - Estimate individual effect of WT variant i: mean VEP difference (WT=1 vs WT=0) across all clinical variants
+        # - Estimate individual effect of clinical variant j: mean VEP for this clinical variant vs baseline (haplotypes without WT i)
+        # - Compare: Is the joint effect (from linear model coefficient β_ij) = sum of individual effects (additive)?
+        #
+        # Additive model: VEP = β₀ + β₁×WT + β₂×Clinical (main effects only, no interaction)
+        # Interaction model: VEP = β₀ + β₁×WT + β₂×Clinical + β₃×(WT × Clinical) (allows interaction)
+        print(f"Testing epistasis between WT variants and clinical variants for {len(interaction_df)} pairs")
+        print(f"Note: Testing if joint effects are additive (sum of individual effects) or epistatic (non-additive)")
+        
+        # Pre-compute individual effects for efficiency
+        # Effect of each WT variant: mean difference across all clinical variants
+        wt_individual_effects = {}
+        for wt_var in X_wt_clean.columns:
+            wt_indicator = X_wt_clean[wt_var].values.astype(float)
+            # Mean VEP difference: haplotypes with WT vs without WT, averaged across all clinical variants
+            wt_mask = ~np.isnan(wt_indicator)
+            if wt_mask.sum() > 0:
+                vep_with_wt = y_vep_clean.loc[wt_mask & (wt_indicator > 0.5), :].mean(axis=0).mean()
+                vep_without_wt = y_vep_clean.loc[wt_mask & (wt_indicator < 0.5), :].mean(axis=0).mean()
+                wt_individual_effects[wt_var] = vep_with_wt - vep_without_wt
+            else:
+                wt_individual_effects[wt_var] = 0.0
+        
+        # Effect of each clinical variant: mean VEP for that variant (baseline is mean across all variants)
+        clinical_individual_effects = {}
+        vep_baseline = y_vep_clean.mean(axis=0).mean()  # Overall mean VEP
+        for site in y_vep_clean.columns:
+            vep_site_mean = y_vep_clean[site].mean()
+            clinical_individual_effects[site] = vep_site_mean - vep_baseline
+        
+        # Test each (wt_variant, site) pair
+        n_tested = 0
+        n_epistatic = 0
+        n_skipped_missing = 0
+        n_skipped_insufficient_samples = 0
+        n_skipped_no_variation = 0
+        n_skipped_insufficient_combinations = 0
+        
+        for idx, row in tqdm(interaction_df.iterrows(), total=len(interaction_df), desc="Epistasis testing"):
+            wt_var = row['wt_variant']
+            site = row['site']
+            
+            # Skip if we don't have enough data
+            if wt_var not in X_wt_clean.columns or site not in y_vep_clean.columns:
+                n_skipped_missing += 1
+                continue
+            
+            # Get binary indicator for WT variant and VEP values for this clinical variant
+            wt_indicator = X_wt_clean[wt_var].values.astype(float)
+            y_values = y_vep_clean[site].values
+            
+            # Remove rows with NaN
+            valid_mask = ~(np.isnan(wt_indicator) | np.isnan(y_values))
+            
+            if valid_mask.sum() < 10:  # Need at least 10 samples
+                n_skipped_insufficient_samples += 1
+                continue
+            
+            wt_clean = wt_indicator[valid_mask]
+            y_clean = y_values[valid_mask]
+            
+            # Check if we have sufficient variation in WT variant (not all 0s or all 1s)
+            wt_std = wt_clean.std()
+            if wt_std < 1e-10:
+                n_skipped_no_variation += 1
+                continue
+            
+            # Check if we have both WT=0 and WT=1 cases
+            combinations = set(wt_clean.astype(int))
+            if len(combinations) < 2:
+                n_skipped_insufficient_combinations += 1
+                continue
+            
+            n_tested += 1
+            
+            # Fit additive model: VEP = β₀ + β₁×WT
+            # This assumes the effect is purely from the WT variant (additive with clinical variant)
+            # The clinical variant effect is constant (absorbed into intercept)
+            X_additive = np.column_stack([np.ones(len(wt_clean)), wt_clean])
+            
+            if model_type == "ridge":
+                model_additive = Ridge(alpha=epistasis_alpha, random_state=random_state, **model_kwargs)
+            else:
+                model_additive = Lasso(alpha=epistasis_alpha, random_state=random_state, **model_kwargs)
+            
+            model_additive.fit(X_additive, y_clean)
+            y_pred_additive = model_additive.predict(X_additive)
+            
+            # Get the joint effect from the main linear model (coefficient β_ij)
+            # This is the effect when both WT variant and clinical variant are present
+            joint_effect = row['interaction_strength_signed']  # Signed coefficient from main model
+            
+            # Expected additive effect: sum of individual effects
+            wt_effect = wt_individual_effects.get(wt_var, 0.0)
+            clinical_effect = clinical_individual_effects.get(site, 0.0)
+            expected_additive_effect = wt_effect + clinical_effect
+            
+            # Test if the WT effect for this specific clinical variant deviates from the average WT effect
+            # If the WT effect is significantly different for this clinical variant vs average, it's epistatic
+            #
+            # Additive model: VEP = β₀ + β₁×WT
+            #   This gives us the observed WT effect (β₁) for this clinical variant
+            #
+            # Interaction model: VEP = β₀ + β₁×WT + β₂×(WT × clinical_variant_specific_term)
+            #   This allows the WT effect to vary, indicating epistasis
+            #
+            # We'll compare the observed WT effect (from additive model) to the average WT effect
+            # If significantly different, it's epistatic
+            
+            # The additive model gives us β₁_additive (observed WT effect for this clinical variant)
+            # We compare this to expected_additive_effect
+            # To test if deviation is significant, we use an interaction model that allows
+            # the WT effect to deviate from the expected additive effect
+            
+            # Interaction model: VEP = β₀ + β₁×WT + β₂×(WT × deviation_from_expected)
+            # where deviation_from_expected helps capture epistasis
+            # If β₂ is significant, it indicates the WT effect deviates from additivity (epistasis)
+            
+            # Create a term that is 1 when WT=1 and represents the deviation
+            # We'll use the difference between expected and a baseline
+            avg_wt_effect = wt_individual_effects.get(wt_var, 0.0)
+            deviation_from_baseline = expected_additive_effect - avg_wt_effect
+            epistasis_term = wt_clean * deviation_from_baseline
+            X_interaction = np.column_stack([np.ones(len(wt_clean)), wt_clean, epistasis_term])
+            
+            if model_type == "ridge":
+                model_interaction = Ridge(alpha=epistasis_alpha, random_state=random_state, **model_kwargs)
+            else:
+                model_interaction = Lasso(alpha=epistasis_alpha, random_state=random_state, **model_kwargs)
+            
+            model_interaction.fit(X_interaction, y_clean)
+            y_pred_interaction = model_interaction.predict(X_interaction)
+            
+            # Calculate metrics
+            r2_additive = r2_score(y_clean, y_pred_additive)
+            r2_interaction = r2_score(y_clean, y_pred_interaction)
+            mse_additive = mean_squared_error(y_clean, y_pred_additive)
+            mse_interaction = mean_squared_error(y_clean, y_pred_interaction)
+            delta_r2 = r2_interaction - r2_additive
+            
+            # Get interaction coefficient (β₂) - the epistasis term coefficient
+            # X_interaction has 3 columns: [ones, wt_clean, epistasis_term]
+            # So coef_ has 3 elements: [β₀ (intercept), β₁ (WT), β₂ (epistasis)]
+            epistasis_coef = model_interaction.coef_[2] if len(model_interaction.coef_) > 2 else 0.0
+            
+            # Calculate the deviation from additivity
+            deviation_from_additive = joint_effect - expected_additive_effect
+            
+            # F-test for model comparison
+            # F = ((RSS_additive - RSS_interaction) / (df_additive - df_interaction)) / (RSS_interaction / df_interaction)
+            # where RSS = residual sum of squares = MSE * n
+            n_samples = len(y_clean)
+            df_additive = n_samples - 2  # 2 parameters: intercept, WT
+            df_interaction = n_samples - 3  # 3 parameters: intercept, WT, interaction term
+            
+            rss_additive = mse_additive * n_samples
+            rss_interaction = mse_interaction * n_samples
+            
+            # F-test for model comparison
+            # Note: With regularized models (Ridge/Lasso), the degrees of freedom are approximate
+            # but the F-test still provides a useful comparison between additive and interaction models
+            if rss_interaction > 1e-10 and df_interaction > 0 and (df_additive - df_interaction) > 0:
+                f_stat = ((rss_additive - rss_interaction) / (df_additive - df_interaction)) / (rss_interaction / df_interaction)
+                # Ensure F-statistic is non-negative (should be, but check for numerical issues)
+                f_stat = max(0, f_stat)
+                # P-value from F-distribution
+                try:
+                    pvalue = 1 - f_distribution.cdf(f_stat, df_additive - df_interaction, df_interaction)
+                except:
+                    pvalue = np.nan
+            else:
+                f_stat = np.nan
+                pvalue = np.nan
+            
+            # Store results
+            interaction_df.at[idx, 'is_epistatic'] = pvalue < epistasis_pvalue_threshold if not np.isnan(pvalue) else False
+            interaction_df.at[idx, 'epistasis_pvalue'] = pvalue
+            interaction_df.at[idx, 'epistasis_fstat'] = f_stat
+            interaction_df.at[idx, 'additive_r2'] = r2_additive
+            interaction_df.at[idx, 'interaction_r2'] = r2_interaction
+            interaction_df.at[idx, 'delta_r2'] = delta_r2
+            interaction_df.at[idx, 'additive_mse'] = mse_additive
+            interaction_df.at[idx, 'interaction_mse'] = mse_interaction
+            interaction_df.at[idx, 'epistasis_coefficient'] = epistasis_coef
+            interaction_df.at[idx, 'joint_effect'] = joint_effect
+            interaction_df.at[idx, 'expected_additive_effect'] = expected_additive_effect
+            interaction_df.at[idx, 'deviation_from_additive'] = deviation_from_additive
+            interaction_df.at[idx, 'wt_individual_effect'] = wt_effect
+            interaction_df.at[idx, 'clinical_individual_effect'] = clinical_effect
+            
+            if interaction_df.at[idx, 'is_epistatic']:
+                n_epistatic += 1
+        
+        print(f"\nEpistasis testing summary:")
+        print(f"  Tested: {n_tested} (WT variant, clinical variant) pairs")
+        print(f"  Found epistatic (non-additive joint effects): {n_epistatic} (p < {epistasis_pvalue_threshold})")
+        print(f"  Skipped - missing columns: {n_skipped_missing}")
+        print(f"  Skipped - insufficient samples (<10): {n_skipped_insufficient_samples}")
+        print(f"  Skipped - no variation: {n_skipped_no_variation}")
+        print(f"  Skipped - insufficient combinations (<2): {n_skipped_insufficient_combinations}")
+        
+        # Create summary statistics
+        epistasis_results = {
+            'n_tested': n_tested,
+            'n_epistatic': n_epistatic,
+            'n_additive': n_tested - n_epistatic,
+            'epistasis_rate': n_epistatic / n_tested if n_tested > 0 else 0.0,
+            'mean_delta_r2_epistatic': interaction_df[interaction_df['is_epistatic']]['delta_r2'].mean() if n_epistatic > 0 else np.nan,
+            'mean_delta_r2_additive': interaction_df[~interaction_df['is_epistatic']]['delta_r2'].mean() if (n_tested - n_epistatic) > 0 else np.nan,
+            'mean_epistasis_coefficient': interaction_df[interaction_df['is_epistatic']]['epistasis_coefficient'].mean() if n_epistatic > 0 else np.nan,
+        }
 
-    return {"interaction_df": interaction_df, "model": model, 
+    return_dict = {"interaction_df": interaction_df, "model": model, 
             "X_wt_clean": X_wt_clean, "y_vep_clean": y_vep_clean,
             "coef_matrix_signed": coef_matrix_signed_df, 
             "coef_matrix_abs": coef_matrix_abs_df,
             "metrics": metrics_df}
+    
+    if test_epistasis and epistasis_results is not None:
+        return_dict["epistasis_results"] = epistasis_results
+    
+    return return_dict
 
 
 def wtvariants_to_vep_autoencoder(model,
@@ -985,12 +1244,10 @@ def plot_enrichment_vs_interactions(
     y2_label_freq=0.2,
     y1_label_kwargs={"va": "bottom", 
                      "ha": "right", 
-                     "fontsize": 9, 
                      "color": "black",
                      "clip_on": True},
     y2_label_kwargs={"va": "bottom", 
                      "ha": "left", 
-                     "fontsize": 9, 
                      "color": "grey", 
                      "clip_on": True},
     colors = ["black", "grey"],
@@ -1008,6 +1265,8 @@ def plot_enrichment_vs_interactions(
     arrow_title_padding=0.15,
     arrow_label_padding=0.02,
     arrow_label_fontsize=None,
+    arrow_label_bold=True,
+    arrow_right_of_xlabel=False,
 ):
     """
     Plot enrichment and number of interactions versus interaction threshold.
@@ -1071,7 +1330,12 @@ def plot_enrichment_vs_interactions(
     arrow_label_padding : float, default 0.02
         Padding between the arrow and the arrow label below it (in axes fraction coordinates).
     arrow_label_fontsize : int or None, default None
-        Font size for the arrow label. If None, uses the same size as the plot title.
+        Font size for the arrow label. If None, uses "medium".
+    arrow_label_bold : bool, default True
+        Whether to make the arrow label bold.
+    arrow_right_of_xlabel : bool, default False
+        If True, positions the arrow to the right of the x-axis label on the same y-plane.
+        If False, positions the arrow below the x-axis label (default behavior).
 
     Returns
     -------
@@ -1090,6 +1354,13 @@ def plot_enrichment_vs_interactions(
     - New: log_y1_axis and log_y2_axis control log scaling of the left and right y-axes.
     """
     import numpy as np
+    
+    def format_k_notation(value):
+        """Format a number as 'k' notation (e.g., 5000 -> '5k')."""
+        if value >= 1000:
+            return f"{value/1000:.0f}k"
+        else:
+            return f"{value:.0f}"
 
     if not isinstance(results, pd.DataFrame):
         results_df = pd.DataFrame(results)
@@ -1112,6 +1383,11 @@ def plot_enrichment_vs_interactions(
         x="interaction_threshold", y="enrichment", 
         marker="o", ax=ax1, color=color
     )
+    # Decrease marker border thickness and set zorder lower than text labels
+    if ax1.get_lines():
+        line = ax1.get_lines()[-1]
+        line.set_markeredgewidth(0.5)
+        line.set_zorder(1)
     ax1.set_ylabel(y1_axis_label, color=color)
     ax1.set_xlabel(x_axis_label)
     ax1.tick_params(axis='y', labelcolor=color)
@@ -1120,33 +1396,75 @@ def plot_enrichment_vs_interactions(
     if add_arrow:
         xlabel_pos = ax1.get_xlabel()
         if xlabel_pos:
-            arrow_y = -arrow_title_padding
-            label_y = arrow_y - arrow_label_padding
-            if arrow_label_fontsize is None:
-                title_obj = ax1.title
-                title_fontsize = title_obj.get_fontsize() if title_obj else "large"
-                label_fontsize = title_fontsize
+            if arrow_right_of_xlabel:
+                # Position arrow to the right of xlabel, on the same y-plane
+                arrow_y = 0.0  # Same y-level as xlabel
+                # Position arrow starting just to the right of center, extending rightward
+                arrow_start_x = 0.65
+                arrow_end_x = 0.80
+                # Position label centered above the arrow
+                label_x = (arrow_start_x + arrow_end_x) / 2  # Center of arrow
+                label_y = arrow_y + arrow_label_padding  # Position label above arrow
+                if arrow_label_fontsize is None:
+                    label_fontsize = "medium"
+                else:
+                    label_fontsize = arrow_label_fontsize
+                annotate_kwargs = {
+                    'xy': (label_x, label_y),
+                    'xycoords': 'axes fraction',
+                    'ha': 'center',
+                    'va': 'bottom',
+                    'fontsize': label_fontsize,
+                    'color': 'black',
+                    'zorder': 1000
+                }
+                if arrow_label_bold:
+                    annotate_kwargs['weight'] = 'bold'
+                ax1.annotate(
+                    arrow_label,
+                    **annotate_kwargs
+                )
+                ax1.annotate(
+                    "",
+                    xy=(arrow_end_x, arrow_y),
+                    xytext=(arrow_start_x, arrow_y),
+                    xycoords='axes fraction',
+                    arrowprops=dict(arrowstyle='->', color='black', lw=2.0),
+                    ha='center',
+                    va='center'
+                )
             else:
-                label_fontsize = arrow_label_fontsize
-            ax1.annotate(
-                arrow_label,
-                xy=(0.5, label_y),
-                xycoords='axes fraction',
-                ha='center',
-                va='top',
-                fontsize=label_fontsize,
-                color='black',
-                weight='bold'
-            )
-            ax1.annotate(
-                "",
-                xy=(0.7, arrow_y),
-                xytext=(0.3, arrow_y),
-                xycoords='axes fraction',
-                arrowprops=dict(arrowstyle='->', color='black', lw=2.0),
-                ha='center',
-                va='top'
-            )
+                # Default: position arrow below x-axis label
+                arrow_y = -arrow_title_padding
+                label_y = arrow_y - arrow_label_padding
+                if arrow_label_fontsize is None:
+                    label_fontsize = "medium"
+                else:
+                    label_fontsize = arrow_label_fontsize
+                annotate_kwargs = {
+                    'xy': (0.5, label_y),
+                    'xycoords': 'axes fraction',
+                    'ha': 'center',
+                    'va': 'top',
+                    'fontsize': label_fontsize,
+                    'color': 'black',
+                    'zorder': 1000
+                }
+                if arrow_label_bold:
+                    annotate_kwargs['weight'] = 'bold'
+                ax1.annotate(
+                    arrow_label,
+                    **annotate_kwargs
+                )
+                ax1.annotate(
+                    "",
+                    xy=(0.7, arrow_y),
+                    xytext=(0.3, arrow_y),
+                    xycoords='axes fraction',
+                    arrowprops=dict(arrowstyle='->', color='black', lw=2.0),
+                    ha='center',
+                    va='top'
+                )
 
     if log_x_axis:
         ax1.set_xscale("log") 
@@ -1226,23 +1544,33 @@ def plot_enrichment_vs_interactions(
             def offset_y(y):
                 return y + (y_range * y_offset if y_range > 0 else 0.1) + offset
 
+        # Handle both format strings and callable formatters
+        if callable(label_fmt):
+            format_value = lambda y: label_fmt(y)
+        else:
+            format_value = lambda y: label_fmt.format(y)
+        
         if first_label:
             x, y = first_lab_coords
             y_disp = offset_y(y)
+            # Ensure zorder is set and can't be overridden by label_kwargs
+            text_kwargs = {**label_kwargs, 'zorder': 1000}
             ax.text(
                 x,
                 y_disp,
-                f"{label_fmt.format(y)}{label_suffix}",
-                **label_kwargs
+                f"{format_value(y)}{label_suffix}",
+                **text_kwargs
             )
         if last_label:
             x, y = last_lab_coords
             y_disp = offset_y(y)
+            # Ensure zorder is set and can't be overridden by label_kwargs
+            text_kwargs = {**label_kwargs, 'zorder': 1000}
             ax.text(
                 x,
                 y_disp,
-                f"{label_fmt.format(y)}{label_suffix}",
-                **label_kwargs
+                f"{format_value(y)}{label_suffix}",
+                **text_kwargs
             )
 
     # Add min/max labels for enrichment (left y-axis)
@@ -1258,13 +1586,16 @@ def plot_enrichment_vs_interactions(
         log_y_axis=log_y1_axis
     )
     # Add min/max labels for number of interactions (left y-axis, but can be used for right)
+    # Use custom formatting function for "k" notation
+    def format_n_interactions_label(y):
+        return format_k_notation(y)
     add_min_max_labels(
         ax1, results_df,
         x_col="interaction_threshold",
         y_col="n_interactions",
         first_label=y2_first_label,
         last_label=y2_last_label,
-        label_fmt="{:.0f}",
+        label_fmt=format_n_interactions_label,
         label_suffix="", 
         label_kwargs=y2_label_kwargs,
         log_y_axis=log_y2_axis
@@ -1278,6 +1609,11 @@ def plot_enrichment_vs_interactions(
         x="interaction_threshold", y="n_interactions",
         marker="s", ax=ax2, color=color2
     )
+    # Decrease marker border thickness and set zorder lower than text labels
+    if ax2.get_lines():
+        line = ax2.get_lines()[-1]
+        line.set_markeredgewidth(0.5)
+        line.set_zorder(1)
     ax2.set_ylabel(y2_axis_label, color=color2)
     ax2.tick_params(axis='y', labelcolor=color2)
 
@@ -1285,6 +1621,15 @@ def plot_enrichment_vs_interactions(
         ax2.set_xscale("log")
     if log_y2_axis:
         ax2.set_yscale("log")
+    
+    # Format y2 tick labels as "k" notation (e.g., 5000 -> 5k)
+    from matplotlib.ticker import FuncFormatter
+    def format_k(x, pos):
+        if x >= 1000:
+            return f"{x/1000:.0f}k"
+        else:
+            return f"{x:.0f}"
+    ax2.yaxis.set_major_formatter(FuncFormatter(format_k))
 
     # Add text labels for enrichment at specified frequency (left y-axis)
     if y1_label_freq and y1_label_freq > 0:
@@ -1311,9 +1656,11 @@ def plot_enrichment_vs_interactions(
             x = row["interaction_threshold"]
             y = row["enrichment"]
             y_disp = offset_y(y)
+            # Ensure zorder is set and can't be overridden by y1_label_kwargs
+            text_kwargs = {**y1_label_kwargs, 'zorder': 1000}
             ax1.text(
                 x, y_disp, f"{y:.1f}x", 
-                **y1_label_kwargs
+                **text_kwargs
             )
 
     # Add text labels for n_interactions at specified frequency (right y-axis)
@@ -1341,9 +1688,11 @@ def plot_enrichment_vs_interactions(
             x = row["interaction_threshold"]
             y = row["n_interactions"]
             y_disp = offset_y(y)
+            # Ensure zorder is set and can't be overridden by y2_label_kwargs
+            text_kwargs = {**y2_label_kwargs, 'zorder': 1000}
             ax2.text(
-                x, y_disp, f"{int(y)}", 
-                **y2_label_kwargs
+                x, y_disp, format_k_notation(y), 
+                **text_kwargs
             )
 
     # Add buffer to y-axis limits to prevent labels from being cut off
@@ -2673,12 +3022,18 @@ def plot_clinsig_interaction_strength(
     pvalue_format_string=" ({:.2g})",
     test='Mann-Whitney',
     annotator_kwargs={},
+    xtick_rotation=0,
+    bracket_linewidth=0.75,
+    break_xtick_labels=False,
+    hide_xtick_labels=False,
+    show_legend=False,
 ):
     import matplotlib.pyplot as plt
     import seaborn as sns
     from statannotations.Annotator import Annotator
     from itertools import combinations 
     import pandas as pd
+    import numpy as np
 
     ridge_df = ridge_df.copy()
     annot_df = annot_df.copy()
@@ -2695,13 +3050,16 @@ def plot_clinsig_interaction_strength(
             annot_df[[site_col, x]].drop_duplicates().rename(columns={site_col: "clinical_variant"})
         )
 
-    # Standardize clinsig labels: replace underscores with spaces, expand "path" and "likely_path"
+    # Standardize clinsig labels: replace underscores with spaces or newlines, expand "path" and "likely_path"
+    # Use spaces instead of newlines if xtick_rotation is set to prevent line breaks
+    # Unless break_xtick_labels is True, which allows breaks even when rotated
+    separator = "\n" if (xtick_rotation == 0 or break_xtick_labels) else " "
     def clean_clinsig(clinsig):
-        clinsig = clinsig.replace("_", "\n")
+        clinsig = clinsig.replace("_", separator)
         if clinsig == "path":
             return "pathogenic"
-        elif clinsig == "likely\npath":
-            return "likely\npathogenic"
+        elif clinsig == f"likely{separator}path":
+            return f"likely{separator}pathogenic"
         return clinsig
 
     bar_df[x] = bar_df[x].astype(str).apply(clean_clinsig)
@@ -2710,11 +3068,11 @@ def plot_clinsig_interaction_strength(
     canonical_order = utils.get_clinsig_order()
     # Apply the same cleaning as above to the canonical order
     def clean_order_label(label):
-        label = str(label).replace("_", "\n")
+        label = str(label).replace("_", separator)
         if label == "path":
             return "pathogenic"
-        elif label == "likely\npath":
-            return "likely\npathogenic"
+        elif label == f"likely{separator}path":
+            return f"likely{separator}pathogenic"
         return label
     cleaned_canonical_order = [clean_order_label(l) for l in canonical_order]
     # Only keep those present in the data, and ensure uniqueness
@@ -2733,11 +3091,11 @@ def plot_clinsig_interaction_strength(
     # Remap palette keys to match cleaned clinsig labels
     palette_cleaned = {}
     for k, v in palette.items():
-        k_clean = k.replace("_", "\n")
+        k_clean = k.replace("_", separator)
         if k_clean == "path":
             k_clean = "pathogenic"
-        elif k_clean == "likely\npath":
-            k_clean = "likely\npathogenic"
+        elif k_clean == f"likely{separator}path":
+            k_clean = f"likely{separator}pathogenic"
         palette_cleaned[k_clean] = v
 
     plt.figure(figsize=figsize)
@@ -2751,8 +3109,32 @@ def plot_clinsig_interaction_strength(
         palette=palette_cleaned,
         showfliers=False,
         order=clinsig_order,
-        hue_order=clinsig_order
+        hue_order=clinsig_order,
+        linewidth=0.75  # Set linewidth for box borders
     )
+    
+    # Force boxplot border color to black with alpha=1
+    # Use matplotlib's black color explicitly (RGB: 0, 0, 0) as RGBA tuple
+    black_color = (0.0, 0.0, 0.0, 1.0)  # RGBA tuple for fully opaque black
+    
+    # Set edgecolor on all boxplot elements (artists are the boxes)
+    for patch in ax.artists:
+        patch.set_edgecolor(black_color)
+        patch.set_linewidth(0.75)  # Increased linewidth for better visibility
+        patch.set_alpha(1.0)  # Ensure patch itself is fully opaque
+    
+    # Also check patches (some seaborn versions use patches instead of artists)
+    for patch in ax.patches:
+        patch.set_edgecolor(black_color)
+        patch.set_linewidth(0.75)  # Increased linewidth for better visibility
+        patch.set_alpha(1.0)  # Ensure patch itself is fully opaque
+    
+    # Set all boxplot line elements (median, whiskers, caps) to black
+    # At this point, all lines in ax.lines are boxplot elements (annotations are added later)
+    for line in ax.lines:
+        line.set_color('black')
+        line.set_linewidth(0.75)
+        line.set_alpha(1.0)
 
     # Set title and labels
     ax.set_title(title)
@@ -2777,6 +3159,11 @@ def plot_clinsig_interaction_strength(
         y=y,
         order=clinsig_order
     )
+    # Set line_width for annotation brackets
+    # Only set if not already specified in annotator_kwargs
+    if 'line_width' not in annotator_kwargs:
+        annotator_kwargs['line_width'] = bracket_linewidth
+    
     annotator.configure(
         test=test,
         text_format=text_format,
@@ -2787,11 +3174,68 @@ def plot_clinsig_interaction_strength(
         **annotator_kwargs
     )
     annotator.apply_and_annotate()
+    
+    # Also set linewidth of annotation bracket lines (fallback if line_width param doesn't work)
+    # Only modify lines that are likely annotation brackets (horizontal lines at higher y positions)
+    y_data_range = bar_df[y].max() - bar_df[y].min()
+    y_max = bar_df[y].max()
+    for line in ax.lines:
+        if hasattr(line, 'get_linewidth') and hasattr(line, 'get_ydata'):
+            current_lw = line.get_linewidth()
+            ydata = line.get_ydata()
+            # Check if this line is likely an annotation bracket (horizontal line above the data)
+            if len(ydata) > 0 and current_lw > 0:
+                y_mean = np.mean(ydata)
+                y_std = np.std(ydata) if len(ydata) > 1 else 0
+                # If line is significantly above the data range and relatively horizontal, it's likely an annotation bracket
+                # Check: mean y is above data, and line is mostly horizontal (low std in y)
+                if y_mean > y_max and y_std < 0.05 * y_data_range:
+                    # Set to bracket_linewidth (if current is different, it means line_width param didn't work)
+                    if abs(current_lw - bracket_linewidth) > 0.01:
+                        line.set_linewidth(bracket_linewidth)
 
-    plt.tight_layout()
+    # Rotate xtick labels if requested
+    if hide_xtick_labels:
+        ax.set_xticklabels([])
+    elif xtick_rotation != 0:
+        ax.set_xticklabels(ax.get_xticklabels(), rotation=xtick_rotation, ha='right')
+
     # Remove the top and right spines (lines) from the plot margin
     ax.spines['top'].set_visible(False)
     ax.spines['right'].set_visible(False)
+
+    # Handle legend
+    if show_legend:
+        # When hue=x, seaborn doesn't create a legend by default
+        # We need to create it manually from the boxplot patches
+        # Get unique categories in order
+        unique_categories = clinsig_order
+        # Create legend handles from the palette
+        from matplotlib.patches import Patch
+        handles = []
+        labels = []
+        for cat in unique_categories:
+            if cat in palette_cleaned:
+                color = palette_cleaned[cat]
+                # Create a patch (box) for the legend
+                patch = Patch(facecolor=color, edgecolor='black', linewidth=0.75)
+                handles.append(patch)
+                labels.append(cat)
+        # Create legend on the right side, outside the plot
+        if handles:
+            ax.legend(handles, labels, bbox_to_anchor=(1.05, 1), loc='upper left', frameon=True)
+    else:
+        # Remove legend if it exists
+        legend = ax.get_legend()
+        if legend is not None:
+            legend.remove()
+
+    # Apply tight layout after all modifications
+    # If legend is shown, leave space on the right for it
+    if show_legend:
+        plt.tight_layout(rect=[0, 0, 0.85, 1])
+    else:
+        plt.tight_layout()
 
     return {'fig': ax.figure, 'ax': ax, 'data': bar_df}
 
@@ -2848,7 +3292,7 @@ def plot_variant_sensitization_schematic(
     include_any_1_col=True, 
     include_any_1_row=False,
     
-    extra_space=0.06,
+    subplot_space_x=(0.06, 0.06),
     big_arrow_width=0.2,
     big_arrow_height=0.2,
 
@@ -2895,8 +3339,11 @@ def plot_variant_sensitization_schematic(
     show_text_labels=(True, True, True),
     show_train_predictor_arrow=True,
     show_extract_coefficients_arrow=True,
-    xlabel=[None, None, None]
-    
+    xlabel=[None, None, None],
+    as_formula=False,
+    plot_order=[0, 1, 2],
+    xlabel_fontsize='medium',
+    ticklabel_fontsize=None
 ):
     """
     Plots the variant sensitization schematic as three heatmaps with arrows.
@@ -2914,8 +3361,8 @@ def plot_variant_sensitization_schematic(
         Number of WT variants to display, default 5.
     n_clinical_variants : int, optional
         Number of clinical variants to display, default 5.
-    extra_space : float, optional
-        Extra space to add to the right of the third plot, default 0.06.
+    subplot_space_x : tuple of float, optional
+        Spacing between subplots 0-1 (first value) and 1-2 (second value), default (0.06, 0.06).
     big_arrow_width : float, optional
         Width scaling for the big arrow, default 0.2.
     big_arrow_height : float, optional
@@ -2998,6 +3445,13 @@ def plot_variant_sensitization_schematic(
         Whether to show the "Train Predictor" arrows and label between the first and second plots, default True.
     show_extract_coefficients_arrow : bool, optional
         Whether to show the "Extract Coefficients" arrow and label between the second and third plots, default True.
+    xlabel_fontsize : str, float, or None, optional
+        Font size for x-axis labels. Can be a string (e.g., 'small', 'medium', 'large') or a numeric value.
+        Default 'medium'. If None, uses matplotlib's default.
+    ticklabel_fontsize : str, float, or None, optional
+        Font size for both x and y-axis tick labels. Can be a string (e.g., 'small', 'medium', 'large') or a numeric value.
+        Default None, which means it will use 'small' for both axes (matching the default behavior).
+        If None, uses 'small' for both axes.
     
     Returns
     -------
@@ -3012,14 +3466,56 @@ def plot_variant_sensitization_schematic(
     import pandas as pd
 
     fig = plt.figure(figsize=figsize, facecolor='none')
-    gs = gridspec.GridSpec(1, 3, width_ratios=[1, 1, 1], wspace=0.3)
+    
+    # Calculate scaling factor based on figure size relative to default (20, 4)
+    # Use minimum dimension to ensure proper scaling for both small and large figures
+    default_figsize = (20, 4)
+    scale_factor = min(figsize[0] / default_figsize[0], figsize[1] / default_figsize[1])
+    
+    # Scale padding values (originally in points, now scale with figure size)
+    title_pad_scaled = title_pad * scale_factor
+    xlabel_pad_scaled = xlabel_pad * scale_factor
+    
+    # Scale arrow sizes
+    arrow_linewidth_scaled = 1.5 * scale_factor
+    arrow_shrink_scaled = 6 * scale_factor
+    arrow_mutation_scale_scaled = 15 * scale_factor
+    
+    # Scale grey box linewidth if provided (create a copy to avoid modifying original)
+    grey_box_outline_kwargs_scaled = None
+    if grey_box_outline_kwargs is not None:
+        grey_box_outline_kwargs_scaled = grey_box_outline_kwargs.copy()
+        if 'linewidth' in grey_box_outline_kwargs_scaled:
+            grey_box_outline_kwargs_scaled['linewidth'] = grey_box_outline_kwargs_scaled['linewidth'] * scale_factor
+    
+    # Validate subplot_space_x
+    if not isinstance(subplot_space_x, (tuple, list)) or len(subplot_space_x) != 2:
+        raise ValueError("subplot_space_x must be a tuple or list of 2 values")
+    
+    # Use average spacing for gridspec (will adjust positions manually)
+    avg_space = (subplot_space_x[0] + subplot_space_x[1]) / 2
+    gs = gridspec.GridSpec(1, 3, width_ratios=[1, 1, 1], wspace=avg_space)
     axes = [fig.add_subplot(gs[0, 0]), fig.add_subplot(gs[0, 1]), fig.add_subplot(gs[0, 2])]
     
-    # Process heatmap_aspect parameter
+    # If as_formula is True, automatically set plot_order to [0, 2, 1] (formula layout)
+    if as_formula:
+        plot_order = [0, 2, 1]
+    
+    # Use plot_order to reorder plots: [0, 1, 2] means original order, [0, 2, 1] means swap middle and right
+    # Validate plot_order
+    if sorted(plot_order) != [0, 1, 2]:
+        raise ValueError("plot_order must contain exactly [0, 1, 2] in any order")
+    
+    # Reorder axes, titles, and aspect values based on plot_order
+    axes_reordered = [axes[i] for i in plot_order]
+    all_titles = [plot1_title, plot2_title, plot3_title]
+    titles_reordered = [all_titles[i] for i in plot_order]
+    
+    # Reorder aspect values
     if isinstance(heatmap_aspect, (list, tuple)):
         if len(heatmap_aspect) != 3:
             raise ValueError("heatmap_aspect tuple must contain exactly 3 values")
-        aspect_values = heatmap_aspect
+        aspect_values = [heatmap_aspect[i] for i in plot_order]
     else:
         # Single value - apply to all 3 heatmaps
         aspect_values = [heatmap_aspect, heatmap_aspect, heatmap_aspect]
@@ -3049,40 +3545,36 @@ def plot_variant_sensitization_schematic(
     # Use show_text_labels parameter to control annotation display
     annot_to_use = annot if show_text_labels[0] else False
 
+    # Determine which axis to use for each plot based on plot_order
+    # plot_order[i] tells us which plot (0, 1, or 2) goes to position i in the figure
+    # So plot1 (index 0) goes to axes[plot_order.index(0)]
+    plot1_position = plot_order.index(0)
+    ax_plot1 = axes[plot1_position]
     sns.heatmap(
         Xwt_with_extra,
         annot=annot_to_use,
         fmt="",
         cbar=False,
         cmap=plot1_cmap,
-        ax=axes[0],
+        ax=ax_plot1,
         linewidths=linewidths,
         linecolor=linecolor,
         **plot1_kwargs
     )
     # Set aspect ratio for first heatmap
-    axes[0].set_aspect(aspect_values[0]) 
-    axes[0].set_ylabel("Haplotype", fontsize=12)
-    axes[0].set_xlabel("WT Variant", fontsize=12)
-    # Set title with consistent positioning
-    if title_y_position is not None:
-        # Calculate pad to achieve the desired y-position
-        # title_y_position is in figure coordinates (0-1), convert to points
-        desired_y_points = title_y_position * fig.get_figheight() * 72  # 72 points per inch
-        current_y_points = axes[0].get_position().y1 * fig.get_figheight() * 72
-        pad_points = desired_y_points - current_y_points
-        axes[0].set_title(plot1_title, fontsize=14, pad=pad_points)
-    else:
-        axes[0].set_title(plot1_title, fontsize=14, pad=title_pad)
-    axes[0].xaxis.set_label_position('top')
-    axes[0].xaxis.tick_top()
+    ax_plot1.set_aspect(aspect_values[0]) 
+    ax_plot1.set_ylabel("Haplotype", fontsize='medium', rotation=90)
+    ax_plot1.set_xlabel("WT Variant", fontsize=xlabel_fontsize)
+    # Title will be set later to ensure consistent height
+    ax_plot1.xaxis.set_label_position('top')
+    ax_plot1.xaxis.tick_top()
     
     # Rotate x-axis tick labels if requested
     if rotate_x_labels:
-        axes[0].tick_params(axis='x', labelrotation=45)
+        ax_plot1.tick_params(axis='x', labelrotation=45)
         # Get current tick labels and set horizontal alignment to left
-        labels = axes[0].get_xticklabels()
-        axes[0].set_xticklabels(labels, ha='left')
+        labels = ax_plot1.get_xticklabels()
+        ax_plot1.set_xticklabels(labels, ha='left')
 
     # Second heatmap: VEP Matrix
     interaction_df = wtvariants_to_vep_linear_model_out['interaction_df']
@@ -3104,42 +3596,39 @@ def plot_variant_sensitization_schematic(
     # Use show_text_labels parameter to control annotation display
     annot_vep_to_use = annot_vep if show_text_labels[1] else False
 
+    # Determine which axis to use for plot2 based on plot_order
+    # plot2 is originally at index 1, find where it is in plot_order
+    plot2_position = plot_order.index(1)
+    ax_plot2 = axes[plot2_position]
     sns.heatmap(
         Xvep_with_extra,
         annot=annot_vep_to_use,
         fmt="",
         cbar=False,
-        ax=axes[1],
+        ax=ax_plot2,
         linewidths=linewidths,
         linecolor=linecolor,
         cmap=plot2_cmap, 
         **plot2_kwargs
     )
-    # Set aspect ratio for second heatmap
-    axes[1].set_aspect(aspect_values[1]) 
-    # Set title with consistent positioning
-    if title_y_position is not None:
-        # Calculate pad to achieve the desired y-position
-        # title_y_position is in figure coordinates (0-1), convert to points
-        desired_y_points = title_y_position * fig.get_figheight() * 72  # 72 points per inch
-        current_y_points = axes[1].get_position().y1 * fig.get_figheight() * 72
-        pad_points = desired_y_points - current_y_points
-        axes[1].set_title(plot2_title, fontsize=14, pad=pad_points)
-    else:
-        axes[1].set_title(plot2_title, fontsize=14, pad=title_pad)
-    axes[1].xaxis.set_label_position('top')
-    axes[1].set_ylabel("Haplotype", fontsize=12)
-    axes[1].set_xlabel("Clinical Variant", fontsize=12)
-    axes[1].xaxis.tick_top()
+    # Set aspect ratio for second heatmap  
+    ax_plot2.set_aspect(aspect_values[plot2_position]) 
+    # Title will be set later to ensure consistent height
+    ax_plot2.xaxis.set_label_position('top')
+    ax_plot2.set_ylabel("Haplotype", fontsize='medium', rotation=90)
+    ax_plot2.set_xlabel("Clinical Variant", fontsize=xlabel_fontsize)
+    ax_plot2.xaxis.tick_top()
     
     # Rotate x-axis tick labels if requested
     if rotate_x_labels:
-        axes[1].tick_params(axis='x', labelrotation=45)
+        ax_plot2.tick_params(axis='x', labelrotation=45)
         # Get current tick labels and set horizontal alignment to left
-        labels = axes[1].get_xticklabels()
-        axes[1].set_xticklabels(labels, ha='left')
+        labels = ax_plot2.get_xticklabels()
+        ax_plot2.set_xticklabels(labels, ha='left')
     
-    axes[1].set_yticklabels([])
+    # Only hide yticklabels for plot2 if it's in the middle position (original behavior)
+    if plot2_position == 1:  # plot2 is in middle position
+        ax_plot2.set_yticklabels([])
 
     # Third heatmap: WT x Clinical Variant Interaction Score Matrix
     coef_matrix_abs = wtvariants_to_vep_linear_model_out['coef_matrix_signed'].copy()
@@ -3172,49 +3661,41 @@ def plot_variant_sensitization_schematic(
     # Use show_text_labels parameter to control annotation display
     annot_coef_to_use = annot_coef_numeric if show_text_labels[2] else False
 
+    # Determine which axis to use for plot3 based on plot_order
+    # plot3 is originally at index 2, find where it is in plot_order
+    plot3_position = plot_order.index(2)
+    ax_plot3 = axes[plot3_position]
     sns.heatmap(
         coef_matrix_abs_with_extra,
         annot=annot_coef_to_use, 
         cbar=False,
-        ax=axes[2],
+        ax=ax_plot3,
         linewidths=linewidths,
         linecolor=linecolor,
         cmap=plot3_cmap, 
         **plot3_kwargs
     )
     # Set aspect ratio for third heatmap
-    axes[2].set_aspect(aspect_values[2])
-    axes[2].set_ylabel("WT Variant", fontsize=12)
-    axes[2].set_xlabel("Clinical Variant", fontsize=12)
-    # Set title with consistent positioning
-    if title_y_position is not None:
-        # Calculate pad to achieve the desired y-position
-        # title_y_position is in figure coordinates (0-1), convert to points
-        desired_y_points = title_y_position * fig.get_figheight() * 72  # 72 points per inch
-        current_y_points = axes[2].get_position().y1 * fig.get_figheight() * 72
-        pad_points = desired_y_points - current_y_points
-        axes[2].set_title(plot3_title, fontsize=14, pad=pad_points)
-    else:
-        axes[2].set_title(plot3_title, fontsize=14, pad=title_pad)
-    axes[2].xaxis.set_label_position('top')
-    axes[2].xaxis.tick_top()
+    ax_plot3.set_aspect(aspect_values[plot3_position])
+    ax_plot3.set_ylabel("WT Variant", fontsize='medium', rotation=90)
+    ax_plot3.set_xlabel("Clinical Variant", fontsize=xlabel_fontsize)
+    # Title will be set later to ensure consistent height
+    ax_plot3.xaxis.set_label_position('top')
+    ax_plot3.xaxis.tick_top()
     
     # Rotate x-axis tick labels if requested
     if rotate_x_labels:
-        axes[2].tick_params(axis='x', labelrotation=45)
+        ax_plot3.tick_params(axis='x', labelrotation=45)
         # Get current tick labels and set horizontal alignment to left
-        labels = axes[2].get_xticklabels()
-        axes[2].set_xticklabels(labels, ha='left')
+        labels = ax_plot3.get_xticklabels()
+        ax_plot3.set_xticklabels(labels, ha='left')
 
-    # Remove yticklabels for the second plot for visual clarity
-    axes[1].set_yticklabels([])
-    
     # Control haplotype labels in the third plot
     if not show_wt_labels_plot3:
-        axes[2].set_yticklabels([])
+        ax_plot3.set_yticklabels([])
 
-    # Add grey box around first two plots if requested
-    if add_grey_box:
+    # Add grey box around first two plots if requested (skip if as_formula, we use dashed rectangles instead)
+    if add_grey_box and not as_formula:
         # Get the positions of the first two axes in figure coordinates
         pos1 = axes[0].get_position()
         pos2 = axes[1].get_position()
@@ -3242,8 +3723,8 @@ def plot_variant_sensitization_schematic(
         }
         
         # Add outline kwargs if provided
-        if grey_box_outline_kwargs is not None:
-            grey_box_kwargs.update(grey_box_outline_kwargs)
+        if grey_box_outline_kwargs_scaled is not None:
+            grey_box_kwargs.update(grey_box_outline_kwargs_scaled)
         else:
             grey_box_kwargs['edgecolor'] = 'none'
         
@@ -3257,7 +3738,8 @@ def plot_variant_sensitization_schematic(
 
     # Add arrows between the first and second plots, aligned with each row
     # Note: add_extra_row_col adds an extra spacer row, so total rows = n_haplotypes + 1
-    if show_train_predictor_arrow:
+    # Skip old arrows if as_formula is True (we'll use new formula arrows instead)
+    if show_train_predictor_arrow and not as_formula:
         fig.canvas.draw()
         total_rows = len(haplotypes_to_plot) + 1
         for i in range(total_rows):
@@ -3272,10 +3754,10 @@ def plot_variant_sensitization_schematic(
                 transform=fig.transFigure,
                 arrowstyle="->",
                 color="black",
-                linewidth=1.5,
-                shrinkA=6,
-                shrinkB=6,
-                mutation_scale=15,
+                linewidth=arrow_linewidth_scaled,
+                shrinkA=arrow_shrink_scaled,
+                shrinkB=arrow_shrink_scaled,
+                mutation_scale=arrow_mutation_scale_scaled,
                 clip_on=False
             )
             fig.patches.append(arrow)
@@ -3287,12 +3769,13 @@ def plot_variant_sensitization_schematic(
                     "Train\nPredictor",
                     ha="center",
                     va="bottom",
-                    fontsize=13,
+                    fontsize='large',
                     fontweight="bold"
                 )
 
     # Add one big arrow between the middle plot and the rightmost plot
-    if show_extract_coefficients_arrow:
+    # Skip old arrows if as_formula is True (we'll use new formula arrows instead)
+    if show_extract_coefficients_arrow and not as_formula:
         y_center = 0.5
         x1_fig, y1_fig = axes[1].transAxes.transform((1.0, y_center))
         x2_fig, y2_fig = axes[2].transAxes.transform((0.0, y_center))
@@ -3302,14 +3785,14 @@ def plot_variant_sensitization_schematic(
 
         arrowstyle = (
             f"simple,"
-            f"head_length={15*big_arrow_height},"
-            f"head_width={15*big_arrow_width},"
-            f"tail_width={5*big_arrow_width}"
+            f"head_length={15*big_arrow_height*scale_factor},"
+            f"head_width={15*big_arrow_width*scale_factor},"
+            f"tail_width={5*big_arrow_width*scale_factor}"
         )
-        linewidth = 2.5 * big_arrow_width
-        mutation_scale = 30 * big_arrow_height
-        shrinkA = 10 * big_arrow_width
-        shrinkB = 10 * big_arrow_width
+        linewidth = 2.5 * big_arrow_width * scale_factor
+        mutation_scale = 30 * big_arrow_height * scale_factor
+        shrinkA = 10 * big_arrow_width * scale_factor
+        shrinkB = 10 * big_arrow_width * scale_factor
 
         # Apply horizontal offset to the arrow and label positions
         x1_fig_frac_offset = x1_fig_frac + big_arrow_horizontal_offset
@@ -3338,17 +3821,145 @@ def plot_variant_sensitization_schematic(
             "Extract\nCoefficients",
             ha="center",
             va="bottom",
-            fontsize=13,
+            fontsize='large',
             fontweight="bold",
             zorder=30
         )
 
-    # Adjust subplot spacing and move axes[2] to the right
-    fig.subplots_adjust(wspace=0.3)
-    pos2 = axes[2].get_position()
-    axes[2].set_position([
-        pos2.x0 + extra_space, pos2.y0, pos2.width, pos2.height
-    ])
+    # Add formula-specific elements
+    if as_formula:
+        # Add dashed rectangles around each heatmap
+        for ax in axes_reordered:
+            pos = ax.get_position()
+            # Add padding around the heatmap
+            padding = 0.01
+            dashed_rect = Rectangle(
+                (pos.x0 - padding, pos.y0 - padding),
+                pos.width + 2 * padding,
+                pos.height + 2 * padding,
+                transform=fig.transFigure,
+                fill=False,
+                edgecolor='grey',
+                linestyle='--',
+                linewidth=1.5 * scale_factor,
+                zorder=5
+            )
+            fig.patches.append(dashed_rect)
+        
+        # Add "Surrogate Model" box above the middle heatmap (plot3, which is axes_reordered[1])
+        middle_ax = axes_reordered[1]  # This is plot3 (W x C) in formula layout
+        middle_pos = middle_ax.get_position()
+        
+        # Calculate box position above the middle heatmap
+        box_height = 0.08 * scale_factor
+        box_width = middle_pos.width * 0.6
+        box_x = middle_pos.x0 + (middle_pos.width - box_width) / 2
+        box_y = middle_pos.y1 + 0.05 * scale_factor
+        
+        # Draw the Surrogate Model box
+        surrogate_box = Rectangle(
+            (box_x, box_y),
+            box_width,
+            box_height,
+            transform=fig.transFigure,
+            fill=True,
+            facecolor='white',
+            edgecolor='black',
+            linewidth=1.5 * scale_factor,
+            zorder=25
+        )
+        fig.patches.append(surrogate_box)
+        
+        # Add "Surrogate Model" text
+        fig.text(
+            box_x + box_width / 2,
+            box_y + box_height / 2,
+            "Surrogate Model",
+            ha='center',
+            va='center',
+            fontsize='medium',
+            fontweight='bold',
+            transform=fig.transFigure,
+            zorder=26
+        )
+        
+        # Add arrows: x -> Surrogate Model -> y
+        arrow_y = box_y + box_height / 2
+        arrow_x_left = box_x - 0.15 * scale_factor
+        arrow_x_right = box_x + box_width + 0.15 * scale_factor
+        
+        # Left arrow: x -> Surrogate Model
+        left_arrow = FancyArrowPatch(
+            (arrow_x_left, arrow_y),
+            (box_x, arrow_y),
+            transform=fig.transFigure,
+            arrowstyle="->",
+            color="black",
+            linewidth=2 * scale_factor,
+            mutation_scale=20 * scale_factor,
+            shrinkA=5 * scale_factor,
+            shrinkB=5 * scale_factor,
+            clip_on=False,
+            zorder=24
+        )
+        fig.patches.append(left_arrow)
+        
+        # Add "x" label
+        fig.text(
+            arrow_x_left - 0.05 * scale_factor,
+            arrow_y,
+            "x",
+            ha='right',
+            va='center',
+            fontsize='large',
+            fontweight='bold',
+            transform=fig.transFigure,
+            zorder=27
+        )
+        
+        # Right arrow: Surrogate Model -> y
+        right_arrow = FancyArrowPatch(
+            (box_x + box_width, arrow_y),
+            (arrow_x_right, arrow_y),
+            transform=fig.transFigure,
+            arrowstyle="->",
+            color="black",
+            linewidth=2 * scale_factor,
+            mutation_scale=20 * scale_factor,
+            shrinkA=5 * scale_factor,
+            shrinkB=5 * scale_factor,
+            clip_on=False,
+            zorder=24
+        )
+        fig.patches.append(right_arrow)
+        
+        # Add "y" label
+        fig.text(
+            arrow_x_right + 0.05 * scale_factor,
+            arrow_y,
+            "y",
+            ha='left',
+            va='center',
+            fontsize='large',
+            fontweight='bold',
+            transform=fig.transFigure,
+            zorder=27
+        )
+        
+        # Add dimension labels below each heatmap: "(H x W)", "(W x C)", "(H x C)"
+        dimension_labels = ["(H x W)", "(W x C)", "(H x C)"]
+        for i, (ax, dim_label) in enumerate(zip(axes_reordered, dimension_labels)):
+            pos = ax.get_position()
+            fig.text(
+                pos.x0 + pos.width / 2,
+                pos.y0 - 0.03 * scale_factor,
+                dim_label,
+                ha='center',
+                va='top',
+                fontsize='small',
+                transform=fig.transFigure,
+                zorder=10
+            )
     
     # If title_y_position is set and > 1.0, adjust top margin to accommodate titles
     # Calculate rect for tight_layout to preserve space for titles
@@ -3360,43 +3971,229 @@ def plot_variant_sensitization_schematic(
     else:
         plt.tight_layout()
     
-    # Re-set titles after tight_layout to ensure they're visible
-    # This is especially important when title_y_position > 1.0
-    if title_y_position is not None:
-        for i, (ax, title) in enumerate([(axes[0], plot1_title), (axes[1], plot2_title), (axes[2], plot3_title)]):
-            desired_y_points = title_y_position * fig.get_figheight() * 72
-            current_y_points = ax.get_position().y1 * fig.get_figheight() * 72
-            pad_points = desired_y_points - current_y_points
-            ax.set_title(title, fontsize=14, pad=pad_points)
+    # Adjust subplot spacing manually AFTER tight_layout to allow different spacing between 0-1 and 1-2
+    # Get current positions after tight_layout
+    pos0 = axes[0].get_position()
+    pos1 = axes[1].get_position()
+    pos2 = axes[2].get_position()
     
-    # Re-set xlabels after tight_layout to ensure they're visible
-    # This ensures xlabels positioned at the top remain visible
-    # When title_y_position > 1.0, use fig.text to manually position xlabels
-    # to ensure they're visible between the title and the top of the axes
-    if title_y_position is not None and title_y_position > 1.0:
-        # Position xlabels manually using fig.text to ensure visibility
-        for i, ax in enumerate(axes):
-            if xlabel[i] is not None:
-                # Get axis position in figure coordinates
-                pos = ax.get_position()
-                # Position xlabel between title and top of axis
-                # Use a position slightly below where the title would be, but above the axis
-                xlabel_y = pos.y1 + 0.02  # Position just above the axis top
-                xlabel_x = pos.x0 + pos.width / 2  # Center horizontally
-                fig.text(xlabel_x, xlabel_y, xlabel[i], 
-                        fontsize=12, ha='center', va='bottom',
-                        transform=fig.transFigure)
-                # Also set on axis for consistency (though it might be clipped)
-                ax.set_xlabel(xlabel[i], fontsize=12, labelpad=xlabel_pad)
-                ax.xaxis.set_label_position('top')
+    # Calculate desired spacing
+    # Space between 0 and 1: subplot_space_x[0]
+    # Space between 1 and 2: subplot_space_x[1]
+    
+    # Adjust position of axis 1 based on spacing from axis 0
+    new_x1 = pos0.x1 + subplot_space_x[0]
+    axes[1].set_position([new_x1, pos1.y0, pos1.width, pos1.height])
+    
+    # Update pos1 after adjustment
+    pos1 = axes[1].get_position()
+    
+    # Adjust position of axis 2 based on spacing from axis 1
+    new_x2 = pos1.x1 + subplot_space_x[1]
+    axes[2].set_position([new_x2, pos2.y0, pos2.width, pos2.height])
+    
+    # Set all titles at the same height after layout is finalized
+    # Find the maximum y-position of all axes to ensure titles align
+    max_y_position = max(ax.get_position().y1 for ax in axes_reordered)
+    
+    if title_y_position is not None:
+        # Use the specified y-position
+        desired_y_fig = title_y_position
     else:
-        # Normal case: just re-set xlabels
-        for i, ax in enumerate(axes):
-            if xlabel[i] is not None:
-                ax.set_xlabel(xlabel[i], fontsize=12, labelpad=xlabel_pad)
-                ax.xaxis.set_label_position('top')
+        # Calculate desired y-position based on the highest axis plus padding
+        desired_y_fig = max_y_position + (title_pad_scaled / (fig.get_figheight() * 72))
+    
+    # Set all titles at the EXACT same y-position in figure coordinates
+    # All titles should be at the same absolute y position
+    # Use fig.text to place titles at exact same height, then set on axes for consistency
+    for ax, title in zip(axes_reordered, titles_reordered):
+        # Get axis position
+        pos = ax.get_position()
+        # Calculate title x position (center of axis)
+        title_x = pos.x0 + pos.width / 2
+        
+        # Place title at exact same y position for all plots
+        # Use fig.text to ensure EXACT same height for all titles
+        fig.text(
+            title_x,
+            desired_y_fig,
+            title,
+            ha='center',
+            va='bottom',
+            fontsize='large',
+            transform=fig.transFigure,
+            zorder=100
+        )
+        
+        # Set empty title on axis to avoid any default title positioning issues
+        ax.set_title('', fontsize='large')
+    
+    # Set tick label sizes and rotate y-axis tick labels
+    # All y-axis tick labels should be horizontal (0 degrees)
+    for ax in axes_reordered:
+        # Set tick label size for both axes
+        if ticklabel_fontsize is not None:
+            ax.tick_params(axis='both', labelsize=ticklabel_fontsize)
+        else:
+            # Default to small for both axes
+            ax.tick_params(axis='both', labelsize='small')
+        # Set y-axis tick label rotation to 0 (horizontal)
+        ax.tick_params(axis='y', labelrotation=0)
+        # Move x-tick labels closer to ticks by reducing pad
+        ax.tick_params(axis='x', pad=0.5)
+    
+    # Pad x-tick labels to ensure all heatmaps have the same label height
+    # This prevents misalignment of x-axis titles when labels have different lengths
+    # Get all x-tick labels from all three axes
+    all_xtick_labels = []
+    for ax in axes_reordered:
+        labels = ax.get_xticklabels()
+        label_texts = [label.get_text() for label in labels]
+        all_xtick_labels.append(label_texts)
+    
+    # Find the maximum width across all labels
+    max_width = 0
+    for label_list in all_xtick_labels:
+        for label in label_list:
+            if label:  # Skip empty labels
+                max_width = max(max_width, len(label))
+    
+    # Pad labels to match maximum width (if max_width > 0)
+    if max_width > 0:
+        for i, ax in enumerate(axes_reordered):
+            labels = ax.get_xticklabels()
+            padded_labels = []
+            for label in labels:
+                text = label.get_text()
+                if text:
+                    # Pad with spaces to match max width, center the text
+                    padding_needed = max_width - len(text)
+                    left_pad = padding_needed // 2
+                    right_pad = padding_needed - left_pad
+                    padded_text = ' ' * left_pad + text + ' ' * right_pad
+                    padded_labels.append(padded_text)
+                else:
+                    padded_labels.append(text)
+            
+            # Get current rotation and alignment settings
+            rotation = 45 if rotate_x_labels else 0
+            ha = 'left' if rotate_x_labels else 'center'
+            
+            # Re-set the tick labels with padding
+            ax.set_xticklabels(padded_labels, rotation=rotation, ha=ha)
+    
+    # Apply pad to all x-tick labels to move them closer to ticks (after all label operations)
+    for ax in axes_reordered:
+        ax.tick_params(axis='x', pad=0.5)
+    
+    # Store original xlabel texts before clearing, then position them manually using fig.text for perfect alignment
+    xlabel_texts = []
+    for i, ax in enumerate(axes_reordered):
+        # Get current xlabel text from axis if xlabel[i] is None
+        if xlabel[i] is not None:
+            xlabel_texts.append(xlabel[i])
+        else:
+            # Get the current xlabel from the axis
+            current_xlabel = ax.get_xlabel()
+            xlabel_texts.append(current_xlabel if current_xlabel else None)
+        # Clear the xlabel on the axis - we'll position it manually later
+        ax.set_xlabel('')
+        ax.xaxis.set_label_position('top')
+    
+    # FINALLY: Shift plot2 and plot3 heatmaps down so their tops align with plot1
+    # This must happen after all other positioning is complete
+    # Use plot1 (index 0) as the reference since it's always present
+    plot1_index_in_reordered = plot_order.index(0)
+    ax_reference = axes_reordered[plot1_index_in_reordered]
+    reference_top = ax_reference.get_position().y1
+    
+    # Shift plot2 (Haplotype x Clinical Variant VEP Matrix) down
+    plot2_index_in_reordered = plot_order.index(1)
+    ax_plot2 = axes_reordered[plot2_index_in_reordered]
+    pos2 = ax_plot2.get_position()
+    shift_amount_plot2 = pos2.y1 - reference_top
+    if abs(shift_amount_plot2) > 1e-6:
+        ax_plot2.set_position([
+            pos2.x0,
+            pos2.y0 - shift_amount_plot2,
+            pos2.width,
+            pos2.height
+        ])
+        # Verify and correct if needed
+        new_pos2 = ax_plot2.get_position()
+        if abs(new_pos2.y1 - reference_top) > 1e-6:
+            final_shift = new_pos2.y1 - reference_top
+            ax_plot2.set_position([
+                new_pos2.x0,
+                new_pos2.y0 - final_shift,
+                new_pos2.width,
+                new_pos2.height
+            ])
+    
+    # Shift plot3 (WT-Clinical heatmap) down
+    plot3_index_in_reordered = plot_order.index(2)
+    ax_plot3 = axes_reordered[plot3_index_in_reordered]
+    pos3 = ax_plot3.get_position()
+    shift_amount_plot3 = pos3.y1 - reference_top
+    if abs(shift_amount_plot3) > 1e-6:
+        ax_plot3.set_position([
+            pos3.x0,
+            pos3.y0 - shift_amount_plot3,
+            pos3.width,
+            pos3.height
+        ])
+        # Verify and correct if needed
+        new_pos3 = ax_plot3.get_position()
+        if abs(new_pos3.y1 - reference_top) > 1e-6:
+            final_shift = new_pos3.y1 - reference_top
+            ax_plot3.set_position([
+                new_pos3.x0,
+                new_pos3.y0 - final_shift,
+                new_pos3.width,
+                new_pos3.height
+            ])
 
-    return {'fig': fig, 'axes': axes, 'data': {'wtvariants_to_vep_linear_model_out': wtvariants_to_vep_linear_model_out,
+    # Position all x-axis labels at the exact same y-coordinate using fig.text
+    # This ensures perfect horizontal alignment regardless of tick label sizes
+    # All axes should have the same top position after shifting, so use reference_top
+    # First, force a draw to get accurate tick label positions
+    fig.canvas.draw_idle()
+    
+    # Find the maximum top position of all x-tick labels across all axes
+    max_tick_label_top = reference_top
+    for ax in axes_reordered:
+        # Get all x-tick labels
+        tick_labels = ax.get_xticklabels()
+        if tick_labels:
+            # Get the bounding box of tick labels in figure coordinates
+            for label in tick_labels:
+                try:
+                    bbox = label.get_window_extent(fig.canvas.get_renderer())
+                    bbox_fig = bbox.transformed(fig.transFigure.inverted())
+                    max_tick_label_top = max(max_tick_label_top, bbox_fig.y1)
+                except:
+                    pass
+    
+    # Position xlabels at a fixed offset above the maximum tick label top
+    # Convert padding from points to figure coordinates (72 points per inch)
+    # Add extra padding to ensure labels don't overlap with tick labels
+    extra_padding = 0.02  # Additional padding in figure coordinates
+    xlabel_y_position = max_tick_label_top + (xlabel_pad_scaled / (fig.get_figheight() * 72)) + extra_padding
+    
+    for i, ax in enumerate(axes_reordered):
+        if xlabel_texts[i] is not None:
+            # Get axis position in figure coordinates
+            pos = ax.get_position()
+            # Calculate xlabel x position (center of axis)
+            xlabel_x = pos.x0 + pos.width / 2
+            # Position xlabel at the exact same y-coordinate for all plots using fig.text
+            # DO NOT set on axis to avoid duplicates - only use fig.text
+            fig.text(xlabel_x, xlabel_y_position, xlabel_texts[i], 
+                    fontsize=xlabel_fontsize, ha='center', va='bottom',
+                    transform=fig.transFigure, zorder=100)
+
+    # Return axes in visual order (reordered based on plot_order)
+    return {'fig': fig, 'axes': axes_reordered, 'data': {'wtvariants_to_vep_linear_model_out': wtvariants_to_vep_linear_model_out,
                                                 'Xwt_with_extra': Xwt_with_extra,
                                                 'Xvep_with_extra': Xvep_with_extra,
                                                 'coef_matrix_abs_with_extra': coef_matrix_abs_with_extra}}
@@ -3471,25 +4268,34 @@ def plot_wt_clinical_interaction_vs_angstroms(
     
     ridge_df['protein'] = ridge_df['site'].str.split(":").str[0]
     ridge_df = utils.add_hgvsp_id(ridge_df)
+
+    vep_prot_tmp = vep_prot[["mutant", "clinsig"]].drop_duplicates().copy()
+    vep_prot_tmp["mutant"] = vep_prot_tmp["mutant"].apply(utils.standardize_variant)
     if "clinsig" not in ridge_df.columns:
         ridge_df = ridge_df.merge(
-            vep_prot[["mutant", "clinsig"]].drop_duplicates(),
+            vep_prot_tmp,
             left_on="clinical_variant",
             right_on="mutant",
             how="left"
         )
-    ridge_df['clinsig'] = ridge_df['clinsig'].replace(
+    # Convert to string first to handle NaN values, then do replacements
+    ridge_df['clinsig'] = ridge_df['clinsig'].astype(str).replace(
         to_replace=r'path$', value='pathogenic', regex=True
     )
     ridge_df['clinsig'] = ridge_df['clinsig'].str.replace("_", " ", regex=False)
-    vep_prot['clinsig'] = vep_prot['clinsig'].replace(
+    # Replace 'nan' string back to actual NaN
+    ridge_df['clinsig'] = ridge_df['clinsig'].replace('nan', np.nan)
+    
+    vep_prot['clinsig'] = vep_prot['clinsig'].astype(str).replace(
         to_replace=r'path$', value='pathogenic', regex=True
     )
     vep_prot['clinsig'] = vep_prot['clinsig'].str.replace("_", " ", regex=False)
+    # Replace 'nan' string back to actual NaN
+    vep_prot['clinsig'] = vep_prot['clinsig'].replace('nan', np.nan)
 
 
     top_interactions = ridge_df.reindex(
-        ridge_df["interaction_strength"].abs().sort_values(ascending=False).index
+        ridge_df[y_var].abs().sort_values(ascending=False).index
     ).head(N)
 
     ridge_df = utils.sort_by_clinsig(ridge_df, clinsig_col="clinsig")
@@ -3597,6 +4403,7 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 import numpy as np
 import matplotlib.patches as mpatches
+import matplotlib.ticker as ticker
 
 def plot_vep_scatter_kde(
     vep_prot, 
@@ -3609,12 +4416,17 @@ def plot_vep_scatter_kde(
     palette = None,
     figsize=(5,5),
     ridge_kwargs=None,  # NOTE: changed default to None, see below
-    ridge_y_label=r"$|E_{\text{Clin}}|$",
+    ridge_y_label=r"$|\beta_{Clin}|$",
+    wt_ridge_y_label = r"$|\beta_{WT}|$",
     grid_row_ratios=(3, 1, 1, 1),  # default: [scatter=3, kde=1, wt_ridge=1, clin_ridge=1], ignored if no ridge_df
     grid_spacer=0.07, 
     rasterize=True,
     show_wt_margin=True,  # If True and ridge_df has wt_position, show WT margin effect row
-    wt_margin_position="bottom"  # "top" or "bottom" - position of WT margin effect relative to clinical margin effect
+    wt_margin_position="bottom",  # "top" or "bottom" - position of WT margin effect relative to clinical margin effect
+    title_y=None,  # Y position for title (0-1, figure coordinates). If None, auto-calculated based on number of rows
+    s=12,  # Point size for the main scatter plot
+    show_legend=True,  # If True, show the legend for clinical significance
+    scatter_y_label=None  # Y-axis label for the first scatter plot. If None, uses default based on position_axis
 ):
     """
     Plot scatter + KDE comparing VEP vs. position, with clinical significance colormaps.
@@ -3657,6 +4469,17 @@ def plot_vep_scatter_kde(
         Position of WT margin effect relative to clinical margin effect.
         "bottom" (default): scatter, kde, clinical, WT
         "top": scatter, kde, WT, clinical
+    title_y : float, optional
+        Y position for the title in figure coordinates (0-1). If None, automatically
+        calculated based on the number of rows (0.98 for 4 rows, 0.97 for 3 rows, 0.95 for 2 rows).
+    s : float, optional
+        Point size for the main scatter plot. Default is 12.
+    show_legend : bool, optional
+        If True, show the legend for clinical significance. Default is True.
+    scatter_y_label : str, optional
+        Y-axis label for the first scatter plot. If None, uses default based on position_axis:
+        - "Residue Position" when position_axis="y"
+        - "VEP" when position_axis="x"
     """
     clinsig_order = ["path", "likely_path", "likely_benign", "benign"]
     if palette is None:
@@ -3694,7 +4517,7 @@ def plot_vep_scatter_kde(
             nrows=nrows, ncols=1,
             figsize=figsize,
             sharex=sharex,
-            sharey=False,
+            sharey=False,  # Each axis has independent y-axis (especially for bottom two scatter plots)
             gridspec_kw={'height_ratios': height_ratios, 'hspace': grid_spacer}
         )
         if nrows == 2:
@@ -3753,7 +4576,7 @@ def plot_vep_scatter_kde(
         "palette": palette,
         # "edgecolor": 'none',
         "alpha": 0.4,
-        "s": 12,
+        "s": s,
         "ax": ax_scatter,
         "legend": False
     }
@@ -3782,31 +4605,34 @@ def plot_vep_scatter_kde(
     if position_axis == "y":
         ax_scatter.set_yticks(ticks)
         ax_scatter.set_yticklabels([str(y) for y in ticks], rotation=0)
-        ax_scatter.set_xlabel('VEP')
-        ax_scatter.set_ylabel('Residue Position')
+        ax_scatter.set_xlabel('VEP', fontsize='medium')
+        y_label = scatter_y_label if scatter_y_label is not None else 'Residue Position'
+        ax_scatter.set_ylabel(y_label, fontsize='medium')
         ax_scatter.invert_yaxis()  # so residue # increases downward, as in seq
     else:
         ax_scatter.set_xticks(ticks)
         ax_scatter.set_xticklabels([str(x) for x in ticks], rotation=0)
-        ax_scatter.set_xlabel('Residue Position')
-        ax_scatter.set_ylabel('VEP')
+        ax_scatter.set_xlabel('Residue Position', fontsize='medium')
+        y_label = scatter_y_label if scatter_y_label is not None else 'VEP'
+        ax_scatter.set_ylabel(y_label, fontsize='medium')
         ax_scatter.invert_xaxis()  # so residue # increases right-to-left
 
     # Pretty legend
-    handles = [
-        mpatches.Patch(
-            color=palette[c], 
-            label=clinsig_legend_labels.get(c, c.replace('_', ' '))
-        ) 
-        for c in clinsig_order
-    ]
-    ax_scatter.legend(
-        handles=handles, 
-        title="Clinical Significance", 
-        frameon=False,
-        loc='center', 
-        bbox_to_anchor=bbox_to_anchor
-    )
+    if show_legend:
+        handles = [
+            mpatches.Patch(
+                color=palette[c], 
+                label=clinsig_legend_labels.get(c, c.replace('_', ' '))
+            ) 
+            for c in clinsig_order
+        ]
+        ax_scatter.legend(
+            handles=handles, 
+            title="Clinical Significance", 
+            frameon=False,
+            loc='center', 
+            bbox_to_anchor=bbox_to_anchor
+        )
 
     # --- KDE ---
     kde_kwargs = {
@@ -3820,6 +4646,7 @@ def plot_vep_scatter_kde(
         "common_norm": False,
         "cut": 0,
         "bw_adjust": 0.5,
+        "linewidth": 1,
         "ax": ax_kde
     }
     if position_axis == "y":
@@ -3830,16 +4657,16 @@ def plot_vep_scatter_kde(
 
     # Axis labels and despine for KDE
     if position_axis == "y":
-        ax_kde.set_ylabel('Residue Position')
+        ax_kde.set_ylabel('Residue Position', fontsize='medium')
         ax_kde.set_xlabel(None)
         ax_kde.invert_yaxis()
     else:
-        ax_kde.set_xlabel('Residue Position')
+        ax_kde.set_xlabel('Residue Position', fontsize='medium')
         ax_kde.set_ylabel(None)
         ax_kde.invert_xaxis()
     
     # Set consistent tick label sizes for all axes
-    tick_label_size = 10
+    tick_label_size = 'medium'  # Medium size for tick labels
     ax_scatter.tick_params(axis='both', labelsize=tick_label_size)
     ax_kde.tick_params(axis='both', labelsize=tick_label_size)
     
@@ -3859,7 +4686,7 @@ def plot_vep_scatter_kde(
             "x": "wt_position",
             "y": "interaction_strength",
             "size": None,
-            "s": 14,
+            "s": s,  # Use same point size as main scatter plot
             "alpha": 0.5,
             "color": "black",  # Use black dots for WT
             "hue": None,  # WT variants don't have clinsig
@@ -3876,7 +4703,7 @@ def plot_vep_scatter_kde(
         # Extract mandatory x/y
         wt_ridge_x = wt_ridgep.pop("x")
         wt_ridge_y = wt_ridgep.pop("y")
-        wt_ridge_y_label = r"$|E_{\text{WT}}|$"
+       
 
         if wt_ridge_x not in ridge_df.columns or wt_ridge_y not in ridge_df.columns:
             raise ValueError(f"ridge_df must contain columns: {wt_ridge_x} and {wt_ridge_y}")
@@ -3900,8 +4727,8 @@ def plot_vep_scatter_kde(
             )
             scatter_args.update(wt_ridgep)
             sns.scatterplot(**scatter_args)
-            ax_wt_interaction.set_xlabel('Residue Position')
-            ax_wt_interaction.set_ylabel(wt_ridge_y_label)
+            ax_wt_interaction.set_xlabel('Residue Position', fontsize='medium')
+            ax_wt_interaction.set_ylabel(wt_ridge_y_label, fontsize='medium')
             ax_wt_interaction.set_xlim(vep_prot[position_col].min(), vep_prot[position_col].max())
         else:
             scatter_args = dict(
@@ -3914,14 +4741,34 @@ def plot_vep_scatter_kde(
             )
             scatter_args.update(wt_ridgep)
             sns.scatterplot(**scatter_args)
-            ax_wt_interaction.set_ylabel('Residue Position')
-            ax_wt_interaction.set_xlabel(wt_ridge_y_label)
+            ax_wt_interaction.set_ylabel('Residue Position', fontsize='medium')
+            ax_wt_interaction.set_xlabel(wt_ridge_y_label, fontsize='medium')
             ax_wt_interaction.set_ylim(vep_prot[position_col].min(), vep_prot[position_col].max()) 
 
         # Layout and ticks
         if position_axis == "x":
             ax_wt_interaction.set_xticks(ticks)
             ax_wt_interaction.set_xticklabels([str(x) for x in ticks], rotation=0)
+            # Center y-axis around middle of observed values and set only two ticks: 0 and middle
+            data_min = ridge_df_wt_agg[wt_ridge_y].min()
+            data_max = ridge_df_wt_agg[wt_ridge_y].max()
+            data_middle = (data_min + data_max) / 2
+            data_range = data_max - data_min
+            # Add 1% padding to prevent points from being cut off
+            padding = data_range * 0.01
+            # Center axis around the middle of the data with padding
+            ax_wt_interaction.set_ylim(data_middle - data_range/2 - padding, data_middle + data_range/2 + padding)
+            # Set only two y-ticks: 0 (if in range) and the middle value
+            y_lim = ax_wt_interaction.get_ylim()
+            y_ticks = []
+            if y_lim[0] <= 0 <= y_lim[1]:
+                y_ticks.append(0)
+            y_ticks.append(data_middle)
+            y_ticks.sort()
+            ax_wt_interaction.set_yticks(y_ticks)
+            # Format y-axis labels in scientific notation (except 0), rounded to 1 decimal place
+            formatter = ticker.FuncFormatter(lambda x, p: '0' if x == 0 else f'{x:.1e}')
+            ax_wt_interaction.yaxis.set_major_formatter(formatter)
         else:
             ax_wt_interaction.set_yticks(ticks)
             ax_wt_interaction.set_yticklabels([str(y) for y in ticks], rotation=0)
@@ -3936,7 +4783,7 @@ def plot_vep_scatter_kde(
             "x": "clinical_position",
             "y": "interaction_strength",
             "size": None,
-            "s": 14,
+            "s": s,  # Use same point size as main scatter plot
             "alpha": 0.5,
             "hue": "clinsig",
             "palette": palette,
@@ -3979,8 +4826,8 @@ def plot_vep_scatter_kde(
             )
             scatter_args.update(ridgep)
             sns.scatterplot(**scatter_args)
-            ax_interaction.set_xlabel('Residue Position')
-            ax_interaction.set_ylabel(ridge_y_label)
+            ax_interaction.set_xlabel('Residue Position', fontsize='medium')
+            ax_interaction.set_ylabel(ridge_y_label, fontsize='medium')
             ax_interaction.set_xlim(vep_prot[position_col].min(), vep_prot[position_col].max())
         else:
             scatter_args = dict(
@@ -3993,14 +4840,34 @@ def plot_vep_scatter_kde(
             )
             scatter_args.update(ridgep)
             sns.scatterplot(**scatter_args)
-            ax_interaction.set_ylabel('Residue Position')
-            ax_interaction.set_xlabel(ridge_y_label)
+            ax_interaction.set_ylabel('Residue Position', fontsize='medium')
+            ax_interaction.set_xlabel(ridge_y_label, fontsize='medium')
             ax_interaction.set_ylim(vep_prot[position_col].min(), vep_prot[position_col].max()) 
 
         # Layout and ticks
         if position_axis == "x":
             ax_interaction.set_xticks(ticks)
             ax_interaction.set_xticklabels([str(x) for x in ticks], rotation=0)
+            # Center y-axis around middle of observed values and set only two ticks: 0 and middle
+            data_min = ridge_df_agg[ridge_y].min()
+            data_max = ridge_df_agg[ridge_y].max()
+            data_middle = (data_min + data_max) / 2
+            data_range = data_max - data_min
+            # Add 1% padding to prevent points from being cut off
+            padding = data_range * 0.01
+            # Center axis around the middle of the data with padding
+            ax_interaction.set_ylim(data_middle - data_range/2 - padding, data_middle + data_range/2 + padding)
+            # Set only two y-ticks: 0 (if in range) and the middle value
+            y_lim = ax_interaction.get_ylim()
+            y_ticks = []
+            if y_lim[0] <= 0 <= y_lim[1]:
+                y_ticks.append(0)
+            y_ticks.append(data_middle)
+            y_ticks.sort()
+            ax_interaction.set_yticks(y_ticks)
+            # Format y-axis labels in scientific notation (except 0), rounded to 1 decimal place
+            formatter = ticker.FuncFormatter(lambda x, p: '0' if x == 0 else f'{x:.1e}')
+            ax_interaction.yaxis.set_major_formatter(formatter)
         else:
             ax_interaction.set_yticks(ticks)
             ax_interaction.set_yticklabels([str(y) for y in ticks], rotation=0)
@@ -4010,14 +4877,15 @@ def plot_vep_scatter_kde(
 
     # Set plot title if provided
     if title is not None:
-        # Adjust title position based on number of rows
-        if has_wt_position:
-            title_y = 0.98  # 4 rows
-        elif has_interaction_ax:
-            title_y = 0.97  # 3 rows
-        else:
-            title_y = 0.95  # 2 rows
-        fig.suptitle(title, y=title_y)
+        # Adjust title position based on number of rows if not explicitly provided
+        if title_y is None:
+            if has_wt_position:
+                title_y = 0.98  # 4 rows
+            elif has_interaction_ax:
+                title_y = 0.97  # 3 rows
+            else:
+                title_y = 0.95  # 2 rows
+        fig.suptitle(title, y=title_y, fontsize='large')
 
     if rasterize:
         if ax_interaction is not None:

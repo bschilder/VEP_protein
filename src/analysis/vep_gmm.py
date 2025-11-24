@@ -693,13 +693,20 @@ def plot_vep_histograms_with_boundaries(
     superpop_legend_x=0.5,
     superpop_legend_y=-0.05,
     superpop_legend_row=1,
+    superpop_legend_bottom=True,
     format_variant_p_notation=False,
     show_superpop_legend_title=False,
     superpop_legend_border=False,
     superpop_legend_border_padding=(0.04, 0.015, 0.015, 0.015),
     facet_row_spacing=0.4,
     show_twinx_labels=True,
-    facet_title_x=0.5
+    facet_title_x=0.5,
+    n_xticks=None,
+    n_yticks=None,
+    show_vertical_lines=True,
+    show_vertical_line_labels=True,
+    shared_yaxis_label=False,
+    shared_yaxis_label_x=-0.25
 ):
     """
     Plot histograms of VEP scores for selected sites, coloring bars by distance from decision boundary,
@@ -755,10 +762,11 @@ def plot_vep_histograms_with_boundaries(
         superpop_binwidth are None.
     show_superpop_legend : bool, default=True
         Whether to show the superpopulation legend. Only used when show_superpops=True.
-    superpop_legend_x : float, default=0.5
+    superpop_legend_x : float or None, default=0.5
         X position for the superpopulation legend (bbox_to_anchor x-coordinate).
         Value of 0.5 centers the legend horizontally. Values > 1.0 place the legend
-        outside the plot boundaries to the right.
+        outside the plot boundaries to the right. If None and superpop_legend_bottom=True,
+        defaults to 0.5 (centered).
     superpop_legend_y : float or None, default=-0.05
         Y position for the superpopulation legend (bbox_to_anchor y-coordinate).
         Value between 0 and 1 places it within the figure, where 1.0 is the top edge.
@@ -769,6 +777,11 @@ def plot_vep_histograms_with_boundaries(
         If None, automatically determines:
         - Single row if ≤4 superpopulations
         - Two rows if >4 superpopulations
+    superpop_legend_bottom : bool, default=True
+        If True, force horizontal single-row layout for the legend.
+        Position can still be adjusted with superpop_legend_x and superpop_legend_y.
+        If False, use superpop_legend_x, superpop_legend_y, and superpop_legend_row
+        for full custom positioning and layout.
     format_variant_p_notation : bool, default=False
         If True, reformat the clinical variant in facet title from format like "C121F"
         to protein notation format like "p.F>121C" (p.alt>positionref).
@@ -800,6 +813,24 @@ def plot_vep_histograms_with_boundaries(
         X-position of facet subplot titles in axes coordinates (0-1). 
         Value of 0.5 centers the title horizontally. Values < 0.5 move the title left,
         values > 0.5 move it right.
+    n_xticks : int or None, default=None
+        Maximum number of x-axis tick labels to display. If None, uses matplotlib's default.
+        Uses MaxNLocator to automatically choose nice tick positions.
+    n_yticks : int or None, default=None
+        Maximum number of y-axis tick labels to display. If None, uses automatic selection
+        with MaxNLocator. Uses MaxNLocator to automatically choose nice tick positions.
+    show_vertical_lines : bool, default=True
+        Whether to show vertical lines for VEP_REF, VEP_mean, and decision_boundary.
+    show_vertical_line_labels : bool, default=True
+        Whether to show text labels next to the vertical lines.
+    shared_yaxis_label : bool, default=False
+        If True, only show y-axis label on the leftmost column(s) of subplots,
+        centered vertically. If False, show y-axis label on all subplots.
+    shared_yaxis_label_x : float, default=-0.2
+        X-coordinate position for the shared y-axis label when shared_yaxis_label=True.
+        This controls the horizontal padding/position of the label. Negative values
+        move the label further left (more padding), positive values move it right.
+        The y-coordinate is automatically centered at 0.5.
     Returns
     -------
     dict
@@ -825,10 +856,14 @@ def plot_vep_histograms_with_boundaries(
         else:
             formatted_variant = plot_df[mutant_col]
         
+        # plot_df["facet_label"] = (
+        #     "Gene: " + plot_df["GENEINFO"].str.split(":").str[0]
+        #     + ", Variant: " + formatted_variant
+        #     + " (Haplotypes: " + plot_df["n_haplotypes"].astype(str) + ")")
         plot_df["facet_label"] = (
-            "Gene: " + plot_df["GENEINFO"].str.split(":").str[0]
-            + ", Variant: " + formatted_variant
-            + " (Haplotypes: " + plot_df["n_haplotypes"].astype(str) + ")")
+            plot_df["GENEINFO"].str.split(":").str[0]
+            + " + " + formatted_variant 
+            + " (" + plot_df["n_haplotypes"].astype(str) + " haplotypes)")
 
 
     if flip_xaxis:
@@ -904,6 +939,7 @@ def plot_vep_histograms_with_boundaries(
         # Plot bars
         width = bin_edges[1] - bin_edges[0]
         ax.bar(bin_centers, counts, width=width, color=bar_colors, alpha=0.9, edgecolor=None, align="center", zorder=2)
+        # Always set ylabel here (will be removed from non-shared axes later if shared_yaxis_label=True)
         ax.set_ylabel(y1_label)
         ax.set_xlabel(x_label)
 
@@ -911,7 +947,8 @@ def plot_vep_histograms_with_boundaries(
         max_count = counts.max() if len(counts) > 0 else 0
         ax.set_ylim(bottom=0, top=max(1, max_count + 0.5))
         # Use MaxNLocator
-        locator = mticker.MaxNLocator(integer=True, prune=None, nbins='auto', steps=[1,2,5,10])
+        nbins_y = n_yticks if n_yticks is not None else 'auto'
+        locator = mticker.MaxNLocator(integer=True, prune=None, nbins=nbins_y, steps=[1,2,5,10])
         # Get tick values
         ticks = locator.tick_values(0, max(1, max_count + 0.5))
         # Filter to only include ticks > 0 (exclude 0 from labels but keep y-axis starting at 0)
@@ -919,6 +956,11 @@ def plot_vep_histograms_with_boundaries(
         # Sort and remove duplicates
         ticks = np.unique(np.sort(ticks))
         ax.set_yticks(ticks)
+        
+        # Set x-axis ticks if n_xticks is specified
+        if n_xticks is not None:
+            x_locator = mticker.MaxNLocator(nbins=n_xticks)
+            ax.xaxis.set_major_locator(x_locator)
 
         # Add KDE on top, but scale it to match the histogram counts
         if len(values) > 1:
@@ -989,13 +1031,15 @@ def plot_vep_histograms_with_boundaries(
 
         # Draw lines and staggered labels from top downward
         for i, (xpos, label, color) in enumerate(xlabels):
-            ax.axvline(xpos, color=color, linestyle="--", label=label)
-            y_text = ymax - delta_y * i
-            ax.text(
-                xpos + relative_x_offset, y_text, label, color=color, rotation=0,
-                va=valign, ha=halign, fontsize="medium",
-                bbox=dict(facecolor="white", alpha=.95, edgecolor=color, boxstyle="round,pad=0.1")
-            )
+            if show_vertical_lines:
+                ax.axvline(xpos, color=color, linestyle="--", label=label)
+            if show_vertical_line_labels:
+                y_text = ymax - delta_y * i
+                ax.text(
+                    xpos + relative_x_offset, y_text, label, color=color, rotation=0,
+                    va=valign, ha=halign, fontsize="medium",
+                    bbox=dict(facecolor="white", alpha=.95, edgecolor=color, boxstyle="round,pad=0.1")
+                )
 
         handles, labels = ax.get_legend_handles_labels()
         by_label = dict(zip(labels, handles))
@@ -1013,6 +1057,44 @@ def plot_vep_histograms_with_boundaries(
     g.map_dataframe(colored_histplot_with_kde, x="VEP", bins=bins)
     g.map_dataframe(add_vep_ref_and_mean_lines)
     g.set_titles(col_template="{col_name}")
+
+    # Handle shared y-axis label if requested
+    if shared_yaxis_label:
+        # Get all axes - FacetGrid.axes is typically a numpy array
+        # Convert to list and filter None values
+        all_axes_list = []
+        if hasattr(g, 'axes'):
+            # FacetGrid.axes can be 1D or 2D numpy array
+            axes_array = np.asarray(g.axes)
+            all_axes_list = [ax for ax in axes_array.flat if ax is not None]
+        
+        if len(all_axes_list) > 0:
+            # Determine which axis should get the shared label
+            # For a single shared label, use the middle axis (or first if only one)
+            if col_wrap == 1:
+                # Single column - use the middle axis for the shared label
+                middle_idx = len(all_axes_list) // 2
+                shared_axis = all_axes_list[middle_idx]
+            else:
+                # Multiple columns - use the middle row of the leftmost column
+                # Leftmost column axes are at indices: 0, col_wrap, 2*col_wrap, etc.
+                leftmost_indices = list(range(0, len(all_axes_list), col_wrap))
+                if leftmost_indices:
+                    middle_idx = len(leftmost_indices) // 2
+                    shared_axis = all_axes_list[leftmost_indices[middle_idx]]
+                else:
+                    shared_axis = all_axes_list[0]
+            
+            # Remove ylabels from all axes
+            for ax in all_axes_list:
+                if ax is not None:
+                    ax.set_ylabel("")
+            
+            # Set ylabel only on the shared axis, centered vertically
+            if shared_axis is not None:
+                shared_axis.set_ylabel(y1_label)
+                # Center the label vertically (x position controlled by shared_yaxis_label_x, y centered at 0.5)
+                shared_axis.yaxis.set_label_coords(shared_yaxis_label_x, 0.5)
 
     # Adjust facet title x-positions
     for ax in g.axes.flatten():
@@ -1044,7 +1126,11 @@ def plot_vep_histograms_with_boundaries(
     # Adjust bottom margin early if legend will be below the plot
     # This needs to happen BEFORE tight_layout so superpop axes are positioned correctly
     if show_superpops and show_superpop_legend:
-        if superpop_legend_y is None or superpop_legend_y < 0:
+        # Check if legend will be at bottom (either via superpop_legend_bottom or negative y)
+        will_be_bottom = (superpop_legend_bottom or 
+                         (superpop_legend_y is not None and superpop_legend_y < 0) or
+                         (superpop_legend_y is None))  # Default is below
+        if will_be_bottom:
             # Legend will be below - make room for it early
             current_bottom = g.fig.subplotpars.bottom
             legend_space = 0.1  # ~10% of figure height for legend
@@ -1151,7 +1237,9 @@ def plot_vep_histograms_with_boundaries(
                     multiple="fill",
                     binwidth=binwidth_superpop,
                     legend=False,
-                    ax=superpop_ax
+                    ax=superpop_ax,
+                    edgecolor='black',
+                    linewidth=0.25  # Half the previous thickness
                 )
                 
                 # Style the superpop axis
@@ -1260,32 +1348,42 @@ def plot_vep_histograms_with_boundaries(
                 handles = [plt.Rectangle((0, 0), 1, 1, 
                                          facecolor=superpop_palette.get(sp, "gray"),
                                          edgecolor='black',
-                                         linewidth=0.5) 
+                                         linewidth=0.25)  # Half the previous thickness
                           for sp in all_superpops]
                 labels = all_superpops
                 
-                # Determine number of columns for legend layout based on rows
-                if superpop_legend_row is not None:
-                    # Calculate columns from rows: ncol = ceil(n_items / n_rows)
-                    ncol = (len(labels) + superpop_legend_row - 1) // superpop_legend_row
-                    is_single_row = (superpop_legend_row == 1)
-                else:
-                    # Auto-determine: single row if ≤4 superpops, two rows if >4
-                    # For single row: ncol = n_items
-                    # For two rows: ncol = ceil(n_items / 2)
-                    if len(labels) <= 4:
-                        ncol = len(labels)  # Single row
-                        is_single_row = True
+                # Determine legend position and layout based on superpop_legend_bottom
+                if superpop_legend_bottom:
+                    # Force horizontal single-row layout, but use x/y for positioning
+                    # Use custom x/y positioning if provided, otherwise use defaults
+                    legend_x = superpop_legend_x if superpop_legend_x is not None else 0.5  # Default: center horizontally
+                    if superpop_legend_y is not None:
+                        legend_y = superpop_legend_y
                     else:
-                        ncol = (len(labels) + 1) // 2  # Two rows
-                        is_single_row = False
-                
-                # Determine legend y-position
-                if superpop_legend_y is not None:
-                    legend_y = superpop_legend_y
+                        legend_y = -0.05  # Default: below the plot
+                    # Force single row for horizontal bottom layout
+                    ncol = len(labels)  # All items in one row
+                    is_single_row = True
                 else:
-                    # Default: position below the plot (negative y is below figure)
-                    legend_y = -0.05
+                    # Use custom x/y positioning
+                    legend_x = superpop_legend_x
+                    if superpop_legend_y is not None:
+                        legend_y = superpop_legend_y
+                    else:
+                        # Default: position below the plot (negative y is below figure)
+                        legend_y = -0.05
+                    # Use existing row/column logic
+                    if superpop_legend_row is not None:
+                        ncol = (len(labels) + superpop_legend_row - 1) // superpop_legend_row
+                        is_single_row = (superpop_legend_row == 1)
+                    else:
+                        # Auto-determine: single row if ≤4 superpops, two rows if >4
+                        if len(labels) <= 4:
+                            ncol = len(labels)  # Single row
+                            is_single_row = True
+                        else:
+                            ncol = (len(labels) + 1) // 2  # Two rows
+                            is_single_row = False
                 
                 # Adjust legend parameters for single-row layout
                 if is_single_row:
@@ -1297,25 +1395,25 @@ def plot_vep_histograms_with_boundaries(
                     columnspacing = 1.0  # Default spacing
                     legend_labels = labels
                 
-                # Add legend to figure at bottom center
+                # Add legend to figure
                 # Use 'upper center' loc to center the legend horizontally
                 legend_kwargs = {
                     'handles': handles,
                     'labels': legend_labels,
                     'loc': 'upper center',
-                    'bbox_to_anchor': (superpop_legend_x, legend_y),
+                    'bbox_to_anchor': (legend_x, legend_y),
                     'ncol': ncol,
                     'columnspacing': columnspacing,
                     'frameon': superpop_legend_border,
                     'fancybox': False,
-                    'shadow': False,
-                    'fontsize': 8
+                    'shadow': False
+                    # fontsize not specified - uses matplotlib rcParams default
                 }
                 
                 # Add title only if requested
                 if show_superpop_legend_title:
                     legend_kwargs['title'] = 'Superpopulation'
-                    legend_kwargs['title_fontsize'] = 9
+                    # title_fontsize not specified - uses matplotlib rcParams default
                 
                 legend = fig.legend(**legend_kwargs)
                 
@@ -1457,7 +1555,7 @@ def plot_vep_histograms_with_boundaries(
                 
                 # Adjust layout to make room for external legend if it's outside plot boundaries
                 # Note: Bottom margin was already adjusted earlier if legend is below
-                if superpop_legend_x > 1.0:
+                if legend_x > 1.0:
                     # Legend is on the right side - adjust right margin
                     current_right = fig.subplotpars.right
                     legend_space = 0.15
@@ -1475,7 +1573,7 @@ def plot_vep_histograms_with_boundaries(
         for idx, main_ax in enumerate(main_axes):
             if idx >= bottom_row_start:
                 # Bottom row - show axis title
-                main_ax.set_xlabel(x_label, fontsize=9)
+                main_ax.set_xlabel(x_label, fontsize='medium')
             else:
                 # Not bottom row - no axis title, but tick labels will be visible
                 main_ax.set_xlabel("")

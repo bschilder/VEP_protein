@@ -3054,6 +3054,8 @@ def plot_haplotypes_summary(
     count_indels_as_one=False,
     bin_sep=r"$\leq$",
     show_subplots=(True, True),  # New argument: tuple of bools (left, right)
+    show_bar_labels=False,  # Whether to show text labels on top of bars in "k" units
+    bar_linewidth=1,
     verbose=True,
 ):
     """
@@ -3071,6 +3073,10 @@ def plot_haplotypes_summary(
             e.g. "123del{22}" will be counted as 1 edit, not 22.
             Defaults to False.
         show_subplots (tuple of bool): Tuple (show_left, show_right) to control which subplots are shown.
+        show_bar_labels (bool): Whether to show text labels on top of each bar in "k" units (e.g., 5,500 → 5.5k).
+            Defaults to False.
+        bar_linewidth (float): The width of the bars in the bar plot.
+            Defaults to 1.
     """
     import matplotlib.pyplot as plt
     import pandas as pd
@@ -3185,11 +3191,19 @@ def plot_haplotypes_summary(
             return f"{int(x)}"
 
     yformatter = FuncFormatter(thousands_formatter)
+    
+    # Helper function to format bar labels in "k" units
+    def format_bar_label(value):
+        """Format a number in 'k' units (e.g., 5500 -> 5.5k)."""
+        if value >= 1000:
+            return f"{value/1000:.1f}k".rstrip('0').rstrip('.')
+        else:
+            return f"{int(value)}"
 
     for i, ax in enumerate(axes):
         if subplot_plot_funcs[i] == "hist":
             n_haplotypes = subplot_data[i]["haplotype"]
-            ax.hist(n_haplotypes, bins=bins, color=subplot_colors[i], edgecolor=subplot_edgecolors[i])
+            ax.hist(n_haplotypes, bins=bins, color=subplot_colors[i], edgecolor=subplot_edgecolors[i], linewidth=bar_linewidth)
             ax.set_ylabel(subplot_ylabels[i])
             ax.set_xlabel(subplot_labels[i])
             ax.set_title(subplot_titles[i])
@@ -3236,16 +3250,19 @@ def plot_haplotypes_summary(
             results['counts_per_protein'] = counts_per_protein
         elif subplot_plot_funcs[i] == "bar":
             bar_x, bar_y = subplot_data[i]
-            bars = ax.bar(bar_x, bar_y, color=subplot_colors[i], edgecolor=subplot_edgecolors[i])
+            bars = ax.bar(bar_x, bar_y, color=subplot_colors[i], edgecolor=subplot_edgecolors[i], linewidth=bar_linewidth)
             ax.spines['top'].set_visible(False)
             # Set y-axis ticks in thousands
             ax.yaxis.set_major_formatter(yformatter)
-            for bar in bars:
-                height = bar.get_height()
-                if height > 0:
-                    ax.annotate(f"{int(height):,}", xy=(bar.get_x() + bar.get_width() / 2, height),
-                                xytext=(0, 3), textcoords="offset points",
-                                ha='center', va='bottom', fontsize=9)
+            # Add text labels on top of bars if requested
+            if show_bar_labels:
+                for bar in bars:
+                    height = bar.get_height()
+                    if height > 0:
+                        label_text = format_bar_label(height)
+                        ax.annotate(label_text, xy=(bar.get_x() + bar.get_width() / 2, height),
+                                    xytext=(0, 3), textcoords="offset points",
+                                    ha='center', va='bottom', fontsize=9)
             # Add vertical goldenrod dashed line at median, include in legend, no frame
             if len(bar_x) > 0 and "edits" in hap_df.columns:
                 # Compute the median of hap_df["edits"]
@@ -3400,10 +3417,15 @@ def plot_haplotypes_by_superpop_specificity(
         plt.show()
     return {'fig':fig, 'axes':ax, 'data':haplotype_counts}
 
-def plot_superpopulation_bar(haplotypes,
-                             ax=None, 
-                             repulsion=False,
-                             dpi=300):
+def plot_superpopulation_bar(
+    haplotypes,
+    ax=None, 
+    repulsion=False,
+    figsize=(2, 5), 
+    title_y=None,
+    alpha=1,
+    **kwargs
+):
     """
     Plot a stacked bar of individuals per superpopulation with connected labels, using label repulsion to avoid overlap.
 
@@ -3413,6 +3435,10 @@ def plot_superpopulation_bar(haplotypes,
         min_spacing (int): Minimum vertical spacing between labels.
         ax (matplotlib.axes.Axes or None): Optional axis to plot on.
         repulsion (bool): Whether to use label repulsion (adjustText) for superpopulation labels.
+        figsize (tuple): Figure size.
+        title_y (float or None): If set, controls the vertical position of the title (0=bottom, 1=top).
+        alpha (float): Transparency of the bars.
+        kwargs: Additional keyword arguments to pass to plt.subplots().
     Returns:
         superpop_counts (pd.DataFrame): DataFrame with superpopulation counts.
     """
@@ -3425,7 +3451,7 @@ def plot_superpopulation_bar(haplotypes,
 
     samples = get_haplotype_samples(haplotypes, unnest=True, remove_prefix=True)
 
-    og_meta = og.get_sample_metadata()
+    og_meta = og.get_sample_metadata().copy()
     samples_df = og_meta.loc[og_meta["sample"].isin(samples)]
 
     # Count unique samples per superpopulation
@@ -3442,7 +3468,7 @@ def plot_superpopulation_bar(haplotypes,
 
     # Prepare data for stacked barplot (single bar, segments by superpopulation)
     if ax is None:
-        fig, ax = plt.subplots(figsize=(2, 5), dpi=dpi, facecolor='none')
+        fig, ax = plt.subplots(figsize=figsize, facecolor='none')
         fig.patch.set_alpha(0.0)  # Make figure background transparent
     else:
         fig = ax.figure
@@ -3466,7 +3492,8 @@ def plot_superpopulation_bar(haplotypes,
             bottom=bottom,
             color=palette[row['superpopulation']],
             edgecolor='black',
-            alpha=0.7  # Add transparency
+            linewidth=1, 
+            alpha=alpha,
         )
         # Calculate the center y position of this sub-bar
         center = bottom + row['count'] / 2
@@ -3478,15 +3505,20 @@ def plot_superpopulation_bar(haplotypes,
     # Put the total number of samples at the top of the bar
     total_samples = sum(bar_heights)
     ax.text(
-        -0.25,
+        -0.4,
         bottom + 0.02 * total_samples,  # a little above the top
         f"n={total_samples}",
-        ha='left', va='bottom', fontsize='medium', 
+        ha='left', va='bottom', 
+        #fontsize='medium', 
     )
 
     ax.set_ylabel('Individuals')
     # Add extra space between the title and the plot below
-    ax.set_title('Individuals per Superpopulation', pad=20)
+    # If title_y is given, use it; otherwise default to pad=20
+    if title_y is not None:
+        ax.set_title('Individuals per Superpopulation', y=title_y)
+    else:
+        ax.set_title('Individuals per Superpopulation', pad=20)
     ax.set_xticks([0])
     ax.set_xticklabels([''])
     ax.patch.set_alpha(0.0)
@@ -3519,7 +3551,7 @@ def plot_superpopulation_bar(haplotypes,
         # Place initial text at the bar center with a shadow effect for better visibility
         txt = ax.text(
             x_text, y_bar, label,
-            va='center', ha='left', fontsize='medium',# color=color, fontweight='bold',
+            va='center', ha='left', #fontsize='medium',# color=color, fontweight='bold',
             # path_effects=[withStroke(linewidth=1, foreground='grey')]
         )
         texts.append(txt)
@@ -3545,8 +3577,53 @@ def plot_superpopulation_bar(haplotypes,
             lim=100,                                # maximum number of iterations for adjustment
             ax=ax                                   # matplotlib Axes object to apply adjustments on
         )
+    else:
+        # Simple algorithm to prevent label overlap by ensuring minimum spacing
+        # Get the figure renderer to compute text bounding boxes
+        fig.canvas.draw()
+        renderer = fig.canvas.get_renderer()
+        
+        # Get text heights in data coordinates for all labels
+        inv_transform = ax.transData.inverted()
+        text_heights = []
+        for txt in texts:
+            bbox = txt.get_window_extent(renderer=renderer)
+            # Convert bbox height from display to data coordinates
+            # Use the text's x position for accurate conversion
+            x_pos = txt.get_position()[0]
+            bbox_bottom = bbox.y0
+            bbox_top = bbox.y1
+            # Convert both points to data coordinates
+            bottom_data = inv_transform.transform((x_pos, bbox_bottom))[1]
+            top_data = inv_transform.transform((x_pos, bbox_top))[1]
+            text_height = abs(top_data - bottom_data)
+            text_heights.append(text_height)
+        
+        # Calculate minimum spacing between label centers (1.3x max text height for padding)
+        min_spacing = max(text_heights) * 1.3 if text_heights else 0.02 * total_samples
+        
+        # Adjust positions to prevent overlap
+        adjusted_positions = []
+        for i, y_bar in enumerate(sorted_centers):
+            if i == 0:
+                # First label: keep original position
+                adjusted_positions.append(y_bar)
+            else:
+                # Ensure minimum spacing from previous label
+                prev_y = adjusted_positions[i-1]
+                min_y = prev_y + min_spacing
+                
+                # If original position is too close, adjust it
+                if y_bar < min_y:
+                    adjusted_positions.append(min_y)
+                else:
+                    adjusted_positions.append(y_bar)
+        
+        # Apply adjusted positions
+        for txt, new_y in zip(texts, adjusted_positions):
+            txt.set_position((x_text, new_y))
 
-    # After adjustText (if used), update connector lines
+    # After adjustText (if used) or manual adjustment, update connector lines
     for y_bar, txt, line in zip(sorted_centers, texts, connectors):
         x_end, y_end = txt.get_position()           # x_end, y_end: new position of the label after adjustment
         line.set_data([x_bar, x_end], [y_bar, y_end])  # update connector line from bar (x_bar, y_bar) to label (x_end, y_end)

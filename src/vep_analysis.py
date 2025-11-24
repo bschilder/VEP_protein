@@ -3721,6 +3721,8 @@ def variant_count_by_source_barplot(
     palette = utils.get_clinsig_palette(),
     x_label="Variant Type",
     y_label="Variants",
+    width=0.9,
+    linewidth=1,
     flip_axes=False
 ):
     """
@@ -3807,8 +3809,9 @@ def variant_count_by_source_barplot(
             kind='barh',
             stacked=True,
             color=[palette[c] for c in grouped.columns],  # Ensure order matches columns
-            width=0.95,
-            ax=ax
+            width=width,
+            ax=ax,
+            
         )
         plt.xlabel(x_label)
         plt.ylabel(y_label)
@@ -3817,12 +3820,16 @@ def variant_count_by_source_barplot(
             kind='bar',
             stacked=True,
             color=[palette[c] for c in grouped.columns],  # Ensure order matches columns
-            width=0.95,
-            ax=ax
+            width=width,
+            ax=ax,
         )
         plt.xlabel(x_label)
         plt.ylabel(y_label)
-        
+    
+    # Set edge color and linewidth on all bar patches
+    for patch in ax.patches:
+        patch.set_edgecolor('black')
+        patch.set_linewidth(1)
 
     # Rotate x-axis tick labels for better readability
     if flip_axes:
@@ -3831,13 +3838,13 @@ def variant_count_by_source_barplot(
     ax.set_yticklabels([f"{int(y/1000)}k" if y >= 1000 else str(int(y)) for y in ax.get_yticks()])
     plt.title("Clinical Variants by Type")
     plt.legend(title="Clinical\nSignificance" if flip_axes else "Clinical Significance", loc=legend_loc)
-    plt.tight_layout()
+
 
     # Remove the top and right spines (margin lines) for a cleaner look
     ax.spines['top'].set_visible(False)
     ax.spines['right'].set_visible(False)
     legend = plt.legend(title="Clinical Significance", loc=legend_loc)
-    legend.get_frame().set_linewidth(0)
+    # legend.get_frame().set_linewidth(0)
     plt.tight_layout()
 
     if show_plot:
@@ -3853,7 +3860,7 @@ def plot_n_variants_histogram(
     x="n_variants",
     title="WT Variants per Haplotype",
     x_label="WT Variants per Haplotype",
-    y_label="Number of Haplotypes",
+    y_label="Haplotypes",
     formatter=mticker.FuncFormatter(lambda x, pos: f"{x/1_000_000:.0f}M" if x >= 1_000_000 else (f"{int(x)}" if x > 0 else "0")),
     save_path=None, 
     bins=50,
@@ -3951,7 +3958,8 @@ def plot_variant_type_and_clinsig(
     figsize=(3, 5),
     legend=True,
     save_path=None,
-    fig_kwargs=None
+    fig_kwargs=None,
+    hide_xtick_labels=False
 ):
     """
     Create and save a barplot of mean VEP by clinical variant type and significance with statistical annotation.
@@ -3966,6 +3974,8 @@ def plot_variant_type_and_clinsig(
         Output path for the saved figure.
     fig_kwargs : dict or None
         Additional kwargs for plt.savefig (merged with utils.FIG_SAVE_KWARGS).
+    hide_xtick_labels : bool
+        If True, hide x-axis tick labels.
     """
     from statannotations.Annotator import Annotator
 
@@ -4017,6 +4027,8 @@ def plot_variant_type_and_clinsig(
     ax.set_xlabel(x_label)
     ax.set_ylabel(y_label)
     ax.set_title(title)
+    if hide_xtick_labels:
+        ax.set_xticklabels([])
     if legend:
         ax.legend(
             title=legend_title,
@@ -4092,3 +4104,358 @@ def plot_variant_type_and_clinsig(
         plt.savefig(save_path, **save_kwargs)
     
     plt.show()
+
+
+def plot_score_type_by_clinsig(
+    df,
+    clinsig_col="clinsig_simple",
+    effect_class_col="max_delta_score_type",
+    value_col=None,
+    count_col="count",
+    label_fix_func=None,
+    sort_func=None,
+    palette=utils.get_clinsig_palette(),
+    mutant_col="site",
+    x_label="Predicted Variant Effect Class",
+    y_label="Counts (Millions)",
+    title="Predicted Variant Effect Class Counts",
+    legend_title="Clinical Significance",
+    legend_loc="upper center",
+    legend_bbox_to_anchor=None,
+    legend_frameon=False,
+    show_legend=True,
+    save_path=None,
+    show=True,
+    fig_kwargs=None,
+    barplot_kwargs=None,
+    millions_format=True,
+    figsize=(5, 5),
+    flip_axes=False,
+    wrap_labels=False
+):
+    """
+    More configurable plot for score/effect type by clinical significance.
+
+    Args:
+        df: DataFrame containing input data.
+        clinsig_col: Column for clinical significance categories.
+        effect_class_col: Column for score/effect type classes.
+        value_col: Optional column to aggregate (if not None, use sum; else counts).
+        count_col: Name for the count column in output DataFrame.
+        label_fix_func: Function to fix clinsig labels (should return DataFrame, palette).
+        sort_func: Function to sort DataFrame by clinsig; if None, uses utils.sort_by_clinsig.
+        palette: Color palette or None.
+        mutant_col: Used if label_fix_func is called (escaped if not used).
+        x_label, y_label, title: Plot axes labels and title.
+        legend_title: Legend title.
+        legend_loc: Location for the legend.
+        legend_bbox_to_anchor: Tuple for bbox_to_anchor (e.g., (1.05, 1) to place outside right).
+        legend_frameon: Legend frame on/off.
+        show_legend: If False, omit the legend.
+        save_path: Output file (if not None).
+        show: Whether to show the plot.
+        fig_kwargs: Dict of extra kwargs for plt.figure.
+        barplot_kwargs: Dict of extra kwargs for sns.barplot.
+        millions_format: Whether to format y-axis in millions.
+        figsize: Figure size.
+        flip_axes: If True, swap x and y axes (horizontal bars).
+        wrap_labels: If True, replace spaces with line breaks in variant effect class labels.
+        return_data: Whether to return the aggregated data and ax.
+
+    Returns:
+        ax (matplotlib Axes), and optionally aggregated data if return_data is True.
+    """
+    import matplotlib.pyplot as plt
+    import matplotlib.ticker as mticker
+    import seaborn as sns
+
+    # Aggregate counts or values as desired
+    groupby_cols = [clinsig_col, effect_class_col]
+    if value_col is not None:
+        agg_dat = df.groupby(groupby_cols, observed=True)[value_col].sum().reset_index(name=count_col)
+    else:
+        agg_dat = df.groupby(groupby_cols, observed=True).size().reset_index(name=count_col)
+
+    # Prettify effect class labels
+    if effect_class_col in agg_dat.columns:
+        agg_dat[effect_class_col] = agg_dat[effect_class_col].astype(str).str.replace("_", " ")
+
+    # Fix clinsig labels and palette if function supplied
+    if label_fix_func is not None:
+        agg_dat, palette_labeled = label_fix_func(
+            agg_dat, clinsig_col=clinsig_col, mutant_col=mutant_col
+        )
+        hue_col = clinsig_col + "_label"
+    else:
+        palette_labeled = palette
+        hue_col = clinsig_col
+
+    # Sort if a function is provided; try utils.sort_by_clinsig as default
+    if sort_func is not None:
+        agg_dat = sort_func(agg_dat, clinsig_col=hue_col)
+    else:
+        try:
+            agg_dat = utils.sort_by_clinsig(agg_dat, clinsig_col=hue_col)
+        except Exception:
+            pass
+
+    plt.figure(figsize=figsize, **(fig_kwargs if fig_kwargs else {}))
+    barplot_kwargs = barplot_kwargs or {}
+
+    # Swap axes if flip_axes is True
+    if flip_axes:
+        barplot_x = count_col
+        barplot_y = effect_class_col
+        axis_x_label = y_label
+        axis_y_label = x_label
+    else:
+        barplot_x = effect_class_col
+        barplot_y = count_col
+        axis_x_label = x_label
+        axis_y_label = y_label
+
+    ax = sns.barplot(
+        data=agg_dat,
+        x=barplot_x,
+        y=barplot_y,
+        hue=hue_col,
+        palette=palette_labeled,
+        edgecolor="black",
+        linewidth=1,
+        **barplot_kwargs,
+    )
+
+    plt.xlabel(axis_x_label)
+    plt.ylabel(axis_y_label)
+    
+    # Rotate y-axis labels to 0 degrees when axes are flipped
+    if flip_axes:
+        ax.set_yticklabels(ax.get_yticklabels(), rotation=0)
+    
+    # Wrap labels by replacing spaces with line breaks
+    if wrap_labels:
+        if flip_axes:
+            # Labels are on y-axis when flipped
+            labels = [label.get_text().replace(" ", "\n") for label in ax.get_yticklabels()]
+            ax.set_yticklabels(labels)
+        else:
+            # Labels are on x-axis when not flipped
+            labels = [label.get_text().replace(" ", "\n") for label in ax.get_xticklabels()]
+            ax.set_xticklabels(labels)
+    
+    plt.title(title)
+    if show_legend:
+        legend_kwargs = {
+            'title': legend_title,
+            'frameon': legend_frameon,
+            'loc': legend_loc,
+        }
+        if legend_bbox_to_anchor is not None:
+            legend_kwargs['bbox_to_anchor'] = legend_bbox_to_anchor
+        plt.legend(**legend_kwargs)
+    else:
+        # Remove legend if it exists
+        legend = ax.get_legend()
+        if legend is not None:
+            legend.remove()
+    sns.despine(ax=ax, top=True, right=True)
+
+    # Option for millions formatting - apply to the count axis (x when flipped, y when not)
+    if millions_format:
+        def millions_formatter(x, pos):
+            if x >= 1e6:
+                return f"{x*1e-6:.0f}M"
+            elif x < 1e6:
+                return f"{x:.0f}"
+            else:
+                return f"{x*1e-6:.0f}M"
+        if flip_axes:
+            ax.xaxis.set_major_formatter(mticker.FuncFormatter(millions_formatter))
+        else:
+            ax.yaxis.set_major_formatter(mticker.FuncFormatter(millions_formatter))
+
+    if save_path is not None:
+        save_kwargs = dict(utils.FIG_SAVE_KWARGS)
+        if fig_kwargs is not None:
+            save_kwargs.update(fig_kwargs)
+        plt.savefig(save_path, **save_kwargs)
+    if show:
+        plt.show()
+
+    return {'fig': ax.figure, 'ax': ax, 'data': agg_dat}
+
+
+from scipy.stats import entropy
+from statannotations.Annotator import Annotator
+
+def plot_categorical_entropy(
+    df,
+    groupby_cat="clinsig_simple",
+    subgroupby="site",
+    categorical_col="max_delta_score_type",
+    palette=utils.get_clinsig_palette(),
+    figsize=(2.5, 5),
+    label_dict=None,
+    xlabel="Clinical Significance",
+    ylabel="Categorical Cross-entropy",
+    title="Categorical Cross-entropy of\nPredicted Variant Effect Class",
+    show_legend=False,
+    legend_loc=None,
+    legend_bbox_to_anchor=None,
+    sort_cat_func=utils.sort_by_clinsig,
+    save_path=None,
+    add_stats=True,
+    stats_test='t-test_ind',
+    stats_text_format='star',
+    stats_loc='inside',
+    stats_correction="bonferroni",
+    plot_kwargs=None,
+    bar_kwargs=None,
+    errorbar_kwargs=None,
+    despine_kwargs=None,
+    show_xticklabels=True,
+    errorbar_capsize=4,
+    **kwargs
+):
+    """
+    Plots entropy (categorical cross-entropy) for a categorical column, grouped by a chosen category.
+
+    Parameters:
+    -----------
+    df : DataFrame
+        Input DataFrame.
+    groupby_cat : str
+        Name of column for main grouping (e.g. clinical significance label).
+    subgroupby : str
+        Name of column for sub-grouping (e.g. site/locus/position).
+    categorical_col : str
+        Column to calculate entropy over.
+    palette : dict or None
+        Optional, for bar colors.
+    figsize : tuple
+        Figure dimensions.
+    label_dict : dict or None
+        Optional, for relabeling categories on plot.
+    xlabel, ylabel, title : str
+        Plot labels/titles.
+    show_legend : bool
+        Whether to show legend.
+    legend_loc, legend_bbox_to_anchor : as in matplotlib/seaborn.
+    sort_cat_func : function or None
+        Optional, give function(df, clinsig_col) to sort categories or None for no sorting.
+    save_path : str or None
+        Optional, file path for saving the plot.
+    add_stats : bool
+        Whether to add statistical annotation.
+    stats_test : str
+        Statistical test string for statannotations.
+    stats_text_format : str
+        Format for stats text.
+    stats_loc : str
+        Location for annotation.
+    stats_correction : str
+        Multiple testing correction for statannotations.
+    plot_kwargs, bar_kwargs, errorbar_kwargs, despine_kwargs : dict or None
+        Additional arguments passed through.
+    **kwargs : dict
+        Passed to plt.savefig.
+
+    Returns:
+    --------
+    (fig, ax, agg_df, entropy_df)
+    """
+
+    plot_kwargs = plot_kwargs or {}
+    bar_kwargs = bar_kwargs or {}
+    errorbar_kwargs = errorbar_kwargs or {}
+    despine_kwargs = despine_kwargs or {}
+
+    # Calculate entropy (categorical cross-entropy) of predicted class per group
+    entropy_df = df.groupby([groupby_cat, subgroupby], observed=True).apply(
+        lambda x: entropy(x[categorical_col].value_counts(normalize=True), base=2)
+    ).reset_index(name="categorical_cross_entropy")
+    
+    # Sort if required
+    if sort_cat_func is not None:
+        entropy_df = sort_cat_func(entropy_df, clinsig_col=groupby_cat)
+
+    # Compute mean & sem per group
+    agg_df = entropy_df.groupby(groupby_cat, observed=True, sort=False)["categorical_cross_entropy"].agg(['mean', 'sem']).reset_index()
+    if sort_cat_func is not None:
+        agg_df = sort_cat_func(agg_df, clinsig_col=groupby_cat)
+
+    # Palette and relabels
+    if palette is None and hasattr(utils, "get_clinsig_palette"):
+        palette = utils.get_clinsig_palette()
+    if label_dict:
+        agg_df[groupby_cat] = agg_df[groupby_cat].map(label_dict).fillna(agg_df[groupby_cat])
+        entropy_df[groupby_cat] = entropy_df[groupby_cat].map(label_dict).fillna(entropy_df[groupby_cat])
+        if palette: palette = {label_dict.get(k, k): v for k,v in palette.items()} 
+
+    fig = plt.figure(figsize=figsize)
+    ax = sns.barplot(
+        data=agg_df,
+        x=groupby_cat,
+        y="mean",
+        hue=groupby_cat,
+        legend=show_legend,
+        edgecolor="black",
+        linewidth=1,
+        palette=palette,
+        **bar_kwargs,
+    )
+    # Manual error bars to avoid category mismatch
+    ax.errorbar(
+        x=ax.get_xticks(),
+        y=agg_df['mean'],
+        yerr=agg_df['sem'],
+        fmt='none',
+        ecolor='black',
+        capsize=errorbar_capsize,
+        linewidth=1,
+        zorder=10,
+        **errorbar_kwargs
+    )
+
+    ax.set_xlabel(xlabel)
+    ax.set_ylabel(ylabel)
+    ax.set_title(title)
+    if not show_xticklabels:
+        ax.set_xticklabels([])
+    if not show_legend:
+        ax.get_legend().remove() if ax.get_legend() is not None else None
+    elif show_legend and legend_loc is not None:
+        ax.legend(loc=legend_loc, bbox_to_anchor=legend_bbox_to_anchor)
+
+    sns.despine(ax=ax, top=True, right=True, **despine_kwargs)
+
+    # Statistical annotation
+    if add_stats:
+        cat_list = agg_df[groupby_cat].drop_duplicates().tolist()
+        pairs = [
+            (cat1, cat2)
+            for i, cat1 in enumerate(cat_list)
+            for j, cat2 in enumerate(cat_list)
+            if j > i
+        ]
+        annotator = Annotator(
+            ax=ax,
+            pairs=pairs,
+            data=entropy_df,
+            x=groupby_cat,
+            y="categorical_cross_entropy",
+            order=cat_list,
+        )
+        annotator.configure(
+            test=stats_test,
+            text_format=stats_text_format,
+            loc=stats_loc,
+            comparisons_correction=stats_correction
+        )
+        annotator.apply_and_annotate()
+
+    if save_path is not None:
+        plt.savefig(save_path, **getattr(utils, "FIG_SAVE_KWARGS", {}), **kwargs)
+    plt.show()
+
+    return {'fig': fig, 'ax': ax, 'data': agg_df}

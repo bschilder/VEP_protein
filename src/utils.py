@@ -1962,3 +1962,32 @@ def standardize_variant(variant):
         return f"{pos}{ref}>{alt}"
 
     return variant
+
+
+def set_rcparams_nature(styles=['nature', 'no-latex']):
+    """
+    Set RC parameters to match Nature style.
+
+    Parameters
+    ----------
+    styles : list of str, optional
+        List of styles to use. Default is ['nature', 'no-latex'].
+    """
+    import matplotlib.pyplot as plt
+    import matplotlib as mpl
+    import scienceplots
+
+    plt.style.use(styles)
+    plt.rcParams["font.family"] = "Nimbus Sans"
+    plt.rcParams['font.sans-serif'] = ["Arial"]
+
+    # Optional: Ensure fonts are embedded as editable type 42 fonts for Illustrator
+    plt.rcParams['pdf.fonttype'] = 42
+
+
+def set_plot_style():
+    import matplotlib.pyplot as plt
+
+    plt.gca().spines['top'].set_visible(False)
+    plt.gca().spines['right'].set_visible(False)
+    plt.tight_layout()

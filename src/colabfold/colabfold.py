@@ -522,7 +522,7 @@ def plot_contact_map(contact_map,
                      log_before_bin=False, 
                      log_after_bin=False,
                      log_func=lambda x: np.log10(x+1e-6),
-                     max_labels=10, 
+                     max_labels=5, 
                      pow=4,
                      cmap="gnuplot2", 
                      agg_func=np.nanmax,
@@ -1665,7 +1665,7 @@ def plot_contact_map_diff(
     title="Gained/Lost Contacts Relative to REF",
     xlabel="Residue Position",
     ylabel="Residue Position",
-    legend_title="Proportion of Haplotypes with Contact Change",
+    legend_title=r"Proportion of Haplotypes",
     show_plot=True,
     verbose=True,
     weights=None,
@@ -1775,7 +1775,16 @@ def plot_contact_map_diff(
     ax.set_title(title)
     ax.set_xlabel(xlabel)
     ax.set_ylabel(ylabel)
-    cbar = plt.colorbar(im, ax=ax, label=legend_title)
+    
+    # Remove top and right spines
+    ax.spines['top'].set_visible(False)
+    ax.spines['right'].set_visible(False)
+    
+    # Use make_axes_locatable to create a colorbar axis that matches the heatmap height exactly
+    from mpl_toolkits.axes_grid1 import make_axes_locatable
+    divider = make_axes_locatable(ax)
+    cax = divider.append_axes("right", size="5%", pad=0.05)
+    cbar = plt.colorbar(im, cax=cax, label=legend_title)
     cbar.set_ticks([-1, -0.5, 0, 0.5, 1])
     cbar.set_ticklabels(['Lost in all', '-0.5', 'No change', '+0.5', 'Gained in all'])
     plt.tight_layout()
@@ -1793,7 +1802,8 @@ def plot_contact_map_diff_barplot(
     figsize=(4, 5), 
     cmap="seismic_r",
     percent_precision=2,
-    ax=None
+    ax=None,
+    annotation_fontsize=None
 ):
     """
     Plot a barplot of the number of contact points gained and lost,
@@ -1807,6 +1817,7 @@ def plot_contact_map_diff_barplot(
         cmap: Colormap for the bars.
         percent_precision: Number of decimal places to show for percent values.
         ax: Optional matplotlib Axes to plot on. If None, a new figure and axes are created.
+        annotation_fontsize: Optional font size for bar annotations. If None, uses matplotlib rcParams default.
 
     Example:
         >>> diff_map = plot_contact_map_diff(contact_maps, bin_size=10)
@@ -1860,11 +1871,17 @@ def plot_contact_map_diff_barplot(
         height = bar.get_height()
         percent = df['Percent'].iloc[i]
         percent_fmt = f"{{:.{percent_precision}f}}"
+        annotate_kwargs = {
+            'xy': (bar.get_x() + bar.get_width() / 2, height),
+            'xytext': (0, 3),  # 3 points vertical offset
+            'textcoords': "offset points",
+            'ha': 'center', 
+            'va': 'bottom'
+        }
+        if annotation_fontsize is not None:
+            annotate_kwargs['fontsize'] = annotation_fontsize
         ax.annotate(f'{int(height)}\n({percent_fmt.format(percent)}%)',
-                    xy=(bar.get_x() + bar.get_width() / 2, height),
-                    xytext=(0, 3),  # 3 points vertical offset
-                    textcoords="offset points",
-                    ha='center', va='bottom', fontsize=12)
+                    **annotate_kwargs)
 
     # Expand the y-axis to avoid cutting off the text
     ymin, ymax = ax.get_ylim()
@@ -1956,6 +1973,11 @@ def plot_contact_map_diff_barplot_grouped(
         dodge=True, 
     )
 
+    # Add black borders around all bars
+    for patch in ax.patches:
+        patch.set_edgecolor('black')
+        patch.set_linewidth(1)
+
     # Remove top and right plot borders
     ax.spines['top'].set_visible(False)
     ax.spines['right'].set_visible(False)
@@ -2008,8 +2030,8 @@ def plot_contact_map_diff_barplot_grouped(
             ax.annotate(label,
                         (patch.get_x() + patch.get_width() / 2, height),
                         ha='center', va='bottom',
-                        fontsize=9,  
-                        xytext=(0, 3), textcoords='offset points')
+                        xytext=(0, 3), textcoords='offset points',
+                        fontsize='small')
     
     if xlabel is None:
         xlabel = group_by.title()
@@ -3289,7 +3311,9 @@ def plot_superpopulation_contact_diff(
     figsize=(8, 4.5),
     wspace=0.05, 
     hspace=0.3,
-    show_plot=True, 
+    show_plot=True,
+    suptitle_fontsize=None,
+    annotation_fontsize=None,
 ):
     """
     Plot heatmaps and barplots of gained/lost contacts by superpopulation.
@@ -3320,6 +3344,10 @@ def plot_superpopulation_contact_diff(
         Width of the space between columns.
     hspace : float, optional
         Height of the space between rows.
+    suptitle_fontsize : float, optional
+        Font size for the figure suptitle. If None, uses matplotlib rcParams default.
+    annotation_fontsize : float, optional
+        Font size for barplot annotations. If None, uses matplotlib rcParams default.
 
     Returns
     -------
@@ -3409,7 +3437,8 @@ def plot_superpopulation_contact_diff(
         # Right: barplot
         ax_bar = axes[row, col_bar] if nrows > 1 else axes[0, col_bar]
         bar_fig, bar_df = plot_contact_map_diff_barplot(specific_binary_diff_maps[pop], 
-                                                        ax=ax_bar)
+                                                        ax=ax_bar,
+                                                        annotation_fontsize=annotation_fontsize)
         bar_df["superpopulation"] = pop
         ax_bar.set_title(f"{superpop_names_dict[pop]} ({pop})" if translate_superpop_names else pop)
         if barplot_ylim is not None:
@@ -3427,7 +3456,10 @@ def plot_superpopulation_contact_diff(
         axes[row, col_heat].axis('off')
         axes[row, col_bar].axis('off')
 
-    fig.suptitle(suptitle, fontsize=18, y=1.01)
+    suptitle_kwargs = {'y': 1.01}
+    if suptitle_fontsize is not None:
+        suptitle_kwargs['fontsize'] = suptitle_fontsize
+    fig.suptitle(suptitle, **suptitle_kwargs)
     plt.tight_layout()
     if show_plot:
         plt.show() 
@@ -3696,6 +3728,7 @@ def plot_contact_map_and_zooms(
     zoom_nrows=6,
     zoom_ncols=None,
     zoom_subplot_size=2,
+    zoom_value_col="interaction_strength_signed",
     main_nrows=2,
     main_ncols=2,
     linewidth=1,
@@ -3720,7 +3753,8 @@ def plot_contact_map_and_zooms(
     zoom_highlight_marker_scale=1.0,           # NEW: scale factor for size of zoom highlight marker
     zoom_highlight_linewidth=3,                # NEW: color (non-border) marker linewidth in zoom
     zoom_highlight_white_linewidth=5,           # NEW: white border linewidth in zoom
-    zoom_effect_label_prefix=r"$E_{\text{WT-Clin}}$"    # NEW: prefix label for interaction strength in zoom plot titles
+    zoom_effect_label_prefix=r"$E_{\text{WT-Clin}}$",    # NEW: prefix label for interaction strength in zoom plot titles
+    figsize=None  # Figure size tuple (width, height). If None, auto-calculated based on layout
 ):
     """
     Visualize a contact (distance) map with highlighted variant positions and detail zooms.
@@ -3769,6 +3803,7 @@ def plot_contact_map_and_zooms(
         zoom_highlight_linewidth (float): Line thickness for color highlight marker in zoom (default: 3).
         zoom_highlight_white_linewidth (float): Line thickness for white outline marker in zoom (default: 5).
         zoom_effect_label_prefix (str): Prefix label for interaction strength in zoom plot titles (default: "Joint Effect").
+        figsize (tuple or None): Figure size (width, height) in inches. If None, auto-calculated based on layout.
 
     Returns:
         dict: A dictionary with one entry for the reference haplotype; each entry contains:
@@ -3802,7 +3837,7 @@ def plot_contact_map_and_zooms(
             sorted_ridge_df = ridge_df.iloc[:max_highlights].sort_values('clinical_position')
             highlight_colors = []
             for idx, row in sorted_ridge_df.iterrows():
-                interaction_score = row.get('interaction_strength_signed', 0)
+                interaction_score = row.get(zoom_value_col, 0)
                 if interaction_score >= 0:
                     highlight_colors.append('blue')
                 else:
@@ -3849,16 +3884,15 @@ def plot_contact_map_and_zooms(
 
     gamma_cmap = get_gamma_cmap(palette, pow)
 
-    def plot_contact_map_and_zooms_i(v, hap_id, main_plot_above=main_plot_above, main_padding_v=0.25, main_padding_h=0.25):
+    def plot_contact_map_and_zooms_i(v, hap_id, main_plot_above=main_plot_above, main_padding_v=0.25, main_padding_h=0.25, figsize=figsize):
         """
         Core subroutine: plots one contact map (v) with highlight rects/crosshairs and zooms.
         """
         # Figure/grid setup depending on main_plot_above mode
         if main_plot_above == -1:
             # Main plot is below zooms
-            fig = plt.figure(
-                figsize=(max(6, zoom_subplot_size * zoom_ncols), 6 + zoom_subplot_size * zoom_nrows + 0.5)
-            )
+            default_figsize = (max(6, zoom_subplot_size * zoom_ncols), 6 + zoom_subplot_size * zoom_nrows + 0.5)
+            fig = plt.figure(figsize=figsize if figsize is not None else default_figsize)
             height_ratios = [zoom_subplot_size] * zoom_nrows + [main_padding_v, 6]
             gs = fig.add_gridspec(
                 zoom_nrows + 2, zoom_ncols,
@@ -3875,9 +3909,8 @@ def plot_contact_map_and_zooms(
                     zoom_subplot_indices.append((row_idx, col_idx))
         elif main_plot_above:
             # Main plot above zooms
-            fig = plt.figure(
-                figsize=(max(6, zoom_subplot_size * zoom_ncols), 6 + zoom_subplot_size * zoom_nrows + 0.5)
-            )
+            default_figsize = (max(6, zoom_subplot_size * zoom_ncols), 6 + zoom_subplot_size * zoom_nrows + 0.5)
+            fig = plt.figure(figsize=figsize if figsize is not None else default_figsize)
             height_ratios = [6, main_padding_v] + [zoom_subplot_size] * zoom_nrows
             gs = fig.add_gridspec(
                 zoom_nrows + 2, zoom_ncols,
@@ -3904,7 +3937,8 @@ def plot_contact_map_and_zooms(
             main_plot_width = 6  # Fixed width per column for main plot to prevent squishing
             fig_width = main_plot_width * main_ncols + (main_padding_h if main_padding_h > 0 else 0) + zoom_subplot_size * zoom_ncols
             fig_height = zoom_subplot_size * total_nrows
-            fig = plt.figure(figsize=(fig_width, fig_height))
+            default_figsize = (fig_width, fig_height)
+            fig = plt.figure(figsize=figsize if figsize is not None else default_figsize)
             if main_padding_h > 0:
                 width_ratios = [main_plot_width] * main_ncols + [main_padding_h] + [zoom_subplot_size] * zoom_ncols
             else:
@@ -4031,10 +4065,7 @@ def plot_contact_map_and_zooms(
                 color=color, linewidth=linewidth, linestyle='-',
                 zorder=10, clip_on=False
             )
-            ax_main.spines['top'].set_visible(False)
-            ax_main.spines['bottom'].set_visible(False)
-            ax_main.spines['left'].set_visible(False)
-            ax_main.spines['right'].set_visible(False)
+            # Remove top and right spines (will be set once after loop)
 
             # Extract zoom region and pad if at edge
             x_start = x - half_size
@@ -4062,8 +4093,8 @@ def plot_contact_map_and_zooms(
                 ax_zoom = fig.add_subplot(gs[gs_idx])
                 ax_zoom.imshow(zoomed, cmap=gamma_cmap, origin='upper')
                 ax_zoom.set_title(
-                    f"{row['wt_variant']} | {row['clinical_variant']}\n{zoom_effect_label_prefix}={row['interaction_strength_signed']:.2f}",
-                    fontsize=8
+                    f"{row['wt_variant']} | {row['clinical_variant']}\n{zoom_effect_label_prefix}={row[zoom_value_col]:.2f}",
+                    fontsize='medium'
                 )
                 center_x = highlight_size // 2
                 center_y = highlight_size // 2
@@ -4125,21 +4156,25 @@ def plot_contact_map_and_zooms(
                     ax_zoom.set_yticks([])
 
                 # Outline zoomed region in white, if requested
-                if white_border or zoom_rect_white_outline:
-                    if white_border:
-                        outline_width = 4
-                    else:
-                        outline_width = zoom_rect_white_outline_width
+                if zoom_rect_white_outline:
                     outline_rect = patches.Rectangle(
                         (0, 0),
                         highlight_size, highlight_size,
-                        linewidth=outline_width,
+                        linewidth=zoom_rect_white_outline_width,
                         edgecolor='white',
                         facecolor='none',
                         zorder=11
                     )
                     ax_zoom.add_patch(outline_rect)
+                
+                # Remove top and right spines from zoom plots
+                ax_zoom.spines['top'].set_visible(False)
+                ax_zoom.spines['right'].set_visible(False)
 
+        # Remove top and right spines from main plot
+        ax_main.spines['top'].set_visible(False)
+        ax_main.spines['right'].set_visible(False)
+        
         ax_main.set_title(f"{title}")
         ax_main.set_xlabel("Clinical Variant Position")
         ax_main.set_ylabel("WT Variant Position")
@@ -4182,7 +4217,8 @@ def plot_contact_map_and_zooms(
                 v, hap_id,
                 main_plot_above=main_plot_above,
                 main_padding_v=main_padding_v,
-                main_padding_h=main_padding_h
+                main_padding_h=main_padding_h,
+                figsize=figsize
             )
 
     return results
