@@ -360,7 +360,7 @@ def visualize_interactions_on_structure(
         return view
 
 
-def write_html(view, path, frame_range=None, width='90vw', height='90vh'):
+def write_html(view, path, frame_range=None, width='100vw', height='100vh'):
     from ipywidgets import Box
 
     box = Box([view])

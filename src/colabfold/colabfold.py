@@ -4140,16 +4140,8 @@ def plot_contact_map_and_zooms(
                     # Use per-plot setting for xlabel
                     if zoom_show_xlabel_list[i]:
                         ax_zoom.set_xlabel("Clinical Variant Position", fontsize=6)
-                    # Calculate relative column index within zoom grid (not absolute grid column)
-                    if isinstance(gs_idx, tuple) and len(gs_idx) > 1:
-                        # gs_idx is (row, col) where col is absolute column in full grid
-                        # Need to subtract the column offset to get relative position in zoom grid
-                        col_offset = main_ncols + (1 if main_padding_h > 0 else 0)
-                        col_idx = gs_idx[1] - col_offset
-                    else:
-                        col_idx = gs_idx % zoom_ncols
-                    # Use per-plot setting for ylabel (only show on leftmost column)
-                    if zoom_show_ylabel_list[i] and col_idx == 0:
+                    # Use per-plot setting for ylabel
+                    if zoom_show_ylabel_list[i]:
                         ax_zoom.set_ylabel("WT Variant Position", fontsize=6)
                 else:
                     ax_zoom.set_xticks([])
