@@ -1350,14 +1350,16 @@ def extract_ref_alt(variant):
         return None, None
 
 
-def add_variant_name(df,
-                    chrom_col='chrom',
-                    start_col='chromStart',
-                    end_col='chromEnd',
-                    ref_col='REF',
-                    alt_col='ALT',
-                    alias='name',
-                    force=False):
+def add_variant_name(
+    df,
+    chrom_col='chrom',
+    start_col='chromStart',
+    end_col='chromEnd',
+    ref_col='REF',
+    alt_col='ALT',
+    alias='name',
+    force=False,
+):
     """Add a variant name column to a DataFrame.
     
     Args:
@@ -1379,35 +1381,57 @@ def add_variant_name(df,
     if alias in df.columns and not force:
         print(f"Column {alias} already exists in dataframe, skipping")
         return df
-    
+
     was_pandas = isinstance(df, pd.DataFrame)
     if was_pandas:
         df = pl.DataFrame(df)
+    
+    # Ensure REF and ALT columns are string dtype to avoid schema error
+    def ensure_utf8_col(df, colname):
+        # If col already Utf8, just return
+        if df.schema[colname] == pl.String:
+            return df
+        # If categorical, cast to string (Utf8)
+        return df.with_columns(
+            pl.col(colname).cast(pl.Utf8)
+        )
+
+    # Polars: proactively cast ref_col and alt_col to string/Utf8 to avoid SchemaError with "cat"
+    if ref_col in df.columns:
+        df = ensure_utf8_col(df, ref_col)
+    if alt_col in df.columns:
+        df = ensure_utf8_col(df, alt_col)
 
     if end_col not in df.columns:
         end_col = None
-    
-    result = df.with_columns(pl.concat_str([
-        pl.lit('chr'),
-        pl.col(chrom_col).cast(pl.Utf8).str.replace('chr', ''),
-        pl.lit(':'),
-        pl.col(start_col).cast(pl.Utf8),
-        pl.lit('-'),
-        # If end_col is null, calculate end position as start + length of reference allele
-        # Otherwise, use end_col if provided, or fall back to start position
-        pl.when(pl.lit(end_col).is_null())
-        .then(pl.col(start_col).cast(pl.Int32) + pl.col(ref_col).str.len_chars().cast(pl.Int32))
-        .otherwise(pl.col(end_col).cast(pl.Utf8) if end_col is not None else (pl.col(start_col).cast(pl.Int32)+1).cast(pl.Utf8)),
-        pl.lit('_'),
-        pl.col(ref_col),
-        pl.lit('_'),
-        pl.col(alt_col)
-    ]).alias(alias))
-    
+
+    # Build the variant name using the same pattern as before
+    # Use string casting for all substring columns just in case
+    result = df.with_columns(
+        pl.concat_str([
+            pl.lit('chr'),
+            pl.col(chrom_col).cast(pl.Utf8).str.replace('chr', ''),  # remove "chr" if present
+            pl.lit(':'),
+            pl.col(start_col).cast(pl.Utf8),
+            pl.lit('-'),
+            # If end_col is null, calculate end position as start + length of reference allele
+            pl.when(pl.lit(end_col).is_null())
+            .then((pl.col(start_col).cast(pl.Int32) + pl.col(ref_col).str.len_chars().cast(pl.Int32)).cast(pl.Utf8))
+            .otherwise(
+                pl.col(end_col).cast(pl.Utf8) if end_col is not None else (pl.col(start_col).cast(pl.Int32)+1).cast(pl.Utf8)
+            ),
+            pl.lit('_'),
+            pl.col(ref_col).cast(pl.Utf8),
+            pl.lit('_'),
+            pl.col(alt_col).cast(pl.Utf8)
+        ]).alias(alias)
+    )
+
     if was_pandas:
         result = result.to_pandas()
-    
-    return result  
+
+    return result
+
 
 def vep_to_matrix(
     vep_df,
