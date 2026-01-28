@@ -679,9 +679,11 @@ def plot_vep_histograms_with_boundaries(
     y2_label="Density",
     x_offset = 0.01,
     y_offset_factor = 0.725,
+    label_yspacing=None,
     sharex=True,
     sharey=False,
     flip_xaxis=False,
+    log_yaxis=False,
     palette=["blue", "red"],
     show=True,
     show_superpops=False,
@@ -807,8 +809,13 @@ def plot_vep_histograms_with_boundaries(
         (or left if flip_xaxis=True). This ensures consistent visual spacing across subplots
         with different x-axis scales.
     y_offset_factor : float, default=0.725
-        Vertical position factor for labels. Labels are placed at ymax * y_offset_factor,
-        where ymax is the maximum y-axis value.
+        Vertical starting position for the decision-boundary / VEP flag labels,
+        expressed in axes fraction coordinates (0–1). Labels are placed starting
+        at this fraction of the y-axis and staggered downward.
+    label_yspacing : float or None, default=None
+        Vertical spacing between successive flag labels (Boundary, VEP_ref, VEP_mean),
+        expressed as a fraction of the y-axis in axes coordinates. If None, defaults
+        to 0.06.
     facet_title_x : float, default=0.5
         X-position of facet subplot titles in axes coordinates (0-1). 
         Value of 0.5 centers the title horizontally. Values < 0.5 move the title left,
@@ -878,7 +885,12 @@ def plot_vep_histograms_with_boundaries(
             else:
                 # Try to add haplotype frequencies which should include top_superpopulation
                 print("Adding haplotype frequencies to extract superpopulation data...")
-                plot_df = hs.add_haplotype_freqs(plot_df)
+                # Prefer the common VEP dataframe protein identifier column when available.
+                # Falling back to haplosaurus defaults otherwise.
+                if "protein" in plot_df.columns:
+                    plot_df = hs.add_haplotype_freqs(plot_df, protein_id_col="protein")
+                else:
+                    plot_df = hs.add_haplotype_freqs(plot_df)
                 if "top_superpopulation" in plot_df.columns:
                     plot_df["superpopulation"] = plot_df["top_superpopulation"].str.split(":").str[-1]
                 else:
@@ -943,19 +955,30 @@ def plot_vep_histograms_with_boundaries(
         ax.set_ylabel(y1_label)
         ax.set_xlabel(x_label)
 
-        # Set y-axis ticks to discrete integers only, ensuring 0 is NOT included in labels
         max_count = counts.max() if len(counts) > 0 else 0
-        ax.set_ylim(bottom=0, top=max(1, max_count + 0.5))
-        # Use MaxNLocator
-        nbins_y = n_yticks if n_yticks is not None else 'auto'
-        locator = mticker.MaxNLocator(integer=True, prune=None, nbins=nbins_y, steps=[1,2,5,10])
-        # Get tick values
-        ticks = locator.tick_values(0, max(1, max_count + 0.5))
-        # Filter to only include ticks > 0 (exclude 0 from labels but keep y-axis starting at 0)
-        ticks = ticks[ticks > 0]
-        # Sort and remove duplicates
-        ticks = np.unique(np.sort(ticks))
-        ax.set_yticks(ticks)
+        if log_yaxis:
+            # Built-in matplotlib log scaling; avoid including 0 in the visible range.
+            ax.set_yscale("log")
+            ymin = 0.8  # shows count=1 cleanly while avoiding 0 on a log axis
+            ymax = max(1.0, float(max_count)) * 1.2
+            ax.set_ylim(bottom=ymin, top=ymax)
+            # Log ticks are not integers; use matplotlib's log locator/formatter.
+            numticks = n_yticks if n_yticks is not None else 5
+            ax.yaxis.set_major_locator(mticker.LogLocator(base=10, numticks=numticks))
+            ax.yaxis.set_major_formatter(mticker.LogFormatter(base=10))
+        else:
+            # Set y-axis ticks to discrete integers only, ensuring 0 is NOT included in labels
+            ax.set_ylim(bottom=0, top=max(1, max_count + 0.5))
+            # Use MaxNLocator
+            nbins_y = n_yticks if n_yticks is not None else 'auto'
+            locator = mticker.MaxNLocator(integer=True, prune=None, nbins=nbins_y, steps=[1,2,5,10])
+            # Get tick values
+            ticks = locator.tick_values(0, max(1, max_count + 0.5))
+            # Filter to only include ticks > 0 (exclude 0 from labels but keep y-axis starting at 0)
+            ticks = ticks[ticks > 0]
+            # Sort and remove duplicates
+            ticks = np.unique(np.sort(ticks))
+            ax.set_yticks(ticks)
         
         # Set x-axis ticks if n_xticks is specified
         if n_xticks is not None:
@@ -1001,13 +1024,11 @@ def plot_vep_histograms_with_boundaries(
         vep_ref = data["VEP_REF"].iloc[0] if "VEP_REF" in data.columns else None
         decision_boundary = data["decision_boundary"].iloc[0] if "decision_boundary" in data.columns else None
 
-        y_offset = ax.get_ylim()[1] * y_offset_factor
-
-        # Place y-offsets starting from the top and moving downward
-        ymax = ax.get_ylim()[1]*.95
-        # Allow custom spacing for y increment, otherwise default to 0.06
-        dy_frac = label_yspacing if label_yspacing is not None else 0.15
-        delta_y = ymax * dy_frac  # Stagger distance down from the top
+        # Place label y-positions using axes-fraction coordinates (independent of linear/log scale).
+        # Start at y_offset_factor (0–1) and step downward.
+        y_start_frac = y_offset_factor
+        # label_yspacing is interpreted as a fraction of the y-axis (default: 0.06)
+        dy_frac = label_yspacing if label_yspacing is not None else 0.06
 
         # Calculate relative x_offset based on x-axis range to ensure consistent visual spacing
         # across subplots with different x-axis scales
@@ -1034,10 +1055,16 @@ def plot_vep_histograms_with_boundaries(
             if show_vertical_lines:
                 ax.axvline(xpos, color=color, linestyle="--", label=label)
             if show_vertical_line_labels:
-                y_text = ymax - delta_y * i
                 ax.text(
-                    xpos + relative_x_offset, y_text, label, color=color, rotation=0,
-                    va=valign, ha=halign, fontsize="medium",
+                    xpos + relative_x_offset,
+                    y_start_frac - dy_frac * i,
+                    label,
+                    color=color,
+                    rotation=0,
+                    va=valign,
+                    ha=halign,
+                    fontsize="medium",
+                    transform=ax.get_xaxis_transform(),
                     bbox=dict(facecolor="white", alpha=.95, edgecolor=color, boxstyle="round,pad=0.1")
                 )
 
@@ -1055,7 +1082,7 @@ def plot_vep_histograms_with_boundaries(
         col_wrap=col_wrap
     )
     g.map_dataframe(colored_histplot_with_kde, x="VEP", bins=bins)
-    g.map_dataframe(add_vep_ref_and_mean_lines)
+    g.map_dataframe(add_vep_ref_and_mean_lines, label_yspacing=label_yspacing)
     g.set_titles(col_template="{col_name}")
 
     # Handle shared y-axis label if requested

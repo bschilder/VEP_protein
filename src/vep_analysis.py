@@ -2159,7 +2159,10 @@ def plot_vep_by_superpop(
         print("plot_df.shape:",plot_df.shape)
 
     print("Adding haplotype frequencies.")
-    plot_df = hs.add_haplotype_freqs(plot_df)
+    if "protein" in plot_df.columns:
+        plot_df = hs.add_haplotype_freqs(plot_df, protein_id_col="protein")
+    else:
+        plot_df = hs.add_haplotype_freqs(plot_df)
 
     if remove_zeros:
         print("Removing zeros.")
