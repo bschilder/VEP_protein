@@ -3486,7 +3486,7 @@ def plot_top_diff_variants(
             if is_ref_filter is not True else ""
         )
         + r"$\it{VEP_{REF}}$: " + diff_df["VEP_REF"].apply(lambda x: f"{x:.2f}") + "\n"
-        + r"$\it{VEP_{mean}}$: " + diff_df["VEP_mean"].apply(lambda x: f"{x:.2f}") + "\n"
+        + r"$\it{VEP_{\text{mean}}}$: " + diff_df["VEP_mean"].apply(lambda x: f"{x:.2f}") + "\n"
         + r"$\it{Freq_{REF}}$: " + diff_df["mean_freq"].apply(lambda x: f"{x:.2e}")
     )
     # Make all labels unique by appending a unique index to each label
@@ -3798,10 +3798,22 @@ def variant_count_by_source_barplot(
     fig, ax = plt.subplots(figsize=figsize)
 
     variant_counts["ClinSig"] = variant_counts["ClinSig"].str.replace("vus", "VUS")
+    
+    # Define the desired order: Missense, Splicing, UTR (top to bottom when flip_axes=False)
+    variant_type_order = ["Missense", "Splicing", "UTR"]
+    variant_counts["Variant Type"] = pd.Categorical(
+        variant_counts["Variant Type"], 
+        categories=variant_type_order, 
+        ordered=True
+    )
     variant_counts.sort_values(by="Variant Type", inplace=True)
 
     # Group data by Consequence (Source) and ClinSig
     grouped = variant_counts.groupby(['Variant Type', 'ClinSig'], sort=False, observed=True)['Count'].sum().unstack()
+    
+    # Ensure the index order matches the desired order (only reindex existing types)
+    existing_types = [vt for vt in variant_type_order if vt in grouped.index]
+    grouped = grouped.reindex(existing_types)
 
     # Create stacked bar plot, with option to flip axes
     if not flip_axes:
@@ -3815,6 +3827,11 @@ def variant_count_by_source_barplot(
         )
         plt.xlabel(x_label)
         plt.ylabel(y_label)
+        # Invert y-axis so Missense is at top, UTR at bottom
+        ax.invert_yaxis()
+        # Format x-axis (counts) with k notation
+        from matplotlib.ticker import FuncFormatter
+        ax.xaxis.set_major_formatter(FuncFormatter(lambda x, p: f"{int(x/1000)}k" if x >= 1000 else str(int(x))))
     else:
         grouped.plot(
             kind='bar',
@@ -3825,6 +3842,9 @@ def variant_count_by_source_barplot(
         )
         plt.xlabel(x_label)
         plt.ylabel(y_label)
+        # Format y-axis (counts) with k notation
+        from matplotlib.ticker import FuncFormatter
+        ax.yaxis.set_major_formatter(FuncFormatter(lambda x, p: f"{int(x/1000)}k" if x >= 1000 else str(int(x))))
     
     # Set edge color and linewidth on all bar patches
     for patch in ax.patches:
@@ -3833,9 +3853,7 @@ def variant_count_by_source_barplot(
 
     # Rotate x-axis tick labels for better readability
     if flip_axes:
-        plt.xticks(rotation=0, ha='center') 
-
-    ax.set_yticklabels([f"{int(y/1000)}k" if y >= 1000 else str(int(y)) for y in ax.get_yticks()])
+        plt.xticks(rotation=0, ha='center')
     plt.title("Clinical Variants by Type")
     plt.legend(title="Clinical\nSignificance" if flip_axes else "Clinical Significance", loc=legend_loc)
 

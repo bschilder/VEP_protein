@@ -1669,6 +1669,7 @@ def plot_contact_map_diff(
     show_plot=True,
     verbose=True,
     weights=None,
+    cbar_tick_labelsize="small",
 ):
     """
     Plot the difference in contact probability between reference and non-reference contact maps.
@@ -1690,6 +1691,7 @@ def plot_contact_map_diff(
         verbose (bool): Whether to print verbose output (default: True).
         ref_key (str): Key of the reference contact map (default: None).
         weights (dict or list or np.ndarray, optional): Weights for each non-ref contact map. If dict, keys must match non-ref keys.
+        cbar_tick_labelsize (str or float): Font size for colorbar tick labels (default: "small").
     Returns:
         np.ndarray: The difference map (not binned/expanded).
 
@@ -1787,6 +1789,7 @@ def plot_contact_map_diff(
     cbar = plt.colorbar(im, cax=cax, label=legend_title)
     cbar.set_ticks([-1, -0.5, 0, 0.5, 1])
     cbar.set_ticklabels(['Lost in all', '-0.5', 'No change', '+0.5', 'Gained in all'])
+    cbar.ax.tick_params(labelsize=cbar_tick_labelsize)
     plt.tight_layout()
     if show_plot:
         plt.show()
@@ -1902,7 +1905,10 @@ def plot_contact_map_diff_barplot_grouped(
     title=None,
     text_label_info =["count", "percent"],
     legend_title="Contact Change\nRelative to Ref",
-    cmap="seismic_r", 
+    cmap="seismic_r",
+    text_label_rotation=None,
+    split_percent_sign=False,
+    text_label_color='grey',
 ):
     """
     Plot a grouped barplot showing the number and percentage of contact map differences
@@ -2023,15 +2029,25 @@ def plot_contact_map_diff_barplot_grouped(
                 label_parts.append(f"{count_val}")
             if "percent" in text_label_info:
                 percent_val = row["Percent"].values[0]
-                label_parts.append(f"{percent_val:.2f}%")
+                if split_percent_sign:
+                    label_parts.append(f"{percent_val:.2f}\n%")
+                else:
+                    label_parts.append(f"{percent_val:.2f}%")
             label = "\n".join(label_parts) if label_parts else ""
             
             # Position the annotation at the top of the bar
-            ax.annotate(label,
-                        (patch.get_x() + patch.get_width() / 2, height),
-                        ha='center', va='bottom',
-                        xytext=(0, 3), textcoords='offset points',
-                        fontsize='small')
+            annotate_kwargs = {
+                'xy': (patch.get_x() + patch.get_width() / 2, height),
+                'ha': 'left' if text_label_rotation is not None else 'center', 
+                'va': 'bottom',
+                'xytext': (0, 3), 
+                'textcoords': 'offset points',
+                'fontsize': 'small',
+                'color': text_label_color
+            }
+            if text_label_rotation is not None:
+                annotate_kwargs['rotation'] = text_label_rotation
+            ax.annotate(label, **annotate_kwargs)
     
     if xlabel is None:
         xlabel = group_by.title()
@@ -3754,6 +3770,8 @@ def plot_contact_map_and_zooms(
     zoom_highlight_linewidth=3,                # NEW: color (non-border) marker linewidth in zoom
     zoom_highlight_white_linewidth=5,           # NEW: white border linewidth in zoom
     zoom_effect_label_prefix=r"$E_{\text{WT-Clin}}$",    # NEW: prefix label for interaction strength in zoom plot titles
+    zoom_color_col=None,                       # NEW: column name to use for coloring highlights. If None, uses zoom_value_col
+    zoom_sort_col=None,                       # NEW: column name to use for sorting/selecting variant pairs. If None, uses zoom_value_col
     figsize=None  # Figure size tuple (width, height). If None, auto-calculated based on layout
 ):
     """
@@ -3803,6 +3821,8 @@ def plot_contact_map_and_zooms(
         zoom_highlight_linewidth (float): Line thickness for color highlight marker in zoom (default: 3).
         zoom_highlight_white_linewidth (float): Line thickness for white outline marker in zoom (default: 5).
         zoom_effect_label_prefix (str): Prefix label for interaction strength in zoom plot titles (default: "Joint Effect").
+        zoom_color_col (str or None): Column name to use for coloring highlights. If None, uses zoom_value_col (default: None).
+        zoom_sort_col (str or None): Column name to use for sorting/selecting variant pairs. If None, uses zoom_value_col (default: None).
         figsize (tuple or None): Figure size (width, height) in inches. If None, auto-calculated based on layout.
 
     Returns:
@@ -3830,14 +3850,20 @@ def plot_contact_map_and_zooms(
     if zoom_ncols is None:
         zoom_ncols = int(np.ceil(max_highlights / zoom_nrows))
     
+    # Determine which column to use for sorting/selecting variant pairs
+    sort_col = zoom_sort_col if zoom_sort_col is not None else zoom_value_col
+    
     # Determine highlight colors
     if highlight_colors is None:
         if color_by_interaction_score:
             # Colors highlights by interaction score sign (blue/red)
-            sorted_ridge_df = ridge_df.iloc[:max_highlights].sort_values('clinical_position')
+            # First sort by sort_col to select top variant pairs, then by clinical_position for display
+            sorted_ridge_df = ridge_df.sort_values(sort_col, ascending=False).iloc[:max_highlights].sort_values('clinical_position')
             highlight_colors = []
             for idx, row in sorted_ridge_df.iterrows():
-                interaction_score = row.get(zoom_value_col, 0)
+                # Use zoom_color_col if provided, otherwise fall back to zoom_value_col
+                color_col = zoom_color_col if zoom_color_col is not None else zoom_value_col
+                interaction_score = row.get(color_col, 0)
                 if interaction_score >= 0:
                     highlight_colors.append('blue')
                 else:
@@ -3996,7 +4022,8 @@ def plot_contact_map_and_zooms(
             zoom_show_ylabel_list = [False] * max_highlights
 
         # Sort highlights for display order
-        sorted_ridge_df = ridge_df.iloc[:max_highlights].sort_values('clinical_position')
+        # First sort by sort_col to select top variant pairs, then by clinical_position for display
+        sorted_ridge_df = ridge_df.sort_values(sort_col, ascending=False).iloc[:max_highlights].sort_values('clinical_position')
         
         for i, (idx, row) in enumerate(sorted_ridge_df.iterrows()):
             x = int(row['clinical_position'])
@@ -4139,10 +4166,10 @@ def plot_contact_map_and_zooms(
                     ax_zoom.tick_params(axis='y', which='major', pad=1)
                     # Use per-plot setting for xlabel
                     if zoom_show_xlabel_list[i]:
-                        ax_zoom.set_xlabel("Clinical Variant Position", fontsize=6)
+                        ax_zoom.set_xlabel("Clinical Variant Position", fontsize='medium')
                     # Use per-plot setting for ylabel
                     if zoom_show_ylabel_list[i]:
-                        ax_zoom.set_ylabel("WT Variant Position", fontsize=6)
+                        ax_zoom.set_ylabel("WT Variant Position", fontsize='medium')
                 else:
                     ax_zoom.set_xticks([])
                     ax_zoom.set_yticks([])

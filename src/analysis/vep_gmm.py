@@ -1024,9 +1024,9 @@ def plot_vep_histograms_with_boundaries(
         if decision_boundary is not None and pd.notnull(decision_boundary):
             xlabels.append((decision_boundary, r"Boundary", "red"))
         if vep_ref is not None and pd.notnull(vep_ref):
-            xlabels.append((vep_ref, r"$VEP_{ref}$", "grey"))
+            xlabels.append((vep_ref, r"$VEP_{\text{ref}}$", "grey"))
         if vep_mean is not None and pd.notnull(vep_mean):
-            xlabels.append((vep_mean, r"$VEP_{mean}$", "goldenrod"))
+            xlabels.append((vep_mean, r"$VEP_{\text{mean}}$", "goldenrod"))
       
 
         # Draw lines and staggered labels from top downward

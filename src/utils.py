@@ -1889,7 +1889,97 @@ FIG_SAVE_KWARGS = {
     "pad_inches":0.1, 
     "facecolor":"None", 
 }
- 
+
+def configure_pdf_fonts_for_illustrator():
+    """
+    Configure matplotlib to embed fonts in PDFs for Illustrator compatibility.
+    
+    Call this function at the start of your notebook/session BEFORE creating any figures.
+    This sets the font type to 42 (TrueType embedded) which prevents "font missing" 
+    errors when opening PDFs in Adobe Illustrator.
+    
+    Examples
+    --------
+    >>> import matplotlib.pyplot as plt
+    >>> import src.utils as utils
+    >>> utils.configure_pdf_fonts_for_illustrator()
+    >>> # Now create and save figures - fonts will be embedded
+    """
+    import matplotlib.pyplot as plt
+    plt.rcParams['pdf.fonttype'] = 42
+    plt.rcParams['ps.fonttype'] = 42
+    plt.rcParams['pdf.compression'] = 0  # Disable compression for better font embedding
+
+def savefig_with_embedded_fonts(fig, save_path, **save_kwargs):
+    """
+    Save a figure with embedded fonts for Illustrator compatibility.
+    
+    This function automatically embeds fonts (TrueType) in PDF files to prevent
+    "font missing" errors when opening in Adobe Illustrator.
+    
+    Note: For best results, set font embedding BEFORE creating the figure:
+        import matplotlib.pyplot as plt
+        plt.rcParams['pdf.fonttype'] = 42
+        plt.rcParams['ps.fonttype'] = 42
+    
+    Parameters
+    ----------
+    fig : matplotlib.figure.Figure
+        The figure to save.
+    save_path : str
+        Path where to save the figure.
+    **save_kwargs : dict
+        Additional keyword arguments to pass to fig.savefig().
+        If not provided, uses FIG_SAVE_KWARGS by default.
+    
+    Examples
+    --------
+    >>> fig.savefig("output.pdf", **utils.FIG_SAVE_KWARGS)
+    >>> # Better: use this function for PDFs
+    >>> utils.savefig_with_embedded_fonts(fig, "output.pdf")
+    >>> 
+    >>> # For best results, set globally at notebook start:
+    >>> import matplotlib.pyplot as plt
+    >>> plt.rcParams['pdf.fonttype'] = 42
+    >>> plt.rcParams['ps.fonttype'] = 42
+    """
+    if save_kwargs is None or len(save_kwargs) == 0:
+        save_kwargs = FIG_SAVE_KWARGS.copy()
+    
+    # Embed fonts for Illustrator compatibility (only for PDF files)
+    if save_path.lower().endswith('.pdf'):
+        # Save original settings
+        original_pdf_fonttype = plt.rcParams.get('pdf.fonttype', None)
+        original_ps_fonttype = plt.rcParams.get('ps.fonttype', None)
+        original_pdf_compression = plt.rcParams.get('pdf.compression', None)
+        
+        # Set font types for proper embedding (Type 42 = TrueType embedded)
+        plt.rcParams['pdf.fonttype'] = 42
+        plt.rcParams['ps.fonttype'] = 42
+        # Disable compression to ensure fonts are fully embedded
+        plt.rcParams['pdf.compression'] = 0
+        
+        try:
+            # Use format='pdf' explicitly
+            fig.savefig(save_path, format='pdf', **save_kwargs)
+        finally:
+            # Restore original settings
+            if original_pdf_fonttype is not None:
+                plt.rcParams['pdf.fonttype'] = original_pdf_fonttype
+            elif 'pdf.fonttype' in plt.rcParams:
+                del plt.rcParams['pdf.fonttype']
+                
+            if original_ps_fonttype is not None:
+                plt.rcParams['ps.fonttype'] = original_ps_fonttype
+            elif 'ps.fonttype' in plt.rcParams:
+                del plt.rcParams['ps.fonttype']
+                
+            if original_pdf_compression is not None:
+                plt.rcParams['pdf.compression'] = original_pdf_compression
+            elif 'pdf.compression' in plt.rcParams:
+                del plt.rcParams['pdf.compression']
+    else:
+        fig.savefig(save_path, **save_kwargs)
 
 def rasterize_figure(fig, types=["PathCollection", "Line2D", "Rectangle"]):
     """

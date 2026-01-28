@@ -1537,7 +1537,7 @@ def plot_ref_percentile_schematic(
     show_ylabel=(True, True),
     gradient_granularity=None,
     ref_x_positions=(-2.2, 2.2), 
-    ref_label=r"$VEP_{ref}$",
+    ref_label=r"$VEP_{\text{ref}}$",
     ref_label_fontsize='small',
     ref_label_color='grey',
     ref_label_rotation=0,
@@ -1752,13 +1752,13 @@ def plot_ref_percentile_schematic(
             ax_top.set_ylabel("Density")
         ax_top.set_yticks([])
         ax_top.set_title(
-            r"$\mathbf{VEP_{ref}\ underestimates}$" + "\n" + r"$\mathbf{pathogenicity}$", 
+            r"$\mathbf{Underestimate}$", 
             fontsize=title_fontsize, 
             loc=title_loc,
             fontweight=title_fontweight
         )
         if show_xlabel[0]:
-            ax_top.set_xlabel(r"$VEP_{ref}$ percentile")
+            ax_top.set_xlabel(r"$VEP_{\text{ref}}$ percentile")
         ax_top.set_xlim(-3, 3)
         ax_top.set_xticks([-3, 0, 3])
         ax_top.set_xticklabels([])
@@ -1783,12 +1783,12 @@ def plot_ref_percentile_schematic(
             ax_bottom.set_ylabel("Density")
         ax_bottom.set_yticks([])
         ax_bottom.set_title(
-            r"$\mathbf{VEP_{ref}\ overestimates}$" + "\n" + r"$\mathbf{pathogenicity}$", 
+            r"$\mathbf{Overestimate}$", 
             fontsize=title_fontsize, loc=title_loc,
             fontweight=title_fontweight
         )
         if show_xlabel[1]:
-            ax_bottom.set_xlabel(r"$VEP_{ref}$ percentile")
+            ax_bottom.set_xlabel(r"$VEP_{\text{ref}}$ percentile")
         ax_bottom.set_xlim(-3, 3)
         ax_bottom.set_xticks([-3, 0, 3])
         # If near right, labels left-to-right, else right-to-left
@@ -1840,9 +1840,9 @@ def plot_ref_percentile_schematic(
         if show_ylabel[0]:
             ax_top.set_ylabel("Density")
         ax_top.set_yticks([])
-        ax_top.set_title(r"$VEP_{ref}$ underestimates\npathogenicity", fontweight=title_fontweight, loc=title_loc)
+        ax_top.set_title(r"$\mathbf{Underestimate}$", fontweight=title_fontweight, loc=title_loc)
         if show_xlabel[0]:
-            ax_top.set_xlabel(r"$VEP_{ref}$ percentile")
+            ax_top.set_xlabel(r"$VEP_{\text{ref}}$ percentile")
         ax_top.set_xlim(-3, 3)
         ax_top.set_xticks([-3, 0, 3])
         ax_top.set_xticklabels([])
@@ -1865,11 +1865,11 @@ def plot_ref_percentile_schematic(
         if show_ylabel[1]:
             ax_bottom.set_ylabel("Density")
         ax_bottom.set_yticks([])
-        ax_bottom.set_title(r"$VEP_{ref}$ overestimates\npathogenicity", 
+        ax_bottom.set_title(r"$\mathbf{Overestimate}$", 
                             fontweight=title_fontweight, 
                             loc=title_loc)
         if show_xlabel[1]:
-            ax_bottom.set_xlabel(r"$VEP_{ref}$ percentile")
+            ax_bottom.set_xlabel(r"$VEP_{\text{ref}}$ percentile")
         ax_bottom.set_xlim(-3, 3)
         ax_bottom.set_xticks([-3, 0, 3])
         if ref_x_bottom < 0:
@@ -1895,8 +1895,8 @@ def plot_ref_vep_percentile_stacked_bar(
     figsize=(10, 4), 
     label_padding=0.15, 
     is_ref=True,
-    title=r"$VEP_{ref}$ Percentiles Relative to Full $VEP$ Distribution",
-    x_label=r"$VEP_{mean}$ Quantile",
+    title=r"$VEP_{\text{ref}}$ Percentiles Relative to Full $VEP$ Distribution",
+    x_label=r"$VEP_{\text{mean}}$ Quantile",
     y_label="Proportion of Variants",
     show_arrows=False,
     show_vertical_arrows=False,
@@ -1904,6 +1904,11 @@ def plot_ref_vep_percentile_stacked_bar(
     legend_on_right=True,
     legend_loc='upper right',
     legend_height_factor=1.5,
+    legend_columnspacing=None,  # Horizontal spacing between legend items (default: matplotlib default)
+    legend_upper_center_y=0.92,  # Y position (figure coordinates) for legend when legend_loc="upper center"
+    legend_upper_center_x=None,  # X position (figure coordinates) for legend when legend_loc="upper center" (None = center horizontally)
+    title_upper_center_y=0.95,  # Y position (figure coordinates) for suptitle when legend_loc="upper center"
+    layout_top_upper_center=0.70,  # Top margin (0-1) for subplots_adjust when legend_loc="upper center"
     schematic_width_ratio=1.3,
     barplot_width_ratio=5,
     schematic_heights=[0.2, 0.3, 0.2],
@@ -1915,6 +1920,7 @@ def plot_ref_vep_percentile_stacked_bar(
     use_quantile_labels=True,
     flip_xaxis=False,  # <--- New argument to flip the x-axis direction
     legend_frame=True,  # <--- Whether to draw a frame around the legend
+    reverse_legend=False,  # <--- Whether to reverse legend item order
     edgecolor='black',  # <--- Edge color for bars
     linewidth=0.5,  # <--- Line width for bar edges
 ):
@@ -1956,6 +1962,21 @@ def plot_ref_vep_percentile_stacked_bar(
         Factor to control the height of the legend proportionally (default: 1.0).
         If < 1.0, the legend height is shrunk proportionally.
         If > 1.0, the legend height is grown proportionally.
+    legend_columnspacing : float, optional
+        Horizontal spacing between legend items when legend is horizontal (default: None, uses matplotlib default).
+        Only applies when legend_loc="upper center".
+    legend_upper_center_y : float, optional
+        Y position in figure coordinates (0-1) for the legend when legend_loc="upper center" (default: 0.92).
+        Higher values move the legend up, lower values move it down.
+    legend_upper_center_x : float, optional
+        X position in figure coordinates (0-1) for the legend when legend_loc="upper center" (default: None).
+        If None, the legend is centered horizontally over the plot. Use 0.5 to center on the entire figure.
+    title_upper_center_y : float, optional
+        Y position in figure coordinates (0-1) for the suptitle when legend_loc="upper center" (default: 0.95).
+        Higher values move the title up, lower values move it down. Should be > legend_upper_center_y.
+    layout_top_upper_center : float, optional
+        Top margin (0-1) for subplots_adjust when legend_loc="upper center" (default: 0.70).
+        Lower values leave more space at the top for title and legend.
     show_schematic : bool, optional
         Whether to show a schematic illustration to the right of the plot (default: True).
     schematic_width_ratio : float, optional
@@ -2049,7 +2070,7 @@ def plot_ref_vep_percentile_stacked_bar(
     )
 
     # Prepare data for stacked bar plot (as proportions)
-    stacked = data.groupby(['VEP_binned_label', 'VEP_percentile_decile']).size().unstack(fill_value=0)
+    stacked = data.groupby(['VEP_binned_label', 'VEP_percentile_decile'], observed=True).size().unstack(fill_value=0)
     stacked_prop = stacked.div(stacked.sum(axis=1), axis=0)
     stacked_prop = stacked_prop.reindex(bin_labels)
 
@@ -2127,7 +2148,11 @@ def plot_ref_vep_percentile_stacked_bar(
     
     ax.set_xlabel(x_label)
     ax.set_ylabel(y_label)
-    ax.set_title(title)
+    # Handle title placement - if legend is "upper center", use suptitle to place it above legend
+    if legend_loc == "upper center" and not legend_on_right:
+        ax.set_title('')  # Clear axis title - will use suptitle instead
+    else:
+        ax.set_title(title)
     
     # Add grey dotted horizontal line at y=0.5 across the entire plot
     ax.axhline(y=0.5, color='grey', linestyle=':', linewidth=2, alpha=0.7, zorder=10, xmax=2)
@@ -2135,94 +2160,131 @@ def plot_ref_vep_percentile_stacked_bar(
     # Ensure y-axis is constrained to 0-1 range for proportions
     ax.set_ylim(0, 1)
     handles, legend_labels = ax.get_legend_handles_labels()
-    
-    if legend_on_right:
-        # Legend in the dedicated legend axis (middle column)
-        legend_obj = legend_ax.legend(
-            handles[::-1],
-            reversed_labels,
-            title=r"$VEP_{ref}$" + " percentile bin",
-            loc='center left',  # Center the legend content vertically
-            borderaxespad=0.0,
-            frameon=legend_frame,
-        )
-        
-        # After creating the legend, adjust its position to account for the title
-        # This ensures the legend content (not including title) is centered
-        if legend_obj is not None:
-            # Get the legend's bounding box
-            legend_bbox = legend_obj.get_window_extent()
-            # Transform to display coordinates
-            legend_bbox_display = legend_bbox.transformed(legend_ax.transAxes.inverted())
-            
-            # Calculate the height of the legend content (excluding title)
-            legend_height = legend_bbox_display.height
-            title_height = legend_height * 0.15  # Approximate title height as fraction of total legend height
-            
-            # Adjust y position to center the content (excluding title)
-            # Move up by half the title height to center the content
-            # For the right legend, we need to adjust the bbox_to_anchor
-            legend_obj.set_bbox_to_anchor((0.5, 0.5 + (title_height / 2)))
+    if reverse_legend:
+        legend_handles = handles[::-1]
+        legend_labels = legend_labels[::-1]
     else:
-        # Legend on the left side of the barplot (original behavior)
-        # Calculate legend position and height based on height factor
-        if legend_height_factor != 1.0:
-            # Adjust y-position based on height factor
-            # For height_factor > 1, move legend down; for < 1, move it up
-            y_offset = (legend_height_factor - 1.0) * 0.5  # Scale factor for y-position adjustment
-            y_pos = 0.5 + y_offset  # Center at 0.5 instead of 1.0
-        else:
-            y_pos = 0.5  # Center vertically
+        legend_handles = handles
+    
+    # Only create legend if legend_loc is not None
+    if legend_loc is not None:
+        if legend_on_right:
+            # Legend in the dedicated legend axis (middle column)
+            legend_kwargs = {
+                'handles': legend_handles,
+                'labels': legend_labels,
+                'title': r"$VEP_{\text{ref}}$" + " percentile bin",
+                'loc': 'center left',  # Center the legend content vertically
+                'borderaxespad': 0.0,
+                'frameon': legend_frame
+            }
+            if legend_columnspacing is not None:
+                legend_kwargs['columnspacing'] = legend_columnspacing
+            legend_obj = legend_ax.legend(**legend_kwargs)
         
-        # Create legend with height adjustment
-        if legend_height_factor != 1.0:
-            # Calculate custom height for legend
-            # Use bbox_to_anchor with height adjustment
-            legend = ax.legend(
-                handles[::-1],
-                reversed_labels,
-                title=r"$VEP_{ref}$" + "\n" + "percentile bin",
-                bbox_to_anchor=(-0.15, y_pos),
-                loc=legend_loc,
-                borderaxespad=0.0,
-                # Adjust legend height by modifying the layout
-                ncol=1,  # Ensure single column for height control
-                frameon=legend_frame
-            )
-            
-            # Apply height scaling by adjusting the legend's internal spacing
-            if hasattr(legend, '_legend_box'):
-                legend._legend_box.sep = legend._legend_box.sep * legend_height_factor
+            # After creating the legend, adjust its position to account for the title
+            # This ensures the legend content (not including title) is centered
+            if legend_obj is not None:
+                # Get the legend's bounding box
+                legend_bbox = legend_obj.get_window_extent()
+                # Transform to display coordinates
+                legend_bbox_display = legend_bbox.transformed(legend_ax.transAxes.inverted())
+                
+                # Calculate the height of the legend content (excluding title)
+                legend_height = legend_bbox_display.height
+                title_height = legend_height * 0.15  # Approximate title height as fraction of total legend height
+                
+                # Adjust y position to center the content (excluding title)
+                # Move up by half the title height to center the content
+                # For the right legend, we need to adjust the bbox_to_anchor
+                legend_obj.set_bbox_to_anchor((0.5, 0.5 + (title_height / 2)))
         else:
-            # Default legend without height adjustment
-            legend = ax.legend(
-                handles[::-1],
-                reversed_labels,
-                title=r"$VEP_{ref}$" + "\n" + "percentile bin",
-                bbox_to_anchor=(-0.15, y_pos),
-                loc=legend_loc,
-                borderaxespad=0.0,
-                frameon=legend_frame
-            )
-        
-        # After creating the legend, adjust its position to account for the title
-        # This ensures the legend content (not including title) is centered
-        if legend is not None:
-            # Get the legend's bounding box
-            legend_bbox = legend.get_window_extent()
-            # Transform to display coordinates
-            legend_bbox_display = legend_bbox.transformed(ax.transAxes.inverted())
-            
-            # Calculate the height of the legend content (excluding title)
-            legend_height = legend_bbox_display.height
-            title_height = legend_height * 0.15  # Approximate title height as fraction of total legend height
-            
-            # Adjust y position to center the content (excluding title)
-            # Move up by half the title height to center the content
-            adjusted_y_pos = y_pos + (title_height / 2)
-            
-            # Update the legend position
-            legend.set_bbox_to_anchor((-0.15, adjusted_y_pos))
+            # Legend on the left side of the barplot (original behavior)
+            # Special handling for "upper center" - place above the plot
+            if legend_loc == "upper center":
+                # Place legend above the plot using figure coordinates
+                # We'll position it after layout adjustments, below the suptitle
+                ax_pos = ax.get_position()
+                # Position legend horizontally centered, will be adjusted after layout
+                legend_kwargs = {
+                    'handles': legend_handles,
+                    'labels': legend_labels,
+                    'title': None,  # No title when legend is on top
+                    'bbox_to_anchor': (ax_pos.x0 + ax_pos.width / 2, 0.92),
+                    'loc': 'lower center',  # Anchor at bottom of legend
+                    'bbox_transform': fig.transFigure,
+                    'borderaxespad': 0.0,
+                    'frameon': legend_frame,
+                    'ncol': len(legend_labels)  # Arrange horizontally
+                }
+                if legend_columnspacing is not None:
+                    legend_kwargs['columnspacing'] = legend_columnspacing
+                legend = ax.legend(**legend_kwargs)
+            else:
+                # Calculate legend position and height based on height factor
+                if legend_height_factor != 1.0:
+                    # Adjust y-position based on height factor
+                    # For height_factor > 1, move legend down; for < 1, move it up
+                    y_offset = (legend_height_factor - 1.0) * 0.5  # Scale factor for y-position adjustment
+                    y_pos = 0.5 + y_offset  # Center at 0.5 instead of 1.0
+                else:
+                    y_pos = 0.5  # Center vertically
+                
+                # Create legend with height adjustment
+                if legend_height_factor != 1.0:
+                    # Calculate custom height for legend
+                    # Use bbox_to_anchor with height adjustment
+                    legend_kwargs = {
+                        'handles': legend_handles,
+                        'labels': legend_labels,
+                        'title': r"$VEP_{\text{ref}}$" + "\n" + "percentile bin",
+                        'bbox_to_anchor': (-0.15, y_pos),
+                        'loc': legend_loc,
+                        'borderaxespad': 0.0,
+                        'ncol': 1,  # Ensure single column for height control
+                        'frameon': legend_frame
+                    }
+                    if legend_columnspacing is not None:
+                        legend_kwargs['columnspacing'] = legend_columnspacing
+                    legend = ax.legend(**legend_kwargs)
+                    
+                    # Apply height scaling by adjusting the legend's internal spacing
+                    if hasattr(legend, '_legend_box'):
+                        legend._legend_box.sep = legend._legend_box.sep * legend_height_factor
+                else:
+                    # Default legend without height adjustment
+                    legend_kwargs = {
+                        'handles': legend_handles,
+                        'labels': legend_labels,
+                        'title': r"$VEP_{\text{ref}}$" + "\n" + "percentile bin",
+                        'bbox_to_anchor': (-0.15, y_pos),
+                        'loc': legend_loc,
+                        'borderaxespad': 0.0,
+                        'frameon': legend_frame
+                    }
+                    if legend_columnspacing is not None:
+                        legend_kwargs['columnspacing'] = legend_columnspacing
+                    legend = ax.legend(**legend_kwargs)
+                
+                # After creating the legend, adjust its position to account for the title
+                # This ensures the legend content (not including title) is centered
+                if legend is not None:
+                    # Get the legend's bounding box
+                    legend_bbox = legend.get_window_extent()
+                    # Transform to display coordinates
+                    legend_bbox_display = legend_bbox.transformed(ax.transAxes.inverted())
+                    
+                    # Calculate the height of the legend content (excluding title)
+                    legend_height = legend_bbox_display.height
+                    title_height = legend_height * 0.15  # Approximate title height as fraction of total legend height
+                    
+                    # Adjust y position to center the content (excluding title)
+                    # Move up by half the title height to center the content
+                    adjusted_y_pos = y_pos + (title_height / 2)
+                    
+                    # Update the legend position
+                    legend.set_bbox_to_anchor((-0.15, adjusted_y_pos))
+    
     ax.yaxis.set_major_formatter(plt.FuncFormatter(lambda y, _: '{:.2f}'.format(y)))
     ax.set_xticklabels(ax.get_xticklabels(), rotation=0)
 
@@ -2235,7 +2297,29 @@ def plot_ref_vep_percentile_stacked_bar(
     if flip_xaxis:
         ax.invert_xaxis()
 
-    plt.tight_layout()
+    # Adjust layout to leave space for legend above when legend_loc="upper center"
+    if legend_loc == "upper center" and not legend_on_right:
+        # Leave space at the top for both legend and title
+        fig.subplots_adjust(top=layout_top_upper_center)
+        # Set suptitle AFTER layout adjustment
+        if title:
+            fig.suptitle(title, y=title_upper_center_y, verticalalignment='top', fontsize=plt.rcParams['axes.titlesize'], 
+                        transform=fig.transFigure)
+        # Reposition legend below the suptitle
+        # Get the legend that was created earlier
+        legend = ax.get_legend()
+        if legend is not None:
+            ax_pos = ax.get_position()
+            # Position legend using the provided parameters
+            # X position: use provided value or center horizontally over the plot
+            if legend_upper_center_x is not None:
+                legend_x = legend_upper_center_x
+            else:
+                legend_x = ax_pos.x0 + ax_pos.width / 2
+            # The transform was already set when creating the legend, just update the anchor
+            legend.set_bbox_to_anchor((legend_x, legend_upper_center_y))
+    else:
+        plt.tight_layout()
 
     # --- Add up/down arrows to the right of the barplot that align with the schematic ---
     if show_schematic and show_vertical_arrows:
@@ -2257,7 +2341,7 @@ def plot_ref_vep_percentile_stacked_bar(
         top_arrow_length = (ymax - ymin) * 0.45  # Extend almost to top
         bottom_arrow_length = (ymax - ymin) * 0.45  # Extend almost to bottom
         
-        # Arrow for "REF Underestimates Pathogenicity" (upward)
+        # Arrow for "REF Underestimate Pathogenicity" (upward)
         ax.annotate(
             "",
             xy=(x_arrow, ymax - arrow_gap),
@@ -2266,7 +2350,7 @@ def plot_ref_vep_percentile_stacked_bar(
             annotation_clip=False
         )
         
-        # Arrow for "REF Overestimates Pathogenicity" (downward)
+        # Arrow for "REF Overestimate Pathogenicity" (downward)
         ax.annotate(
             "",
             xy=(x_arrow, ymin + arrow_gap),
@@ -2368,7 +2452,7 @@ def plot_ref_vep_percentile_stacked_bar(
         # Length of arrows (as a fraction of y-axis)
         arrow_length = (ymax - ymin) * 0.35
 
-        # Arrow for "REF Underestimates Pathogenicity" (upward)
+        # Arrow for "REF Underestimate Pathogenicity" (upward)
         fontsize = 'medium'
         fontweight = None
         ax.annotate(
@@ -2381,11 +2465,11 @@ def plot_ref_vep_percentile_stacked_bar(
         ax.text(
             x_arrow + (0.08 if not flip_xaxis else -0.08),
             ycenter + arrow_length/2 + label_padding/2,
-            r"$VEP_{ref}$ underestimates\npathogenicity",
+            r"$\mathbf{Underestimate}$",
             va='center', ha='left' if not flip_xaxis else 'right', rotation=90, fontsize=fontsize, fontweight=fontweight
         )
 
-        # Arrow for "REF Overestimates Pathogenicity" (downward)
+        # Arrow for "REF Overestimate Pathogenicity" (downward)
         ax.annotate(
             "",
             xy=(x_arrow, ycenter - arrow_length),
@@ -2396,7 +2480,7 @@ def plot_ref_vep_percentile_stacked_bar(
         ax.text(
             x_arrow + (0.08 if not flip_xaxis else -0.08),
             ycenter - arrow_length/2 - label_padding/2,
-            r"$VEP_{ref}$ overestimates\npathogenicity",
+            r"$\mathbf{Overestimate}$",
             va='center', ha='left' if not flip_xaxis else 'right', rotation=90, fontsize=fontsize, fontweight=fontweight
         )
 
@@ -2443,8 +2527,8 @@ def plot_ref_vep_std_stacked_bar(
     figsize=(9, 4), 
     label_padding=0.15, 
     is_ref=True,
-    title=r"Standard Deviations Separating $VEP_{ref}$ from $VEP_{mean}$",
-    x_label=r"$VEP_{mean}$ Quantile",
+    title=r"Standard Deviations Separating $VEP_{\text{ref}}$ from $VEP_{\text{mean}}$",
+    x_label=r"$VEP_{\text{mean}}$ Quantile",
     y_label="Proportion of Variants",
     xaxis_quartile_labels=True,
     add_arrows=True,
@@ -2519,7 +2603,7 @@ def plot_ref_vep_std_stacked_bar(
     data['VEP_pct_group_cat'] = pd.cut(data['VEP_pct_group'], bins=bins, labels=labels)
 
     # Prepare data for stacked bar plot (as proportions), using the string bin labels for x-axis
-    stacked = data.groupby(['VEP_binned_label', 'VEP_pct_group_cat']).size().unstack(fill_value=0)
+    stacked = data.groupby(['VEP_binned_label', 'VEP_pct_group_cat'], observed=True).size().unstack(fill_value=0)
     stacked_prop = stacked.div(stacked.sum(axis=1), axis=0)  # Proportion (0-1)
 
     # Ensure the x-axis bins are in the correct order
@@ -2587,7 +2671,7 @@ def plot_ref_vep_std_stacked_bar(
         ax.text(
             x_arrow + 0.08,
             ycenter + arrow_length/2 + label_padding/2,
-            r"$\mathbf{VEP_{ref}}$"+"\n"+r"underestimates"+"\n"+r"pathogenicity",
+            r"$\mathbf{Underestimate}$",
             va='center', ha='left', rotation=90, fontsize=fontsize, fontweight='bold'
         )
 
@@ -2601,7 +2685,7 @@ def plot_ref_vep_std_stacked_bar(
         ax.text(
             x_arrow + 0.08,
             ycenter - arrow_length/2 - label_padding/2,
-            r"$\mathbf{VEP_{ref}}$"+"\n"+r"overestimates"+"\n"+r"pathogenicity",
+            r"$\mathbf{Overestimate}$",
             va='center', ha='left', rotation=90, fontsize=fontsize, fontweight='bold'
         )
         if flip_xaxis:
@@ -2735,7 +2819,7 @@ def plot_ref_vep_diff_stacked_bar(vep_df,
 
     # Prepare data for stacked bar plot (as proportions), using the string bin labels for x-axis
     cat_column = y+"_cat"
-    stacked = data.groupby(['VEP_binned_label', cat_column]).size().unstack(fill_value=0)
+    stacked = data.groupby(['VEP_binned_label', cat_column], observed=True).size().unstack(fill_value=0)
     stacked_prop = stacked.div(stacked.sum(axis=1), axis=0)  # Proportion (0-1)
 
     # Ensure the x-axis bins are in the correct order
@@ -2793,7 +2877,7 @@ def plot_ref_vep_diff_stacked_bar(vep_df,
     ax.text(
         x_arrow + 0.08,
         ycenter + arrow_length/2 + label_padding/2,
-        r"$VEP_{ref}$ underestimates\npathogenicity",
+        r"$\mathbf{Underestimate}$",
         va='center', ha='left', rotation=90, fontsize=fontsize, fontweight='bold'
     )
 
@@ -2807,7 +2891,7 @@ def plot_ref_vep_diff_stacked_bar(vep_df,
     ax.text(
         x_arrow + 0.08,
         ycenter - arrow_length/2 - label_padding/2,
-        r"$VEP_{ref}$ overestimates\npathogenicity",
+        r"$\mathbf{Overestimate}$",
         va='center', ha='left', rotation=90, fontsize=fontsize, fontweight='bold'
     )
 
@@ -3033,7 +3117,7 @@ def plot_vep_histogram_with_arrows(
     external_legend_annotation=False,
     arrow_text_fontsize=11,
     legend_loc="best",
-    x_label=r"$VEP_{mean}$",
+    x_label=r"$VEP_{\text{mean}}$",
     y_label=None,
     stat="frequency",
     title="VEP Distributions",
@@ -3439,7 +3523,7 @@ def plot_vep_kde_with_arrows(
     clinsig_col="clinsig",
     site_col="site", 
     title="VEP Distributions",
-    x_label=r"$VEP_{mean}$",
+    x_label=r"$VEP_{\text{mean}}$",
     y_label="Proportion",  
     legend_title="Clinical Significance",
     palette=utils.get_clinsig_palette(),
@@ -3730,25 +3814,6 @@ def plot_vep_kde_with_arrows(
     if add_histogram:
         ax_hist.set_xlim(xlim_min, xlim_max)
     
-    # Set legend location and title (do this LAST, after all other operations)
-    legend = ax.get_legend()
-    if legend is not None:
-        # Get handles and labels - this should work correctly with seaborn
-        handles, labels = ax.get_legend_handles_labels()
-        
-        # Only proceed if we have valid handles and labels
-        if len(handles) > 0 and len(labels) > 0:
-            # Remove the old legend
-            legend.remove()
-            
-            # Re-add legend with user-specified location, preserving all labels
-            new_legend = ax.legend(
-                handles, labels, 
-                title=legend_title, 
-                loc=legend_loc, 
-                **legend_kwargs
-            )
-
     # Adjust layout to accommodate title when histogram is enabled
     if add_histogram:
         fig.tight_layout(rect=[0, 0, 1, 0.96])  # Leave space at top for suptitle
@@ -3781,6 +3846,25 @@ def plot_vep_kde_with_arrows(
         except:
             pass  # If alignment fails, at least they have the same labelpad
     
+    # Set legend location and title (do this LAST, after all other operations)
+    legend = ax.get_legend()
+    if legend is not None:
+        # Get handles and labels - this should work correctly with seaborn
+        handles, labels = ax.get_legend_handles_labels()
+        
+        # Only proceed if we have valid handles and labels
+        if len(handles) > 0 and len(labels) > 0:
+            # Remove the old legend
+            legend.remove()
+            
+            # Re-add legend with user-specified location, preserving all labels
+            new_legend = ax.legend(
+                handles, labels, 
+                title=legend_title, 
+                loc=legend_loc, 
+                **legend_kwargs
+            )
+    
     # Re-apply legend location after tight_layout (tight_layout can reposition it)
     legend = ax.get_legend()
     if legend is not None and legend_loc != "best":
@@ -3796,7 +3880,42 @@ def plot_vep_kde_with_arrows(
             )
 
     if save_path is not None:
-        fig.savefig(save_path, **save_kwargs)
+        # Embed fonts for Illustrator compatibility (only for PDF files)
+        if save_path.lower().endswith('.pdf'):
+            # Save original settings
+            original_pdf_fonttype = plt.rcParams.get('pdf.fonttype', None)
+            original_ps_fonttype = plt.rcParams.get('ps.fonttype', None)
+            original_pdf_compression = plt.rcParams.get('pdf.compression', None)
+            
+            # Set font types for proper embedding (Type 42 = TrueType embedded)
+            plt.rcParams['pdf.fonttype'] = 42
+            plt.rcParams['ps.fonttype'] = 42
+            # Disable compression to ensure fonts are fully embedded
+            plt.rcParams['pdf.compression'] = 0
+            
+            try:
+                # Force PDF backend and save with explicit format
+                from matplotlib.backends.backend_pdf import PdfPages
+                # Use format='pdf' explicitly
+                fig.savefig(save_path, format='pdf', **save_kwargs)
+            finally:
+                # Restore original settings
+                if original_pdf_fonttype is not None:
+                    plt.rcParams['pdf.fonttype'] = original_pdf_fonttype
+                elif 'pdf.fonttype' in plt.rcParams:
+                    del plt.rcParams['pdf.fonttype']
+                    
+                if original_ps_fonttype is not None:
+                    plt.rcParams['ps.fonttype'] = original_ps_fonttype
+                elif 'ps.fonttype' in plt.rcParams:
+                    del plt.rcParams['ps.fonttype']
+                    
+                if original_pdf_compression is not None:
+                    plt.rcParams['pdf.compression'] = original_pdf_compression
+                elif 'pdf.compression' in plt.rcParams:
+                    del plt.rcParams['pdf.compression']
+        else:
+            fig.savefig(save_path, **save_kwargs)
 
     plt.show()
 

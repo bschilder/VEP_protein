@@ -3052,7 +3052,7 @@ def plot_haplotypes_summary(
     save_path=None,
     fig_save_kwargs=utils.FIG_SAVE_KWARGS,
     count_indels_as_one=False,
-    bin_sep=r"$\leq$",
+    bin_sep=r"<",
     show_subplots=(True, True),  # New argument: tuple of bools (left, right)
     show_bar_labels=False,  # Whether to show text labels on top of bars in "k" units
     bar_linewidth=1,

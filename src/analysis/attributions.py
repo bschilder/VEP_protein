@@ -1,4 +1,3 @@
-from re import T
 import torch
 import torch.nn as nn
 import pandas as pd
@@ -8,6 +7,11 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 from scipy.stats import binomtest
 from tqdm import tqdm
+import matplotlib.pyplot as plt
+import seaborn as sns
+import numpy as np
+import matplotlib.patches as mpatches
+import matplotlib.ticker as ticker
 
 import src.utils as utils
 import src.vep_analysis as va
@@ -3343,6 +3347,7 @@ def plot_variant_sensitization_schematic(
     as_formula=False,
     plot_order=[0, 1, 2],
     xlabel_fontsize='medium',
+    ylabel_fontsize='medium',
     ticklabel_fontsize=None
 ):
     """
@@ -3447,6 +3452,9 @@ def plot_variant_sensitization_schematic(
         Whether to show the "Extract Coefficients" arrow and label between the second and third plots, default True.
     xlabel_fontsize : str, float, or None, optional
         Font size for x-axis labels. Can be a string (e.g., 'small', 'medium', 'large') or a numeric value.
+        Default 'medium'. If None, uses matplotlib's default.
+    ylabel_fontsize : str, float, or None, optional
+        Font size for y-axis labels. Can be a string (e.g., 'small', 'medium', 'large') or a numeric value.
         Default 'medium'. If None, uses matplotlib's default.
     ticklabel_fontsize : str, float, or None, optional
         Font size for both x and y-axis tick labels. Can be a string (e.g., 'small', 'medium', 'large') or a numeric value.
@@ -3563,7 +3571,7 @@ def plot_variant_sensitization_schematic(
     )
     # Set aspect ratio for first heatmap
     ax_plot1.set_aspect(aspect_values[0]) 
-    ax_plot1.set_ylabel("Haplotype", fontsize='medium', rotation=90)
+    ax_plot1.set_ylabel("Haplotype", fontsize=ylabel_fontsize, rotation=90)
     ax_plot1.set_xlabel("WT Variant", fontsize=xlabel_fontsize)
     # Title will be set later to ensure consistent height
     ax_plot1.xaxis.set_label_position('top')
@@ -3615,7 +3623,7 @@ def plot_variant_sensitization_schematic(
     ax_plot2.set_aspect(aspect_values[plot2_position]) 
     # Title will be set later to ensure consistent height
     ax_plot2.xaxis.set_label_position('top')
-    ax_plot2.set_ylabel("Haplotype", fontsize='medium', rotation=90)
+    ax_plot2.set_ylabel("Haplotype", fontsize=ylabel_fontsize, rotation=90)
     ax_plot2.set_xlabel("Clinical Variant", fontsize=xlabel_fontsize)
     ax_plot2.xaxis.tick_top()
     
@@ -3677,7 +3685,7 @@ def plot_variant_sensitization_schematic(
     )
     # Set aspect ratio for third heatmap
     ax_plot3.set_aspect(aspect_values[plot3_position])
-    ax_plot3.set_ylabel("WT Variant", fontsize='medium', rotation=90)
+    ax_plot3.set_ylabel("WT Variant", fontsize=ylabel_fontsize, rotation=90)
     ax_plot3.set_xlabel("Clinical Variant", fontsize=xlabel_fontsize)
     # Title will be set later to ensure consistent height
     ax_plot3.xaxis.set_label_position('top')
@@ -4399,11 +4407,7 @@ def plot_wt_clinical_interaction_vs_angstroms(
         plt.show()
     return {'fig': ax.figure, 'ax': ax, 'data': top_interactions}
 
-import matplotlib.pyplot as plt
-import seaborn as sns
-import numpy as np
-import matplotlib.patches as mpatches
-import matplotlib.ticker as ticker
+
 
 def plot_vep_scatter_kde(
     vep_prot, 
@@ -4416,8 +4420,8 @@ def plot_vep_scatter_kde(
     palette = None,
     figsize=(5,5),
     ridge_kwargs=None,  # NOTE: changed default to None, see below
-    ridge_y_label=r"$|\beta_{Clin}|$",
-    wt_ridge_y_label = r"$|\beta_{WT}|$",
+    ridge_y_label=r"$|\beta_{\text{Clin}}|$",
+    wt_ridge_y_label = r"$|\beta_{\text{WT}}|$",
     grid_row_ratios=(3, 1, 1, 1),  # default: [scatter=3, kde=1, wt_ridge=1, clin_ridge=1], ignored if no ridge_df
     grid_spacer=0.07, 
     rasterize=True,
@@ -4426,7 +4430,10 @@ def plot_vep_scatter_kde(
     title_y=None,  # Y position for title (0-1, figure coordinates). If None, auto-calculated based on number of rows
     s=12,  # Point size for the main scatter plot
     show_legend=True,  # If True, show the legend for clinical significance
-    scatter_y_label=None  # Y-axis label for the first scatter plot. If None, uses default based on position_axis
+    scatter_y_label=None,  # Y-axis label for the first scatter plot. If None, uses default based on position_axis
+    scatter_x_label=None,  # X-axis label for the first scatter plot. If None, uses default based on position_axis
+    bottom_x_label=None,  # X-axis label for the bottom row (ridge/interaction plots). If None, uses 'Residue Position' 
+    legend_title="Clinical Significance"
 ):
     """
     Plot scatter + KDE comparing VEP vs. position, with clinical significance colormaps.
@@ -4480,6 +4487,13 @@ def plot_vep_scatter_kde(
         Y-axis label for the first scatter plot. If None, uses default based on position_axis:
         - "Residue Position" when position_axis="y"
         - "VEP" when position_axis="x"
+    scatter_x_label : str, optional
+        X-axis label for the first scatter plot. If None, uses default based on position_axis:
+        - "VEP" when position_axis="y"
+        - "Residue Position" when position_axis="x"
+    ridge_x_label : str, optional
+        X-axis label for the bottom row (ridge/interaction plots). If None, uses 'Residue Position'.
+        Only used when position_axis="x" and ridge_df is provided.
     """
     clinsig_order = ["path", "likely_path", "likely_benign", "benign"]
     if palette is None:
@@ -4605,14 +4619,16 @@ def plot_vep_scatter_kde(
     if position_axis == "y":
         ax_scatter.set_yticks(ticks)
         ax_scatter.set_yticklabels([str(y) for y in ticks], rotation=0)
-        ax_scatter.set_xlabel('VEP', fontsize='medium')
+        x_label = scatter_x_label if scatter_x_label is not None else 'VEP'
+        ax_scatter.set_xlabel(x_label, fontsize='medium')
         y_label = scatter_y_label if scatter_y_label is not None else 'Residue Position'
         ax_scatter.set_ylabel(y_label, fontsize='medium')
         ax_scatter.invert_yaxis()  # so residue # increases downward, as in seq
     else:
         ax_scatter.set_xticks(ticks)
         ax_scatter.set_xticklabels([str(x) for x in ticks], rotation=0)
-        ax_scatter.set_xlabel('Residue Position', fontsize='medium')
+        x_label = scatter_x_label if scatter_x_label is not None else 'Residue Position'
+        ax_scatter.set_xlabel(x_label, fontsize='medium')
         y_label = scatter_y_label if scatter_y_label is not None else 'VEP'
         ax_scatter.set_ylabel(y_label, fontsize='medium')
         ax_scatter.invert_xaxis()  # so residue # increases right-to-left
@@ -4628,7 +4644,7 @@ def plot_vep_scatter_kde(
         ]
         ax_scatter.legend(
             handles=handles, 
-            title="Clinical Significance", 
+            title=legend_title, 
             frameon=False,
             loc='center', 
             bbox_to_anchor=bbox_to_anchor
@@ -4726,8 +4742,8 @@ def plot_vep_scatter_kde(
                 zorder=2
             )
             scatter_args.update(wt_ridgep)
-            sns.scatterplot(**scatter_args)
-            ax_wt_interaction.set_xlabel('Residue Position', fontsize='medium')
+            sns.scatterplot(**scatter_args) 
+            ax_wt_interaction.set_xlabel(bottom_x_label, fontsize='medium')
             ax_wt_interaction.set_ylabel(wt_ridge_y_label, fontsize='medium')
             ax_wt_interaction.set_xlim(vep_prot[position_col].min(), vep_prot[position_col].max())
         else:
@@ -4741,7 +4757,7 @@ def plot_vep_scatter_kde(
             )
             scatter_args.update(wt_ridgep)
             sns.scatterplot(**scatter_args)
-            ax_wt_interaction.set_ylabel('Residue Position', fontsize='medium')
+            ax_wt_interaction.set_ylabel(bottom_x_label, fontsize='medium')
             ax_wt_interaction.set_xlabel(wt_ridge_y_label, fontsize='medium')
             ax_wt_interaction.set_ylim(vep_prot[position_col].min(), vep_prot[position_col].max()) 
 
@@ -4825,8 +4841,8 @@ def plot_vep_scatter_kde(
                 zorder=2
             )
             scatter_args.update(ridgep)
-            sns.scatterplot(**scatter_args)
-            ax_interaction.set_xlabel('Residue Position', fontsize='medium')
+            sns.scatterplot(**scatter_args) 
+            ax_interaction.set_xlabel(bottom_x_label, fontsize='medium')
             ax_interaction.set_ylabel(ridge_y_label, fontsize='medium')
             ax_interaction.set_xlim(vep_prot[position_col].min(), vep_prot[position_col].max())
         else:
@@ -4840,7 +4856,7 @@ def plot_vep_scatter_kde(
             )
             scatter_args.update(ridgep)
             sns.scatterplot(**scatter_args)
-            ax_interaction.set_ylabel('Residue Position', fontsize='medium')
+            ax_interaction.set_ylabel(bottom_x_label, fontsize='medium')
             ax_interaction.set_xlabel(ridge_y_label, fontsize='medium')
             ax_interaction.set_ylim(vep_prot[position_col].min(), vep_prot[position_col].max()) 
 
