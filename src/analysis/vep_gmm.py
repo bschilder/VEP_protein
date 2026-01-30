@@ -707,6 +707,9 @@ def plot_vep_histograms_with_boundaries(
     n_yticks=None,
     show_vertical_lines=True,
     show_vertical_line_labels=True,
+    show_vertical_line_label_edges=True,
+    vertical_line_label_fontsize="medium",
+    vertical_line_label_bbox_alpha=0.95,
     shared_yaxis_label=False,
     shared_yaxis_label_x=-0.25
 ):
@@ -720,8 +723,9 @@ def plot_vep_histograms_with_boundaries(
         DataFrame containing VEP scores and related columns.
     target_sites : pd.DataFrame
         A list of sites to plot.
-    boundary_crossing_df : pd.DataFrame
-        DataFrame with decision boundaries (must have "protein", "mutant", "decision_boundary").
+    boundary_crossing_df : pd.DataFrame or scalar, optional
+        If a DataFrame: decision boundaries per gene/mutant (must have gene_col, mutant_col,
+        and "decision_boundary"). If a number: draw a single boundary at this value for every facet.
     bins : int
         Number of histogram bins.
     n_facets : int
@@ -828,8 +832,18 @@ def plot_vep_histograms_with_boundaries(
         with MaxNLocator. Uses MaxNLocator to automatically choose nice tick positions.
     show_vertical_lines : bool, default=True
         Whether to show vertical lines for VEP_REF, VEP_mean, and decision_boundary.
-    show_vertical_line_labels : bool, default=True
+    show_vertical_line_labels : bool or list of 3 bools or dict, default=True
         Whether to show text labels next to the vertical lines.
+        If bool: show all labels or none. If list of 3 bools: [VEP_ref, VEP_mean, Boundary].
+        If dict: keys "VEP_ref", "VEP_mean", "Boundary" with bool values.
+    show_vertical_line_label_edges : bool, default=True
+        Whether to draw an outline/edge around the vertical line label boxes.
+        If False, labels have a white background with no visible border.
+    vertical_line_label_fontsize : str or float, default="medium"
+        Font size for the vertical line labels (Boundary, VEP_ref, VEP_mean).
+        Can be a string (e.g. "small", "medium", "large") or a numeric point size.
+    vertical_line_label_bbox_alpha : float, default=0.95
+        Alpha (opacity) of the label background box for vertical line labels (0=transparent, 1=opaque).
     shared_yaxis_label : bool, default=False
         If True, only show y-axis label on the leftmost column(s) of subplots,
         centered vertically. If False, show y-axis label on all subplots.
@@ -897,14 +911,14 @@ def plot_vep_histograms_with_boundaries(
                     raise ValueError("Could not extract superpopulation data. Ensure 'top_superpopulation' column exists or can be added via hs.add_haplotype_freqs()")
 
     if boundary_crossing_df is not None:
-        # Merge with boundary_crossing_df, but also get decision boundaries for all proteins
-        # First, create a protein-level decision boundary mapping
-        protein_boundaries = boundary_crossing_df.groupby(gene_col)['decision_boundary'].first().to_dict()
-        # Add decision boundary for each protein
-        plot_df['decision_boundary'] = plot_df[gene_col].map(protein_boundaries)
-    
-        # Also merge the full boundary_crossing_df for additional info if available
-        plot_df = plot_df.merge(boundary_crossing_df, on=[gene_col, mutant_col], how="left", suffixes=('', '_crossing'))
+        if np.isscalar(boundary_crossing_df):
+            # Single numeric boundary: draw at this value for every facet
+            plot_df["decision_boundary"] = float(boundary_crossing_df)
+        else:
+            # DataFrame: merge per-gene/mutant decision boundaries
+            protein_boundaries = boundary_crossing_df.groupby(gene_col)['decision_boundary'].first().to_dict()
+            plot_df['decision_boundary'] = plot_df[gene_col].map(protein_boundaries)
+            plot_df = plot_df.merge(boundary_crossing_df, on=[gene_col, mutant_col], how="left", suffixes=('', '_crossing'))
 
     cmap = mpl.colors.LinearSegmentedColormap.from_list("red_blue", palette)
 
@@ -1041,35 +1055,55 @@ def plot_vep_histograms_with_boundaries(
         valign = "center"
         xlabels = []
 
-        # Prepare label info in top-down order
+        # Prepare label info: use mathtext for VEP_ref / VEP_mean so subscripts render correctly in one text call
+        # label_key: "Boundary" | "VEP_ref" | "VEP_mean" for list-style show_vertical_line_labels
         if decision_boundary is not None and pd.notnull(decision_boundary):
-            xlabels.append((decision_boundary, r"Boundary", "red"))
+            xlabels.append((decision_boundary, "Boundary", "red", "Boundary"))
         if vep_ref is not None and pd.notnull(vep_ref):
-            xlabels.append((vep_ref, r"$VEP_{\text{ref}}$", "grey"))
+            xlabels.append((vep_ref, r"$VEP_{\mathrm{ref}}$", "grey", "VEP_ref"))
         if vep_mean is not None and pd.notnull(vep_mean):
-            xlabels.append((vep_mean, r"$VEP_{\text{mean}}$", "goldenrod"))
-      
+            xlabels.append((vep_mean, r"$VEP_{\mathrm{mean}}$", "goldenrod", "VEP_mean"))
 
-        # Draw lines and staggered labels from top downward
-        for i, (xpos, label, color) in enumerate(xlabels):
-            if show_vertical_lines:
-                ax.axvline(xpos, color=color, linestyle="--", label=label)
-            if show_vertical_line_labels:
-                ax.text(
-                    xpos + relative_x_offset,
-                    y_start_frac - dy_frac * i,
-                    label,
-                    color=color,
-                    rotation=0,
-                    va=valign,
-                    ha=halign,
-                    fontsize="medium",
-                    transform=ax.get_xaxis_transform(),
-                    bbox=dict(facecolor="white", alpha=.95, edgecolor=color, boxstyle="round,pad=0.1")
+        # List order: [VEP_ref, VEP_mean, Boundary]
+        _label_key_to_idx = {"VEP_ref": 0, "VEP_mean": 1, "Boundary": 2}
+
+        # Single text call per label; mathtext gives proper subscripts and all characters render
+        _orig_fontset = plt.rcParams.get("mathtext.fontset", None)
+        plt.rcParams["mathtext.fontset"] = "dejavusans"
+        try:
+            for i, (xpos, label, color, label_key) in enumerate(xlabels):
+                if show_vertical_lines:
+                    ax.axvline(xpos, color=color, linestyle="--", label=label)
+                _show_this = (
+                    show_vertical_line_labels[label_key] if isinstance(show_vertical_line_labels, dict) else
+                    show_vertical_line_labels[_label_key_to_idx[label_key]] if isinstance(show_vertical_line_labels, (list, tuple)) else
+                    show_vertical_line_labels
                 )
+                if _show_this:
+                    bbox_kw = dict(
+                        facecolor="white", alpha=vertical_line_label_bbox_alpha, boxstyle="round,pad=0.1",
+                        edgecolor=color if show_vertical_line_label_edges else "none",
+                    )
+                    ax.text(
+                        xpos + relative_x_offset,
+                        y_start_frac - dy_frac * i,
+                        label,
+                        color=color,
+                        rotation=0,
+                        va=valign,
+                        ha=halign,
+                        fontsize=vertical_line_label_fontsize,
+                        transform=ax.get_xaxis_transform(),
+                        bbox=bbox_kw,
+                    )
+        finally:
+            if _orig_fontset is not None:
+                plt.rcParams["mathtext.fontset"] = _orig_fontset
+            elif "mathtext.fontset" in plt.rcParams:
+                del plt.rcParams["mathtext.fontset"]
 
-        handles, labels = ax.get_legend_handles_labels()
-        by_label = dict(zip(labels, handles))
+        handles, labels_leg = ax.get_legend_handles_labels()
+        by_label = dict(zip(labels_leg, handles))
         ax.legend(by_label.values(), by_label.keys())
 
     g = sns.FacetGrid(

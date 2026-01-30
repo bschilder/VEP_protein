@@ -3517,6 +3517,10 @@ def _draw_vep_direction_arrows_chunky(ax, fig,
             transform=ax.transAxes, zorder=11
         )
 
+_VLINE_DEFAULT_SENTINEL = object()
+_DEFAULT_VLINE_KWARGS = {"x": 0.2, "color": "gray", "linewidth": 1.5, "alpha": 0.7, "linestyle": "-"}
+
+
 def plot_vep_kde_with_arrows(
     vep_df, 
     vep_col="VEP",
@@ -3527,7 +3531,7 @@ def plot_vep_kde_with_arrows(
     y_label="Proportion",  
     legend_title="Clinical Significance",
     palette=utils.get_clinsig_palette(),
-    hline_x=None,
+    vline_kwargs=None,
     figsize=(8, 5),
     save_path=None, 
     kde_kwargs={"cut":0},
@@ -3565,8 +3569,9 @@ def plot_vep_kde_with_arrows(
         Keyword arguments for the plot.
     save_kwargs : dict
         Keyword arguments for the save function.
-    hline_x : float
-        X position of the horizontal line.
+    vline_kwargs : dict or None, optional
+        Default is a gray vertical line at x=0.2. Pass None to omit the line.
+        If a dict, draw with ax.axvline(); keys: x, color, linewidth (or width), alpha, linestyle (or type).
     x_label : str
         Label for the x-axis.
     y_label : str
@@ -3585,8 +3590,8 @@ def plot_vep_kde_with_arrows(
         If True, format the legend as #.#k.
     k_precision : int
         Number of decimal places for k-format.
-    legend_loc : str or int, optional
-        Location of the legend (default: "best").
+    legend_loc : str or int or None, optional
+        Location of the legend (default: "best"). If None, the legend is omitted.
     legend_kwargs : dict or None, optional
         Additional keyword arguments for ax.legend().
     flip_xaxis : bool, optional
@@ -3609,8 +3614,9 @@ def plot_vep_kde_with_arrows(
     hist_y_format : str or None, optional
         Format for histogram y-axis units: None for raw units, "k" for thousands, "m" for millions (default: "k").
         Only used when add_histogram=True.
-    arrow_kwargs : dict, optional
+    arrow_kwargs : dict or None, optional
         Keyword arguments for the _draw_vep_direction_arrows function (default: {}).
+        If None, the direction arrows are not drawn.
     extend_kde_to_outliers : bool, optional
         If True, extend the KDE plot to show outliers by adding boundary points at xlim extremes.
         This ensures the KDE covers the full range visible in the histogram (default: False).
@@ -3714,8 +3720,18 @@ def plot_vep_kde_with_arrows(
         ax=ax,
         **kde_kwargs
     )
-    if hline_x is not None:
-        ax.axvline(x=hline_x, color='black', linestyle='--', linewidth=2, alpha=1)
+    # Vertical reference line: default gray line at x=0.2; pass vline_kwargs=None to omit
+    _vline = dict(_DEFAULT_VLINE_KWARGS) if vline_kwargs is _VLINE_DEFAULT_SENTINEL else vline_kwargs
+    if _vline is not None:
+        vline_opts = dict(_DEFAULT_VLINE_KWARGS)
+        vline_opts.update((k, v) for k, v in _vline.items() if v is not None)
+        if 'type' in vline_opts:
+            vline_opts['linestyle'] = vline_opts.pop('type')
+        if 'width' in vline_opts:
+            vline_opts['linewidth'] = vline_opts.pop('width')
+        x_pos = vline_opts.pop('x', None)
+        if x_pos is not None:
+            ax.axvline(x=x_pos, **vline_opts)
     ax.set_xlabel(x_label)
     ax.set_ylabel(y_label)
     
@@ -3801,13 +3817,10 @@ def plot_vep_kde_with_arrows(
     # Ensure xlim is set on KDE axis after plotting (in case seaborn changed it)
     ax.set_xlim(xlim_min, xlim_max)
 
-    _draw_vep_direction_arrows(ax, palette,reverse=flip_xaxis, **arrow_kwargs)
-
-    # Flip the x-axis if requested
-    if flip_xaxis:
-        ax.invert_xaxis()
-        if add_histogram:
-            ax_hist.invert_xaxis()
+    if arrow_kwargs is not None:
+        # Arrows are drawn in data coords; axis is inverted later when flip_xaxis. reverse=True draws
+        # pathogenic left in data → left on screen when not flipped, right on screen when flipped.
+        _draw_vep_direction_arrows(ax, palette, reverse=True, **arrow_kwargs)
     
     # Re-enforce xlim after all operations to ensure it's based on actual data range
     ax.set_xlim(xlim_min, xlim_max)
@@ -3849,54 +3862,49 @@ def plot_vep_kde_with_arrows(
     # Set legend location and title (do this LAST, after all other operations)
     legend = ax.get_legend()
     if legend is not None:
-        # Get handles and labels - this should work correctly with seaborn
-        handles, labels = ax.get_legend_handles_labels()
-        
-        # Only proceed if we have valid handles and labels
-        if len(handles) > 0 and len(labels) > 0:
-            # Remove the old legend
+        if legend_loc is None:
             legend.remove()
-            
-            # Re-add legend with user-specified location, preserving all labels
-            new_legend = ax.legend(
-                handles, labels, 
-                title=legend_title, 
-                loc=legend_loc, 
-                **legend_kwargs
-            )
+        else:
+            # Get handles and labels - this should work correctly with seaborn
+            handles, labels = ax.get_legend_handles_labels()
+            if len(handles) > 0 and len(labels) > 0:
+                legend.remove()
+                new_legend = ax.legend(
+                    handles, labels,
+                    title=legend_title,
+                    loc=legend_loc,
+                    **legend_kwargs
+                )
     
     # Re-apply legend location after tight_layout (tight_layout can reposition it)
     legend = ax.get_legend()
-    if legend is not None and legend_loc != "best":
-        # Get handles and labels
+    if legend is not None and legend_loc is not None and legend_loc != "best":
         handles, labels = ax.get_legend_handles_labels()
         if len(handles) > 0 and len(labels) > 0:
             legend.remove()
             ax.legend(
-                handles, labels, 
-                title=legend_title, 
-                loc=legend_loc, 
+                handles, labels,
+                title=legend_title,
+                loc=legend_loc,
                 **legend_kwargs
             )
 
+    # Flip the x-axis last so set_xlim/tight_layout don't undo it
+    if flip_xaxis:
+        ax.invert_xaxis()
+        if add_histogram:
+            ax_hist.invert_xaxis()
+
     if save_path is not None:
-        # Embed fonts for Illustrator compatibility (only for PDF files)
+        # Embed fonts in PDF so it can be edited later (e.g. in Illustrator) without missing fonts
         if save_path.lower().endswith('.pdf'):
-            # Save original settings
             original_pdf_fonttype = plt.rcParams.get('pdf.fonttype', None)
             original_ps_fonttype = plt.rcParams.get('ps.fonttype', None)
             original_pdf_compression = plt.rcParams.get('pdf.compression', None)
-            
-            # Set font types for proper embedding (Type 42 = TrueType embedded)
-            plt.rcParams['pdf.fonttype'] = 42
+            plt.rcParams['pdf.fonttype'] = 42   # 42 = TrueType embedded
             plt.rcParams['ps.fonttype'] = 42
-            # Disable compression to ensure fonts are fully embedded
-            plt.rcParams['pdf.compression'] = 0
-            
+            plt.rcParams['pdf.compression'] = 0  # avoid subsetting/compression that can break editing
             try:
-                # Force PDF backend and save with explicit format
-                from matplotlib.backends.backend_pdf import PdfPages
-                # Use format='pdf' explicitly
                 fig.savefig(save_path, format='pdf', **save_kwargs)
             finally:
                 # Restore original settings
