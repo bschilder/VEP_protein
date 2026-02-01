@@ -4339,7 +4339,35 @@ def plot_categorical_entropy(
     **kwargs
 ):
     """
-    Plots entropy (categorical cross-entropy) for a categorical column, grouped by a chosen category.
+    Plots Shannon entropy of a categorical column, grouped by a chosen category.
+
+    How it works
+    -------------
+    For each combination of ``groupby_cat`` (e.g. clinical significance) and
+    ``subgroupby`` (e.g. site), the function builds the empirical distribution
+    of ``categorical_col`` (e.g. predicted variant effect class). It then
+    computes the entropy of that distribution. High entropy means predictions
+    are spread across many categories (more uncertainty/variety); low entropy
+    means predictions concentrate on one or few categories (more agreement).
+    The plot shows the mean entropy (and SEM) across the ``subgroupby`` units
+    for each ``groupby_cat``, so you can compare how "spread out" predicted
+    classes are across clinical significance groups.
+
+    Mathematical formulation
+    -----------------------
+    For each group (c, s) with category c and subgroup s, let n_k be the count
+    of rows in category k of ``categorical_col``. The empirical probabilities
+    are p_k = n_k / N with N = sum_k n_k. The entropy (in bits) is:
+
+        H(c, s) = - sum_{k=1}^{K} p_k * log2(p_k)
+
+    with the convention 0*log(0) = 0. This is Shannon entropy in base 2.
+    The bar plot displays, for each ``groupby_cat`` value c:
+
+        mean_c = (1/|S_c|) * sum_{s in S_c} H(c, s)
+        sem_c  = std(H(c, ·)) / sqrt(|S_c|)
+
+    where S_c is the set of subgroup values for that category.
 
     Parameters:
     -----------
@@ -4383,7 +4411,9 @@ def plot_categorical_entropy(
 
     Returns:
     --------
-    (fig, ax, agg_df, entropy_df)
+    dict
+        With keys ``'fig'`` (matplotlib Figure), ``'ax'`` (Axes), ``'data'``
+        (aggregated DataFrame of mean and sem per ``groupby_cat``).
     """
 
     plot_kwargs = plot_kwargs or {}
