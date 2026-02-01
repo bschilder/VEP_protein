@@ -4318,8 +4318,8 @@ def plot_categorical_entropy(
     figsize=(2.5, 5),
     label_dict=None,
     xlabel="Clinical Significance",
-    ylabel="Categorical Cross-entropy",
-    title="Categorical Cross-entropy of\nPredicted Variant Effect Class",
+    ylabel="Entropy",
+    title="Entropy of\nPredicted Variant Effect Class",
     show_legend=False,
     legend_loc=None,
     legend_bbox_to_anchor=None,
@@ -4421,17 +4421,17 @@ def plot_categorical_entropy(
     errorbar_kwargs = errorbar_kwargs or {}
     despine_kwargs = despine_kwargs or {}
 
-    # Calculate entropy (categorical cross-entropy) of predicted class per group
+    # Calculate entropy (entropy) of predicted class per group
     entropy_df = df.groupby([groupby_cat, subgroupby], observed=True).apply(
         lambda x: entropy(x[categorical_col].value_counts(normalize=True), base=2)
-    ).reset_index(name="categorical_cross_entropy")
+    ).reset_index(name="entropy")
     
     # Sort if required
     if sort_cat_func is not None:
         entropy_df = sort_cat_func(entropy_df, clinsig_col=groupby_cat)
 
     # Compute mean & sem per group
-    agg_df = entropy_df.groupby(groupby_cat, observed=True, sort=False)["categorical_cross_entropy"].agg(['mean', 'sem']).reset_index()
+    agg_df = entropy_df.groupby(groupby_cat, observed=True, sort=False)["entropy"].agg(['mean', 'sem']).reset_index()
     if sort_cat_func is not None:
         agg_df = sort_cat_func(agg_df, clinsig_col=groupby_cat)
 
@@ -4494,7 +4494,7 @@ def plot_categorical_entropy(
             pairs=pairs,
             data=entropy_df,
             x=groupby_cat,
-            y="categorical_cross_entropy",
+            y="entropy",
             order=cat_list,
         )
         annotator.configure(
