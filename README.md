@@ -1,6 +1,8 @@
-# VEP_protein
+# VEP protein
 
 Using protein sequence models to compute Variant Effect Predictions (VEP) across biobank-scale populations.
+
+![fig1a](manuscript/fig/fig1a.png)
 
 ## Overview
 
@@ -36,10 +38,6 @@ Conda environment files live in **`conda/`**. Use the environment that matches w
 | **esm2** | `conda/esm2.yml` | **Main VEP workflow**: ESM2 models, VEP pipeline, haplosaurus, ProteinGym, most analysis notebooks. **Start here for the VEP tutorial.** |
 | **esm3** | `conda/esm3.yml` | ESM3 models and related notebooks. |
 | **esmfold** | `conda/esmfold.yml` | ESMFold structure prediction (separate Python/toolchain). |
-<!-- | **evolocity** | `conda/evolocity.yml` | Evolocity and Scanpy-based analyses. | -->
-| **gvl** | `conda/gvl.yml` | Genvarloader workflows. |
-<!-- | **rapids** | `conda/rapids.yml` | RAPIDS GPU-accelerated workflows. |
-| **snakemake** | `conda/snakemake.yml` | Snakemake pipelines (e.g. gffutils). | -->
 
 **Quick start:**
 
@@ -78,7 +76,6 @@ Then set **`DATA_DIR`** in [`src/config.py`](src/config.py) to the path where yo
 | **`docs/`** | Method and metric write-ups (e.g. interactions). |
 | **`scripts/`** | Shell scripts for batch runs (e.g. `vep_pipeline.sh`, haplosaurus/HGDP). |
 | **`tests/`** | Pytest tests for haplotype ref, preprocessed index, ID mapping, mutation index, MSA query. |
-| **`metadata/`** | IGSR population and sample metadata. |
 | **`results/`** | Outputs (e.g. plots, parquet). |
 
 Data (VEP outputs, caches, etc.) is written under **`DATA_DIR`** as set in `src/config.py`; the repo itself stays code-only.
@@ -123,6 +120,7 @@ Notebooks are the main way to reproduce and explore the analyses.
 | [1KG.ipynb](notebooks/1KG.ipynb), [1KG_wt.ipynb](notebooks/1KG_wt.ipynb) | 1000 Genomes–based analyses. |
 | [HGDP.ipynb](notebooks/HGDP.ipynb) | HGDP population analyses. |
 | [ProteinGym.ipynb](notebooks/ProteinGym.ipynb) | ProteinGym benchmarks. |
+| [Zenodo.ipynb](notebooks/Zenodo.ipynb) | Upload/download manuscript data to Zenodo (personalizedVEP record). |
 | [ESM3.ipynb](notebooks/ESM3.ipynb) | ESM3 model usage. |
 | [Evo2_figures.ipynb](notebooks/Evo2_figures.ipynb) | Evo2-related figures. |
 | [evolocity.ipynb](notebooks/evolocity.ipynb) | Evolocity analysis (use `conda/evolocity.yml`). |

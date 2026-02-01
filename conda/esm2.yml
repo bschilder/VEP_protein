@@ -34,3 +34,6 @@ dependencies:
         - ensembl-rest
         - gprofiler-official
         - script-utils
+        - python-dotenv
+        # zenodo_client (for src/zenodo.py; requires Python >=3.10)
+        # - zenodo_client
