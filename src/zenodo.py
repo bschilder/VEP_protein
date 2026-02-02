@@ -22,22 +22,6 @@ import time
 import zipfile
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Optional
-
-# Load .env so ZENODO_API_TOKEN is available (zenodo_client reads it from env)
-def _load_dotenv():
-    try:
-        from dotenv import load_dotenv
-    except ImportError:
-        return
-    cwd = pathlib.Path.cwd()
-    for d in [cwd, cwd.parent]:
-        env_file = d / ".env"
-        if env_file.is_file():
-            load_dotenv(env_file)
-            break
-
-_load_dotenv()
-
 import requests
 from tqdm.auto import tqdm
 from zenodo_client import Creator, Metadata, Zenodo, ensure_zenodo, update_zenodo
@@ -51,6 +35,87 @@ DEFAULT_UPLOAD_DIR = os.path.join("results", "data")
 
 # Pystow module used by zenodo_client to store deposition id (for ensure compatibility)
 ZENODO_PYSTOW_MODULE = "zenodo_client"
+
+
+
+# Load .env so ZENODO_API_TOKEN is available (zenodo_client reads it from env)
+def _load_dotenv():
+    try:
+        from dotenv import load_dotenv
+    except ImportError:
+        return
+    cwd = pathlib.Path.cwd()
+    # Project root = parent of directory containing this file (src/)
+    try:
+        this_dir = pathlib.Path(__file__).resolve().parent
+        project_root = this_dir.parent
+    except Exception:
+        project_root = None
+    for d in [cwd, cwd.parent, project_root]:
+        if d is None:
+            continue
+        env_file = d / ".env"
+        if env_file.is_file():
+            load_dotenv(env_file)
+            break
+
+_load_dotenv()
+
+def _find_dotenv_from_package() -> Optional[pathlib.Path]:
+    """Return path to first .env found walking up from this module's directory."""
+    try:
+        current = pathlib.Path(__file__).resolve().parent
+    except Exception:
+        return None
+    while current != current.parent:
+        env_file = current / ".env"
+        if env_file.is_file():
+            return env_file
+        current = current.parent
+    return None
+
+
+def _load_dotenv_from_package():
+    """Load .env by walking up from this module's directory or cwd (e.g. notebooks/). Use when token is missing."""
+    candidates: list[pathlib.Path] = []
+    env_from_package = _find_dotenv_from_package()
+    if env_from_package is not None:
+        candidates.append(env_from_package)
+    cwd = pathlib.Path.cwd()
+    for d in (cwd, cwd.parent):
+        p = d / ".env"
+        if p.is_file() and p not in candidates:
+            candidates.append(p)
+    for env_file in candidates:
+        try:
+            from dotenv import load_dotenv
+            load_dotenv(env_file, override=True)
+        except ImportError:
+            _parse_env_file(env_file)
+        if os.environ.get("ZENODO_API_TOKEN") or os.environ.get("ZENODO_SANDBOX_API_TOKEN"):
+            return
+
+
+def _parse_env_file(env_path: pathlib.Path) -> None:
+    """Manually parse .env and set ZENODO_* in os.environ (no python-dotenv required)."""
+    want = ("ZENODO_API_TOKEN", "ZENODO_SANDBOX_API_TOKEN")
+    try:
+        with open(env_path, encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line or line.startswith("#"):
+                    continue
+                if "=" not in line:
+                    continue
+                key, _, value = line.partition("=")
+                key = key.strip().rstrip("export ")
+                if key in want:
+                    value = value.strip().strip("'\"").strip()
+                    if value:
+                        os.environ[key] = value
+    except OSError:
+        pass
+
 
 
 def _base_url(sandbox: bool) -> str:
@@ -92,14 +157,25 @@ def get_token(sandbox: bool = False) -> Optional[str]:
     Return Zenodo API token from environment (or .env).
     When sandbox=True, prefers ZENODO_SANDBOX_API_TOKEN, then ZENODO_API_TOKEN.
     When sandbox=False, prefers ZENODO_API_TOKEN, then ZENODO_SANDBOX_API_TOKEN.
+    If not set, tries loading .env from the package directory (parent of this file) upward.
     """
-    if sandbox:
-        return os.environ.get("ZENODO_SANDBOX_API_TOKEN") or os.environ.get("ZENODO_API_TOKEN")
-    return os.environ.get("ZENODO_API_TOKEN") or os.environ.get("ZENODO_SANDBOX_API_TOKEN")
+    out = (
+        os.environ.get("ZENODO_SANDBOX_API_TOKEN") or os.environ.get("ZENODO_API_TOKEN")
+        if sandbox
+        else os.environ.get("ZENODO_API_TOKEN") or os.environ.get("ZENODO_SANDBOX_API_TOKEN")
+    )
+    if not out:
+        _load_dotenv_from_package()
+        out = (
+            os.environ.get("ZENODO_SANDBOX_API_TOKEN") or os.environ.get("ZENODO_API_TOKEN")
+            if sandbox
+            else os.environ.get("ZENODO_API_TOKEN") or os.environ.get("ZENODO_SANDBOX_API_TOKEN")
+        )
+    return out
 
 
 def _normalize_upload_dir(dir_path: Optional[str | pathlib.Path] = None, create_if_missing: bool = False) -> pathlib.Path:
-    path = pathlib.Path(dir_path or DEFAULT_UPLOAD_DIR)
+    path = pathlib.Path(dir_path or DEFAULT_UPLOAD_DIR).expanduser()
     if not path.is_absolute():
         path = pathlib.Path.cwd() / path
     if not path.exists():
@@ -154,7 +230,7 @@ def _upload_file_to_bucket(
     session: Optional[requests.Session] = None,
 ) -> None:
     """Upload a single file to a Zenodo bucket. Retries on timeout/connection errors."""
-    path = pathlib.Path(file_path)
+    path = pathlib.Path(file_path).expanduser()
     with open(path, "rb") as f:
         data = f.read()
     # Timeout: use provided value, or scale with size (min 5 min, ~60 s per MB, max 1 h)
@@ -516,6 +592,89 @@ def upload_to_draft(
     return dep
 
 
+def _resolve_items_to_entries(
+    items: dict[str, str | pathlib.Path],
+) -> list[tuple[str, list[tuple[str, pathlib.Path]]]]:
+    """
+    Resolve items to per-entry lists of (arcname, src_path). Returns a list of
+    (arc_prefix, entries) so callers can report or build the zip.
+    """
+    result: list[tuple[str, list[tuple[str, pathlib.Path]]]] = []
+    for arc_prefix, local in items.items():
+        local_p = pathlib.Path(local).expanduser()
+        arc_prefix_n = arc_prefix.replace(os.sep, "/").rstrip("/")
+        entries: list[tuple[str, pathlib.Path]] = []
+        if "*" in str(local_p):
+            if "**" in str(local_p):
+                parts = str(local_p).split("**", 1)
+                base = pathlib.Path(parts[0].rstrip(os.sep)).expanduser()
+                pattern = parts[1].lstrip(os.sep) if len(parts) > 1 else "*"
+                for f in base.rglob(pattern):
+                    if f.is_file():
+                        rel = f.relative_to(base)
+                        arc = f"{arc_prefix_n}/{rel}".replace(os.sep, "/")
+                        entries.append((arc, f))
+            else:
+                parent = local_p.parent
+                pattern = local_p.name
+                for f in parent.glob(pattern):
+                    if f.is_file():
+                        rel = f.relative_to(parent)
+                        arc = f"{arc_prefix_n}/{rel}".replace(os.sep, "/")
+                        entries.append((arc, f))
+        else:
+            local_p = local_p.resolve()
+            if local_p.is_file():
+                entries.append((arc_prefix_n, local_p))
+            elif local_p.is_dir():
+                for f in local_p.rglob("*"):
+                    if f.is_file():
+                        rel = f.relative_to(local_p)
+                        arc = f"{arc_prefix_n}/{rel}".replace(os.sep, "/")
+                        entries.append((arc, f))
+            else:
+                raise FileNotFoundError(f"Not a file or directory: {local_p}")
+        result.append((arc_prefix_n, entries))
+    return result
+
+
+def _format_size(n_bytes: int) -> str:
+    """Human-readable size (e.g. 1.2 GB)."""
+    for unit in ("B", "KB", "MB", "GB", "TB"):
+        if n_bytes < 1024:
+            return f"{n_bytes:.1f} {unit}" if unit != "B" else f"{n_bytes} B"
+        n_bytes /= 1024
+    return f"{n_bytes:.1f} PB"
+
+
+def report_zip_items(
+    items: dict[str, str | pathlib.Path],
+    verbose: bool = True,
+) -> dict[str, tuple[int, int]]:
+    """
+    Resolve items and report how many files and total size per entry, before
+    building or uploading. Use this to inspect what will go into the zip.
+
+    Returns:
+        Dict mapping each zip path (item key) to (n_files, total_bytes).
+    """
+    resolved = _resolve_items_to_entries(items)
+    stats: dict[str, tuple[int, int]] = {}
+    total_files = 0
+    total_bytes = 0
+    for arc_prefix, entries in resolved:
+        n = len(entries)
+        size = sum(p.stat().st_size for _, p in entries)
+        stats[arc_prefix] = (n, size)
+        total_files += n
+        total_bytes += size
+        if verbose:
+            tqdm.write(f"  {arc_prefix}: {n} file(s), {_format_size(size)}")
+    if verbose:
+        tqdm.write(f"  TOTAL: {total_files} file(s), {_format_size(total_bytes)}")
+    return stats
+
+
 def build_zip_from_items(
     items: dict[str, str | pathlib.Path],
     zip_path: str | pathlib.Path,
@@ -523,13 +682,17 @@ def build_zip_from_items(
 ) -> pathlib.Path:
     """
     Build a zip file from a dict mapping paths inside the zip to local files or dirs.
+    Directory contents retain their subfolder structure by default (relative paths
+    under the directory are preserved in the zip). Reports file count and size
+    per item before creating the zip when verbose=True.
 
     Args:
         items: Dict[zip_path, local_path]. Keys are paths inside the zip (e.g. "data/foo.parquet"
-            or "plots/"). Values are local file or directory paths. If local_path is a directory,
-            all its contents are added under zip_path/ in the zip.
+            or "plots/"). Values are local file or directory paths, or glob patterns (e.g.
+            "results/data/*.parquet", "results/**/*.png"). Glob matches retain subfolder structure.
+            If local_path is a directory, all its contents are added under zip_path/ in the zip.
         zip_path: Path to write the zip file (created or overwritten).
-        verbose: If True, show progress with tqdm.
+        verbose: If True, show per-item report then progress with tqdm.
 
     Returns:
         Resolved path to the written zip file.
@@ -538,24 +701,22 @@ def build_zip_from_items(
         build_zip_from_items({
             "data/results.parquet": "results/data/results.parquet",
             "plots/": "results/plots/",
+            "data/": "results/data/*.parquet",   # glob: all parquet under results/data
         }, "archive.zip")
     """
-    zip_path = pathlib.Path(zip_path)
+    zip_path = pathlib.Path(zip_path).expanduser()
     zip_path.parent.mkdir(parents=True, exist_ok=True)
-    entries = []
-    for arc_prefix, local in items.items():
-        local = pathlib.Path(local).resolve()
-        arc_prefix = arc_prefix.replace(os.sep, "/").rstrip("/")
-        if local.is_file():
-            entries.append((arc_prefix, local, None))
-        elif local.is_dir():
-            for f in local.rglob("*"):
-                if f.is_file():
-                    rel = f.relative_to(local)
-                    arc = f"{arc_prefix}/{rel}".replace(os.sep, "/")
-                    entries.append((arc, f, None))
-        else:
-            raise FileNotFoundError(f"Not a file or directory: {local}")
+    resolved = _resolve_items_to_entries(items)
+    if verbose:
+        tqdm.write("Zip contents (before build):")
+        total_files, total_bytes = 0, 0
+        for arc_prefix, pairs in resolved:
+            n, size = len(pairs), sum(p.stat().st_size for _, p in pairs)
+            total_files += n
+            total_bytes += size
+            tqdm.write(f"  {arc_prefix}: {n} file(s), {_format_size(size)}")
+        tqdm.write(f"  TOTAL: {total_files} file(s), {_format_size(total_bytes)}")
+    entries = [(arc, src, None) for _, pairs in resolved for arc, src in pairs]
     it = tqdm(entries, desc="Building zip", unit="file", disable=not verbose)
     with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
         for arcname, src, _ in it:
@@ -576,12 +737,13 @@ def upload_zip_to_draft(
 ) -> dict:
     """
     Build a zip from a dict of (zip path -> local file or dir), then upload that
-    single zip file to an existing draft. Use create_draft() first.
+    single zip file to an existing draft. Use create_draft() first. Directory
+    contents retain their subfolder structure in the zip.
 
     Args:
         items: Dict mapping path inside the zip -> local file or directory.
             E.g. {"data/": "results/data/", "plots/fig.png": "results/plots/fig.png"}.
-            Directory values add all contents under the given zip path.
+            Directory values add all contents under the given zip path, with subfolders preserved.
         key: Key used when creating the draft. Ignored if deposition_id is set.
         deposition_id: Deposition id if not using stored key.
         zip_filename: Name of the zip file in the draft (default: "data.zip").
@@ -760,7 +922,7 @@ def download_file(
     cached = zenodo.download_latest(str(record_id), filename)
     if dest_dir is None:
         return pathlib.Path(cached)
-    dest = pathlib.Path(dest_dir) / pathlib.Path(filename).name
+    dest = pathlib.Path(dest_dir).expanduser() / pathlib.Path(filename).name
     dest.parent.mkdir(parents=True, exist_ok=True)
     shutil.copy2(cached, dest)
     return dest.resolve()
@@ -786,7 +948,7 @@ def download_record_files(
         List of paths to downloaded files.
     """
     files = list_record_files(record_id, sandbox=sandbox)
-    dest_root = pathlib.Path(dest_dir)
+    dest_root = pathlib.Path(dest_dir).expanduser()
     dest_root.mkdir(parents=True, exist_ok=True)
     paths = []
     it = tqdm(files, desc="Downloading from Zenodo", disable=not verbose)
