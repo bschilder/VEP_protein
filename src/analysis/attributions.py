@@ -3025,6 +3025,7 @@ def plot_clinsig_interaction_strength(
     verbose=0,
     pvalue_format_string=" ({:.2g})",
     test='Mann-Whitney',
+    stats_test=None,
     annotator_kwargs={},
     xtick_rotation=0,
     bracket_linewidth=0.75,
@@ -3038,6 +3039,8 @@ def plot_clinsig_interaction_strength(
     from itertools import combinations 
     import pandas as pd
     import numpy as np
+
+    effective_test = stats_test if stats_test is not None else test
 
     ridge_df = ridge_df.copy()
     annot_df = annot_df.copy()
@@ -3169,7 +3172,7 @@ def plot_clinsig_interaction_strength(
         annotator_kwargs['line_width'] = bracket_linewidth
     
     annotator.configure(
-        test=test,
+        test=effective_test,
         text_format=text_format,
         loc=loc,
         verbose=verbose,
@@ -3178,6 +3181,90 @@ def plot_clinsig_interaction_strength(
         **annotator_kwargs
     )
     annotator.apply_and_annotate()
+
+    # Build a reporting-friendly stats table from the exact tests shown on the plot.
+    # Keep exact p-values (no star-only reduction), and include placeholders for
+    # quantities not defined for a given test (e.g., df/CI for Mann-Whitney U).
+    def _normalize_group_label(label):
+        """Normalize statannotations group labels to scalar category strings."""
+        if isinstance(label, (tuple, list)):
+            if len(label) == 0:
+                return None
+            label = label[0]
+        if label is None:
+            return None
+        return str(label)
+
+    stats_rows = []
+    for annotation in getattr(annotator, "annotations", []):
+        result = getattr(annotation, "data", None)
+
+        group1 = None
+        group2 = None
+        test_name = effective_test
+        statistic = np.nan
+        pvalue = np.nan
+        formatted_output = None
+
+        if result is not None:
+            group1 = _normalize_group_label(getattr(result, "group1", None))
+            group2 = _normalize_group_label(getattr(result, "group2", None))
+            test_name = (
+                getattr(result, "test_short_name", None)
+                or getattr(result, "test_long_name", None)
+                or effective_test
+            )
+            statistic = getattr(result, "stat_value", np.nan)
+            pvalue = getattr(result, "pvalue", np.nan)
+            formatted_output = str(result)
+
+        if (group1 is None or group2 is None) and hasattr(annotation, "structs"):
+            structs = getattr(annotation, "structs")
+            if structs is not None and len(structs) >= 2:
+                group1 = _normalize_group_label(structs[0].get("label", group1))
+                group2 = _normalize_group_label(structs[1].get("label", group2))
+
+        row = bar_df[bar_df[x].isin([group1, group2])]
+        n1 = int((row[x] == group1).sum()) if group1 is not None else np.nan
+        n2 = int((row[x] == group2).sum()) if group2 is not None else np.nan
+
+        # For Mann-Whitney U, report a common effect size (rank-biserial correlation).
+        # df and CI are not standardly defined here, so they remain NaN.
+        effect_size = np.nan
+        effect_size_name = None
+        df = np.nan
+        ci_lower = np.nan
+        ci_upper = np.nan
+
+        if isinstance(test_name, str) and (
+            "Mann-Whitney" in test_name
+            or test_name.strip().lower() in {"mw", "m.w.w.", "mann-whitney", "mann-whitney-u", "u"}
+        ):
+            if np.isfinite(statistic) and np.isfinite(n1) and np.isfinite(n2) and n1 > 0 and n2 > 0:
+                # rank-biserial correlation from U statistic
+                effect_size = 1 - (2 * statistic) / (n1 * n2)
+                effect_size_name = "rank_biserial_r"
+
+        stats_rows.append(
+            {
+                "group1": group1,
+                "group2": group2,
+                "test": test_name,
+                "statistic": statistic,
+                "pvalue": pvalue,
+                "pvalue_exact": pvalue,
+                "n_group1": n1,
+                "n_group2": n2,
+                "df": df,
+                "effect_size": effect_size,
+                "effect_size_name": effect_size_name,
+                "ci_lower": ci_lower,
+                "ci_upper": ci_upper,
+                "formatted_output": formatted_output,
+            }
+        )
+
+    stats_df = pd.DataFrame(stats_rows)
     
     # Also set linewidth of annotation bracket lines (fallback if line_width param doesn't work)
     # Only modify lines that are likely annotation brackets (horizontal lines at higher y positions)
@@ -3241,7 +3328,7 @@ def plot_clinsig_interaction_strength(
     else:
         plt.tight_layout()
 
-    return {'fig': ax.figure, 'ax': ax, 'data': bar_df}
+    return {'fig': ax.figure, 'ax': ax, 'data': bar_df, 'stats': stats_df}
 
 
 

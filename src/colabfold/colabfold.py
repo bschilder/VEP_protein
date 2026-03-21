@@ -4249,7 +4249,9 @@ def test_pae_variance_correlation(
     fit_exponential=False,
     log_x=False,
     log_y=False,
-    rasterize_points=False
+    rasterize_points=False,
+    stats_on_unbinned=True,
+    exclude_diagonal=True,
 ):
     """
     Test correlation between pae_matrix and variance_map, accounting for NaNs.
@@ -4263,198 +4265,341 @@ def test_pae_variance_correlation(
         log_x (bool): If True, log-transform the x (PAE) values before analysis.
         log_y (bool): If True, log-transform the y (variance) values before analysis.
         rasterize_points (bool): If True, rasterize the scatter points (not the rest of the plot).
+        stats_on_unbinned (bool): If True and ``bin_size`` > 1, compute correlations and
+            regression fits on the **original** (unbinned) matrices while the scatter plot
+            uses **binned** data. If False, stats and plot use the same (binned) arrays.
+        exclude_diagonal (bool): If True (default), set the main diagonal to NaN in square
+            2D matrices before flattening, so self (i=i) pairs are omitted from stats and plot.
+            No effect if arrays are not square 2D.
+
+    Returns
+    -------
+    dict
+        Keys include ``fig``, ``axes``, ``data`` (``pae_matrix``, ``variance_map`` used for the
+        scatter plot, i.e. binned when ``bin_size`` > 1),
+        and ``stats`` with correlation / regression summaries: ``n`` (stats sample size),
+        ``n_plot`` (scatter point count), ``r_pearson``, ``p_pearson``,
+        ``r_spearman``, ``p_spearman``, ``r2_linear``, ``linear_slope``, ``linear_intercept``,
+        optional ``r2_exponential``, ``exponential_a``, ``exponential_b`` (when ``fit_exponential``),
+        plus ``log_x``, ``log_y``, ``bin_size``, ``fit_exponential``, ``stats_on_unbinned``,
+        ``exclude_diagonal``.
+        If inputs are missing or no valid points, ``fig``/``axes`` may be None and ``stats`` reflects that.
     """
     from sklearn.linear_model import LinearRegression
     from sklearn.metrics import r2_score
     from scipy.stats import pearsonr, spearmanr
 
-    if pae_matrix is not None and variance_map is not None:
-        if bin_size > 1:
-            pae_matrix = mc.bin_matrix(pae_matrix, bin_size=bin_size)
-            variance_map = mc.bin_matrix(variance_map, bin_size=bin_size)
-
-        # Flatten both matrices for correlation analysis
-        pae_flat = pae_matrix.flatten()
-        variance_flat = variance_map.flatten()
-
-        # Remove pairs where either value is NaN
-        valid_mask = ~np.isnan(pae_flat) & ~np.isnan(variance_flat)
-        pae_flat_valid = pae_flat[valid_mask]
-        variance_flat_valid = variance_flat[valid_mask]
-
-        # Optionally log-transform x and/or y
-        # Only log values > 0, otherwise mask out
-        if log_x:
-            mask_x = pae_flat_valid > 0
+    def _flatten_and_transform(pae_arr, var_arr, log_x_, log_y_):
+        """Flatten pair of matrices, drop NaNs, apply optional log transforms."""
+        pae_flat = np.asarray(pae_arr).flatten()
+        var_flat = np.asarray(var_arr).flatten()
+        valid_mask = ~np.isnan(pae_flat) & ~np.isnan(var_flat)
+        px = pae_flat[valid_mask]
+        vy = var_flat[valid_mask]
+        if log_x_:
+            mask_x = px > 0
         else:
-            mask_x = np.ones_like(pae_flat_valid, dtype=bool)
-        if log_y:
-            mask_y = variance_flat_valid > 0
+            mask_x = np.ones_like(px, dtype=bool)
+        if log_y_:
+            mask_y = vy > 0
         else:
-            mask_y = np.ones_like(variance_flat_valid, dtype=bool)
+            mask_y = np.ones_like(vy, dtype=bool)
         mask = mask_x & mask_y
+        px = px[mask]
+        vy = vy[mask]
+        if log_x_:
+            px = np.log(px)
+        if log_y_:
+            vy = np.log(vy)
+        return px, vy
 
-        pae_flat_valid = pae_flat_valid[mask]
-        variance_flat_valid = variance_flat_valid[mask]
+    def _exclude_diagonal_nan(arr, exclude):
+        """Copy array; if square 2D and exclude, set main diagonal to NaN."""
+        a = np.asarray(arr)
+        if not exclude:
+            return a
+        if a.ndim != 2 or a.shape[0] != a.shape[1]:
+            return a
+        out = a.copy()
+        np.fill_diagonal(out, np.nan)
+        return out
 
-        if log_x:
-            pae_flat_valid = np.log(pae_flat_valid)
-        if log_y:
-            variance_flat_valid = np.log(variance_flat_valid)
+    if pae_matrix is not None and variance_map is not None:
+        pae_in = np.asarray(pae_matrix)
+        var_in = np.asarray(variance_map)
 
-        if len(pae_flat_valid) == 0:
-            print("No valid (non-NaN) data points to compute correlation.")
+        if bin_size > 1:
+            pae_plot = mc.bin_matrix(pae_in, bin_size=bin_size)
+            var_plot = mc.bin_matrix(var_in, bin_size=bin_size)
         else:
-            # Calculate Pearson correlation
-            pearson_corr, pearson_p = pearsonr(pae_flat_valid, variance_flat_valid)
+            pae_plot = pae_in.copy()
+            var_plot = var_in.copy()
 
-            # Calculate Spearman correlation (rank-based)
-            spearman_corr, spearman_p = spearmanr(pae_flat_valid, variance_flat_valid)
+        if stats_on_unbinned and bin_size > 1:
+            pae_stats = pae_in
+            var_stats = var_in
+        else:
+            pae_stats = pae_plot
+            var_stats = var_plot
 
-            # Store the stats values for later display
-            stats_text = (
-                f"Pearson r: {pearson_corr:.3f} (p={pearson_p:.2e})\n"
-                f"Spearman ρ: {spearman_corr:.3f} (p={spearman_p:.2e})"
+        pae_plot = _exclude_diagonal_nan(pae_plot, exclude_diagonal)
+        var_plot = _exclude_diagonal_nan(var_plot, exclude_diagonal)
+        pae_stats = _exclude_diagonal_nan(pae_stats, exclude_diagonal)
+        var_stats = _exclude_diagonal_nan(var_stats, exclude_diagonal)
+
+        pae_flat_stats, var_flat_stats = _flatten_and_transform(
+            pae_stats, var_stats, log_x, log_y
+        )
+        pae_flat_plot, var_flat_plot = _flatten_and_transform(
+            pae_plot, var_plot, log_x, log_y
+        )
+
+        if len(pae_flat_stats) == 0:
+            print("No valid (non-NaN) data points to compute correlation (stats array).")
+            return {
+                "fig": None,
+                "axes": None,
+                "data": {"pae_matrix": pae_plot, "variance_map": var_plot},
+                "stats": {
+                    "n": 0,
+                    "n_plot": int(len(pae_flat_plot)),
+                    "r_pearson": np.nan,
+                    "p_pearson": np.nan,
+                    "r_spearman": np.nan,
+                    "p_spearman": np.nan,
+                    "r2_linear": np.nan,
+                    "linear_slope": np.nan,
+                    "linear_intercept": np.nan,
+                    "r2_exponential": None,
+                    "exponential_a": None,
+                    "exponential_b": None,
+                    "log_x": log_x,
+                    "log_y": log_y,
+                    "bin_size": bin_size,
+                    "fit_exponential": fit_exponential,
+                    "stats_on_unbinned": stats_on_unbinned,
+                    "exclude_diagonal": bool(exclude_diagonal),
+                },
+            }
+
+        if len(pae_flat_plot) == 0:
+            print("No valid (non-NaN) data points for binned scatter plot.")
+            # Still report stats from unbinned / stats array
+            pearson_corr, pearson_p = pearsonr(pae_flat_stats, var_flat_stats)
+            spearman_corr, spearman_p = spearmanr(pae_flat_stats, var_flat_stats)
+            return {
+                "fig": None,
+                "axes": None,
+                "data": {"pae_matrix": pae_plot, "variance_map": var_plot},
+                "stats": {
+                    "n": int(len(pae_flat_stats)),
+                    "n_plot": 0,
+                    "r_pearson": float(pearson_corr),
+                    "p_pearson": float(pearson_p),
+                    "r_spearman": float(spearman_corr),
+                    "p_spearman": float(spearman_p),
+                    "r2_linear": np.nan,
+                    "linear_slope": np.nan,
+                    "linear_intercept": np.nan,
+                    "r2_exponential": None,
+                    "exponential_a": None,
+                    "exponential_b": None,
+                    "log_x": log_x,
+                    "log_y": log_y,
+                    "bin_size": bin_size,
+                    "fit_exponential": fit_exponential,
+                    "stats_on_unbinned": stats_on_unbinned,
+                    "exclude_diagonal": bool(exclude_diagonal),
+                },
+            }
+
+        # Stats (correlations, fits) on stats arrays
+        pearson_corr, pearson_p = pearsonr(pae_flat_stats, var_flat_stats)
+        spearman_corr, spearman_p = spearmanr(pae_flat_stats, var_flat_stats)
+
+        # Store the stats values for later display
+        stats_text = (
+            f"Pearson r: {pearson_corr:.3f} (p={pearson_p:.2e})\n"
+            f"Spearman ρ: {spearman_corr:.3f} (p={spearman_p:.2e})"
+        )
+        if stats_on_unbinned and bin_size > 1:
+            stats_text += "\n(stats: full res.; points: binned)"
+
+        # Create scatter plot from binned (plot) arrays
+        fig = plt.figure(figsize=(5, 5))
+        ax = fig.add_subplot(1, 1, 1)
+        ax.scatter(
+            pae_flat_plot,
+            var_flat_plot,
+            alpha=0.01,
+            s=1,
+            rasterized=rasterize_points
+        )
+        xlabel = 'PAE Matrix Values'
+        ylabel = 'Variance Map Values'
+        if log_x:
+            xlabel = 'log(' + xlabel + ')'
+        if log_y:
+            ylabel = 'log(' + ylabel + ')'
+        ax.set_xlabel(xlabel)
+        ax.set_ylabel(ylabel)
+
+        # Print correlations in console as before (optional, but not in plot)
+        print(f"Pearson correlation: {pearson_corr:.4f} (p-value: {pearson_p:.4e})")
+        print(f"Spearman correlation: {spearman_corr:.4f} (p-value: {spearman_p:.4e})")
+
+        linear_r2_display = ""
+        exponential_r2_display = ""
+        exp_fit_params_display = ""
+        r2_linear = np.nan
+        linear_slope = np.nan
+        linear_intercept = np.nan
+        r2_exponential = None
+        exponential_a = None
+        exponential_b = None
+
+        # Add trend line (linear): fit on stats (unbinned when stats_on_unbinned), draw across plot x-range
+        if len(pae_flat_stats) > 1:
+            X = pae_flat_stats.reshape(-1, 1)
+            y = var_flat_stats
+            linreg = LinearRegression()
+            linreg.fit(X, y)
+            linear_slope = float(linreg.coef_.ravel()[0])
+            linear_intercept = float(linreg.intercept_)
+            y_pred = linreg.predict(X)
+            r2_linear = float(r2_score(y, y_pred))
+            linear_r2_display = f"Linear R²: {r2_linear:.4f}"
+            print(f"Linear fit R2: {r2_linear:.4f}")
+            x_line_lin = np.linspace(
+                float(np.min(pae_flat_plot)),
+                float(np.max(pae_flat_plot)),
+                200,
+            )
+            y_line_lin = linear_slope * x_line_lin + linear_intercept
+            ax.plot(
+                x_line_lin,
+                y_line_lin,
+                "r--",
+                alpha=0.8,
+                label="Linear fit",
             )
 
-            # Create scatter plot
-            fig = plt.figure(figsize=(5, 5))
-            ax = fig.add_subplot(1, 1, 1)
-            ax.scatter(
-                pae_flat_valid, 
-                variance_flat_valid, 
-                alpha=0.01, 
-                s=1,
-                rasterized=rasterize_points
-            )
-            xlabel = 'PAE Matrix Values'
-            ylabel = 'Variance Map Values'
-            if log_x:
-                xlabel = 'log(' + xlabel + ')'
+        # Optionally fit and plot exponential curve, and compute pseudo-R2 (on stats array)
+        pseudo_r2 = None
+        a = None
+        b = None
+        if fit_exponential and len(pae_flat_stats) > 1:
             if log_y:
-                ylabel = 'log(' + ylabel + ')'
-            ax.set_xlabel(xlabel)
-            ax.set_ylabel(ylabel)
-            
-            # Print correlations in console as before (optional, but not in plot)
-            print(f"Pearson correlation: {pearson_corr:.4f} (p-value: {pearson_p:.4e})")
-            print(f"Spearman correlation: {spearman_corr:.4f} (p-value: {spearman_p:.4e})")
-
-            # Start of collecting more stats for in-plot display
-            extra_stats_lines = []
-            linear_r2_display = ""
-            exponential_r2_display = ""
-            exp_fit_params_display = ""
-
-            # Add trend line (linear) using scikit-learn
-            if len(pae_flat_valid) > 1:
-                X = pae_flat_valid.reshape(-1, 1)
-                y = variance_flat_valid
-                linreg = LinearRegression()
-                linreg.fit(X, y)
-                y_pred = linreg.predict(X)
-                # For a proper line, sort x for plotting
-                sort_idx = np.argsort(pae_flat_valid)
-                # Do not rasterize the trend line
-                ax.plot(
-                    pae_flat_valid[sort_idx], 
-                    y_pred[sort_idx], 
-                    "r--", 
-                    alpha=0.8, 
-                    label="Linear fit"
-                )
-                r2 = r2_score(y, y_pred)
-                linear_r2_display = f"Linear R²: {r2:.4f}"
-                print(f"Linear fit R2: {r2:.4f}")
-
-            # Optionally fit and plot exponential curve, and compute pseudo-R2
-            pseudo_r2 = None
-            a = None
-            b = None
-            if fit_exponential and len(pae_flat_valid) > 1:
-                # Only fit to positive y values for log-exp fit stability
-                # If log_y is True, y is already log-transformed, so skip exponential fit
-                if log_y:
-                    print("Exponential fit is not meaningful when log_y=True. Skipping exponential fit.")
-                else:
-                    mask_exp = variance_flat_valid > 0
-                    x_fit = pae_flat_valid[mask_exp].reshape(-1, 1)
-                    y_fit = variance_flat_valid[mask_exp]
-                    if len(x_fit) > 1:
-                        # Fit y = a * exp(b * x) <=> log(y) = log(a) + b*x
-                        log_y_fit = np.log(y_fit)
-                        linreg_exp = LinearRegression()
-                        linreg_exp.fit(x_fit, log_y_fit)
-                        # Get parameters
-                        b = linreg_exp.coef_[0]
-                        log_a = linreg_exp.intercept_
-                        a = np.exp(log_a)
-                        # For plotting, use sorted x range
-                        x_line = np.linspace(np.min(x_fit), np.max(x_fit), 200).reshape(-1, 1)
-                        y_line = a * np.exp(b * x_line.flatten())
-                        # Do not rasterize the exponential curve
-                        ax.plot(
-                            x_line, 
-                            y_line, 
-                            "g-", 
-                            alpha=0.8, 
-                            label=f"Exponential fit (y = a*exp(bx))"
-                        )
-                        # Calculate pseudo-R2 for the exponential fit
-                        y_pred_exp = a * np.exp(b * x_fit.flatten())
-                        ss_res = np.sum((y_fit - y_pred_exp) ** 2)
-                        ss_tot = np.sum((y_fit - np.mean(y_fit)) ** 2)
-                        pseudo_r2 = 1 - ss_res / ss_tot if ss_tot != 0 else np.nan
-                        exponential_r2_display = f"Exp. fit R²: {pseudo_r2:.4f}"
-                        exp_fit_params_display = f"a={a:.3g}, b={b:.3g}"
-                        print(f"Exponential fit pseudo-R2: {pseudo_r2:.4f}")
-                        print(f"Exponential fit parameters: a={a:.4g}, b={b:.4g}")
-                    else:
-                        print("Not enough positive y values for exponential fit.")
-            
-            # Compose annotation string for in-plot display
-            lines = [stats_text]
-            if linear_r2_display:
-                lines.append(linear_r2_display)
-            if exponential_r2_display:
-                lines.append(exponential_r2_display)
-            if exp_fit_params_display:
-                lines.append(f"Exp: {exp_fit_params_display}")
-
-            annotation_text = "\n".join(lines)
-            # Place annotation box at upper left of axes (top left, with some margin)
-            ax.annotate(
-                annotation_text,
-                xy=(0.01, 0.97),
-                xycoords='axes fraction',
-                va='top',
-                ha='left',
-                fontsize=10,
-                bbox=dict(boxstyle="round,pad=0.3", fc="white", alpha=0.85, ec='grey', lw=0.8)
-            )
-
-            ax.set_title(
-                f'PAE vs. Variance'
-            )
-
-            ax.grid(True, alpha=0.3)
-            ax.legend()
-            fig.show()
-
-            # Print interpretation
-            if abs(pearson_corr) > 0.7:
-                strength = "strong"
-            elif abs(pearson_corr) > 0.3:
-                strength = "moderate"
+                print("Exponential fit is not meaningful when log_y=True. Skipping exponential fit.")
             else:
-                strength = "weak"
+                mask_exp = var_flat_stats > 0
+                x_fit = pae_flat_stats[mask_exp].reshape(-1, 1)
+                y_fit = var_flat_stats[mask_exp]
+                if len(x_fit) > 1:
+                    log_y_fit = np.log(y_fit)
+                    linreg_exp = LinearRegression()
+                    linreg_exp.fit(x_fit, log_y_fit)
+                    b = linreg_exp.coef_[0]
+                    log_a = linreg_exp.intercept_
+                    a = np.exp(log_a)
+                    x_line = np.linspace(
+                        float(np.min(pae_flat_plot)),
+                        float(np.max(pae_flat_plot)),
+                        200,
+                    )
+                    y_line = a * np.exp(b * x_line)
+                    ax.plot(
+                        x_line,
+                        y_line,
+                        "g-",
+                        alpha=0.8,
+                        label=f"Exponential fit (y = a*exp(bx))"
+                    )
+                    y_pred_exp = a * np.exp(b * x_fit.flatten())
+                    ss_res = np.sum((y_fit - y_pred_exp) ** 2)
+                    ss_tot = np.sum((y_fit - np.mean(y_fit)) ** 2)
+                    pseudo_r2 = 1 - ss_res / ss_tot if ss_tot != 0 else np.nan
+                    r2_exponential = float(pseudo_r2)
+                    exponential_a = float(a)
+                    exponential_b = float(b)
+                    exponential_r2_display = f"Exp. fit R²: {pseudo_r2:.4f}"
+                    exp_fit_params_display = f"a={a:.3g}, b={b:.3g}"
+                    print(f"Exponential fit pseudo-R2: {pseudo_r2:.4f}")
+                    print(f"Exponential fit parameters: a={a:.4g}, b={b:.4g}")
+                else:
+                    print("Not enough positive y values for exponential fit.")
 
-            direction = "positive" if pearson_corr > 0 else "negative"
-            print(f"\nInterpretation: There is a {strength} {direction} correlation between PAE matrix and variance map values.")
+        lines = [stats_text]
+        if linear_r2_display:
+            lines.append(linear_r2_display)
+        if exponential_r2_display:
+            lines.append(exponential_r2_display)
+        if exp_fit_params_display:
+            lines.append(f"Exp: {exp_fit_params_display}")
 
-            return {"fig": fig, 'axes': ax, 'data':{'pae_matrix': pae_matrix, 'variance_map': variance_map}}
+        annotation_text = "\n".join(lines)
+        ax.annotate(
+            annotation_text,
+            xy=(0.01, 0.97),
+            xycoords='axes fraction',
+            va='top',
+            ha='left',
+            fontsize=10,
+            bbox=dict(boxstyle="round,pad=0.3", fc="white", alpha=0.85, ec='grey', lw=0.8)
+        )
+
+        ax.set_title(
+            f'PAE vs. Variance'
+        )
+
+        ax.grid(True, alpha=0.3)
+        ax.legend()
+        fig.show()
+
+        if abs(pearson_corr) > 0.7:
+            strength = "strong"
+        elif abs(pearson_corr) > 0.3:
+            strength = "moderate"
+        else:
+            strength = "weak"
+
+        direction = "positive" if pearson_corr > 0 else "negative"
+        print(f"\nInterpretation: There is a {strength} {direction} correlation between PAE matrix and variance map values.")
+
+        stats = {
+            "n": int(len(pae_flat_stats)),
+            "n_plot": int(len(pae_flat_plot)),
+            "r_pearson": float(pearson_corr),
+            "p_pearson": float(pearson_p),
+            "r_spearman": float(spearman_corr),
+            "p_spearman": float(spearman_p),
+            "r2_linear": float(r2_linear),
+            "linear_slope": float(linear_slope),
+            "linear_intercept": float(linear_intercept),
+            "r2_exponential": r2_exponential,
+            "exponential_a": exponential_a,
+            "exponential_b": exponential_b,
+            "log_x": bool(log_x),
+            "log_y": bool(log_y),
+            "bin_size": int(bin_size),
+            "fit_exponential": bool(fit_exponential),
+            "stats_on_unbinned": bool(stats_on_unbinned),
+            "exclude_diagonal": bool(exclude_diagonal),
+        }
+        return {
+            "fig": fig,
+            "axes": ax,
+            "data": {"pae_matrix": pae_plot, "variance_map": var_plot},
+            "stats": stats,
+        }
     else:
         print("Cannot test correlation: pae_matrix or variance_map not available")
+        return {
+            "fig": None,
+            "axes": None,
+            "data": None,
+            "stats": None,
+        }
 
 def analyze_target_group_contact_loss(
     barplot_df,

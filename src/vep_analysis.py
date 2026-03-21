@@ -3966,6 +3966,52 @@ def plot_n_variants_histogram(
     return {'fig': fig, 'ax': ax, 'data': df}
 
 
+# Pairwise tests shared by barplot annotation helpers (statannotations names).
+_PAIRWISE_STATS_TESTS = frozenset(
+    {"t-test_ind", "t-test_welch", "Mann-Whitney", "Mann-Whitney-ls"}
+)
+
+
+def _pairwise_stat_and_p(y1, y2, test_name):
+    """Return (statistic, p) for two independent samples; aligns with statannotations names."""
+    from scipy import stats as scipy_stats
+
+    if test_name == "t-test_ind":
+        stat, pval = scipy_stats.ttest_ind(
+            y1, y2, equal_var=True, nan_policy="omit"
+        )
+    elif test_name == "t-test_welch":
+        stat, pval = scipy_stats.ttest_ind(
+            y1, y2, equal_var=False, nan_policy="omit"
+        )
+    elif test_name == "Mann-Whitney":
+        res = scipy_stats.mannwhitneyu(y1, y2, alternative="two-sided")
+        stat, pval = res.statistic, res.pvalue
+    elif test_name == "Mann-Whitney-ls":
+        res = scipy_stats.ranksums(y1, y2, alternative="two-sided")
+        stat, pval = res.statistic, res.pvalue
+    else:
+        raise ValueError(test_name)
+    return float(stat), float(pval)
+
+
+def _validate_pairwise_stats_test(stats_test):
+    if stats_test not in _PAIRWISE_STATS_TESTS:
+        raise ValueError(
+            f"stats_test={stats_test!r} is not supported. "
+            f"Use one of: {sorted(_PAIRWISE_STATS_TESTS)}."
+        )
+
+
+def _p_bonferroni_if_applicable(p_raw, n_comp, comparisons_correction):
+    """Bonferroni-adjusted p only when correction label is bonferroni; else NaN."""
+    if comparisons_correction is None:
+        return float("nan")
+    if str(comparisons_correction).strip().lower() == "bonferroni":
+        return min(1.0, float(p_raw) * n_comp)
+    return float("nan")
+
+
 def plot_variant_type_and_clinsig(
     df,
     x_var = "MC_term_label",
@@ -3980,7 +4026,8 @@ def plot_variant_type_and_clinsig(
     legend=True,
     save_path=None,
     fig_kwargs=None,
-    hide_xtick_labels=False
+    hide_xtick_labels=False,
+    stats_test="Mann-Whitney",
 ):
     """
     Create and save a barplot of mean VEP by clinical variant type and significance with statistical annotation.
@@ -3997,8 +4044,24 @@ def plot_variant_type_and_clinsig(
         Additional kwargs for plt.savefig (merged with utils.FIG_SAVE_KWARGS).
     hide_xtick_labels : bool
         If True, hide x-axis tick labels.
+    stats_test : str
+        Pairwise test passed to ``statannotations`` and used to build ``stats`` (must match exactly).
+        Default ``'Mann-Whitney'``. Also supported: ``'t-test_ind'`` (Student, equal variance),
+        ``'t-test_welch'``, ``'Mann-Whitney-ls'`` (Wilcoxon rank-sum / ``scipy.stats.ranksums``).
+
+    Returns
+    -------
+    dict
+        ``fig``, ``ax``, ``data`` (working copy of ``df``), and ``stats`` (DataFrame): one row
+        per pairwise comparison with ``test``, ``correction``, ``n_comparisons``, ``y_var``,
+        ``x_var``, ``kind``, ``group1``, ``group2``, ``n1``, ``n2``, ``statistic``,
+        ``rank_biserial_r`` (only for ``Mann-Whitney``: :math:`1 - 2U/(n_1 n_2)` from scipy's
+        :math:`U`, else NaN), ``p`` (uncorrected), ``p_bonferroni``, and optional ``note``.
+        Tests and Bonferroni correction match the plot annotations.
     """
     from statannotations.Annotator import Annotator
+
+    _validate_pairwise_stats_test(stats_test)
 
     # Map MC_term for pretty labels
     df = df.copy()  # avoid modifying original
@@ -4110,11 +4173,111 @@ def plot_variant_type_and_clinsig(
             order=mc_terms,
             hue_order=clinsig_simple_cats,
         )
+
+    # Match Annotator: independent two-sample t-test + Bonferroni across all pairs
+    x_hue_same = x_var == hue_var
+    n_comp = len(pairs)
+
+    def _yvals_and_labels_for_pair(pair):
+        if x_hue_same:
+            c1, c2 = pair
+            y1 = df.loc[df[x_var] == c1, y_var].dropna().to_numpy(dtype=float)
+            y2 = df.loc[df[x_var] == c2, y_var].dropna().to_numpy(dtype=float)
+            return y1, y2, str(c1), str(c2), "between_x_categories"
+        (xa, ha), (xb, hb) = pair
+        y1 = df.loc[(df[x_var] == xa) & (df[hue_var] == ha), y_var].dropna().to_numpy(
+            dtype=float
+        )
+        y2 = df.loc[(df[x_var] == xb) & (df[hue_var] == hb), y_var].dropna().to_numpy(
+            dtype=float
+        )
+        lab1, lab2 = f"{xa}|{ha}", f"{xb}|{hb}"
+        if xa == xb:
+            kind = "within_x_between_hue"
+        else:
+            kind = "across_x_within_hue"
+        return y1, y2, lab1, lab2, kind
+
+    _correction = "bonferroni"
+    comparisons = []
+    for pair in pairs:
+        y1, y2, lab1, lab2, kind = _yvals_and_labels_for_pair(pair)
+        n1, n2 = len(y1), len(y2)
+        row_meta = {
+            "test": stats_test,
+            "correction": _correction,
+            "n_comparisons": n_comp,
+            "y_var": y_var,
+            "x_var": x_var,
+        }
+        if n1 < 2 or n2 < 2:
+            comparisons.append(
+                {
+                    **row_meta,
+                    "kind": kind,
+                    "group1": lab1,
+                    "group2": lab2,
+                    "n1": n1,
+                    "n2": n2,
+                    "statistic": float("nan"),
+                    "rank_biserial_r": float("nan"),
+                    "p": float("nan"),
+                    "p_bonferroni": float("nan"),
+                    "note": "insufficient_data",
+                }
+            )
+            continue
+        stat, p_raw = _pairwise_stat_and_p(y1, y2, stats_test)
+        # Rank-biserial r from Mann–Whitney U (same as src/analysis/attributions.py); not defined for other tests.
+        if stats_test == "Mann-Whitney" and n1 > 0 and n2 > 0 and np.isfinite(stat):
+            rank_biserial_r = 1.0 - (2.0 * stat) / (n1 * n2)
+        else:
+            rank_biserial_r = float("nan")
+        comparisons.append(
+            {
+                **row_meta,
+                "kind": kind,
+                "group1": lab1,
+                "group2": lab2,
+                "n1": n1,
+                "n2": n2,
+                "statistic": float(stat),
+                "rank_biserial_r": float(rank_biserial_r),
+                "p": p_raw,
+                "p_bonferroni": _p_bonferroni_if_applicable(
+                    p_raw, n_comp, "bonferroni"
+                ),
+            }
+        )
+
+    _stats_cols = [
+        "test",
+        "correction",
+        "n_comparisons",
+        "y_var",
+        "x_var",
+        "kind",
+        "group1",
+        "group2",
+        "n1",
+        "n2",
+        "statistic",
+        "rank_biserial_r",
+        "p",
+        "p_bonferroni",
+        "note",
+    ]
+    stats = pd.DataFrame(comparisons)
+    for c in _stats_cols:
+        if c not in stats.columns:
+            stats[c] = np.nan
+    stats = stats[_stats_cols]
+
     annotator.configure(
-        test='t-test_ind',
+        test=stats_test,
         text_format='star',
         loc='inside',  # could also consider 'outside' but inside is default
-        comparisons_correction="bonferroni"
+        comparisons_correction="bonferroni",
     )
     annotator.apply_and_annotate()
 
@@ -4123,8 +4286,9 @@ def plot_variant_type_and_clinsig(
         save_kwargs.update(fig_kwargs)
     if save_path is not None:
         plt.savefig(save_path, **save_kwargs)
-    
+
     plt.show()
+    return {"fig": fig, "ax": ax, "data": df, "stats": stats}
 
 
 def plot_score_type_by_clinsig(
@@ -4306,9 +4470,6 @@ def plot_score_type_by_clinsig(
     return {'fig': ax.figure, 'ax': ax, 'data': agg_dat}
 
 
-from scipy.stats import entropy
-from statannotations.Annotator import Annotator
-
 def plot_categorical_entropy(
     df,
     groupby_cat="clinsig_simple",
@@ -4326,7 +4487,7 @@ def plot_categorical_entropy(
     sort_cat_func=utils.sort_by_clinsig,
     save_path=None,
     add_stats=True,
-    stats_test='t-test_ind',
+    stats_test="t-test_ind",
     stats_text_format='star',
     stats_loc='inside',
     stats_correction="bonferroni",
@@ -4397,13 +4558,16 @@ def plot_categorical_entropy(
     add_stats : bool
         Whether to add statistical annotation.
     stats_test : str
-        Statistical test string for statannotations.
+        Pairwise test for annotations and ``stats`` (must match statannotations).
+        Default ``'t-test_ind'`` (Student's independent t-test). Same options as
+        ``plot_variant_type_and_clinsig``.
     stats_text_format : str
         Format for stats text.
     stats_loc : str
         Location for annotation.
     stats_correction : str
-        Multiple testing correction for statannotations.
+        Multiple testing correction for statannotations. ``p_bonferroni`` in ``stats`` is
+        filled only when this is ``'bonferroni'`` (case-insensitive); otherwise NaN.
     plot_kwargs, bar_kwargs, errorbar_kwargs, despine_kwargs : dict or None
         Additional arguments passed through.
     **kwargs : dict
@@ -4412,16 +4576,25 @@ def plot_categorical_entropy(
     Returns:
     --------
     dict
-        With keys ``'fig'`` (matplotlib Figure), ``'ax'`` (Axes), ``'data'``
-        (aggregated DataFrame of mean and sem per ``groupby_cat``).
+        Keys ``'fig'``, ``'ax'``, ``'data'`` (mean and sem per ``groupby_cat``), and
+        ``'stats'`` (DataFrame of pairwise tests on raw ``entropy`` per subgroup, same
+        columns as ``plot_variant_type_and_clinsig`` stats: ``test``, ``correction``,
+        ``n_comparisons``, ``y_var``, ``x_var``, ``kind``, ``group1``, ``group2``, ``n1``,
+        ``n2``, ``statistic``, ``rank_biserial_r`` (Mann-Whitney only), ``p``,
+        ``p_bonferroni``, ``note``).
     """
+
+    from scipy.stats import entropy
+    from statannotations.Annotator import Annotator
 
     plot_kwargs = plot_kwargs or {}
     bar_kwargs = bar_kwargs or {}
     errorbar_kwargs = errorbar_kwargs or {}
     despine_kwargs = despine_kwargs or {}
 
-    # Calculate entropy (entropy) of predicted class per group
+    _validate_pairwise_stats_test(stats_test)
+
+    # Calculate entropy of predicted class per group
     entropy_df = df.groupby([groupby_cat, subgroupby], observed=True).apply(
         lambda x: entropy(x[categorical_col].value_counts(normalize=True), base=2)
     ).reset_index(name="entropy")
@@ -4480,28 +4653,107 @@ def plot_categorical_entropy(
 
     sns.despine(ax=ax, top=True, right=True, **despine_kwargs)
 
-    # Statistical annotation
-    if add_stats:
-        cat_list = agg_df[groupby_cat].drop_duplicates().tolist()
-        pairs = [
-            (cat1, cat2)
-            for i, cat1 in enumerate(cat_list)
-            for j, cat2 in enumerate(cat_list)
-            if j > i
-        ]
+    cat_list = agg_df[groupby_cat].drop_duplicates().tolist()
+    pairs = [
+        (cat1, cat2)
+        for i, cat1 in enumerate(cat_list)
+        for j, cat2 in enumerate(cat_list)
+        if j > i
+    ]
+    n_comp = len(pairs)
+    _entropy_y = "entropy"
+    comparisons = []
+    for c1, c2 in pairs:
+        y1 = entropy_df.loc[entropy_df[groupby_cat] == c1, _entropy_y].dropna().to_numpy(
+            dtype=float
+        )
+        y2 = entropy_df.loc[entropy_df[groupby_cat] == c2, _entropy_y].dropna().to_numpy(
+            dtype=float
+        )
+        n1, n2 = len(y1), len(y2)
+        row_meta = {
+            "test": stats_test,
+            "correction": stats_correction,
+            "n_comparisons": n_comp,
+            "y_var": _entropy_y,
+            "x_var": groupby_cat,
+        }
+        if n1 < 2 or n2 < 2:
+            comparisons.append(
+                {
+                    **row_meta,
+                    "kind": "between_x_categories",
+                    "group1": str(c1),
+                    "group2": str(c2),
+                    "n1": n1,
+                    "n2": n2,
+                    "statistic": float("nan"),
+                    "rank_biserial_r": float("nan"),
+                    "p": float("nan"),
+                    "p_bonferroni": float("nan"),
+                    "note": "insufficient_data",
+                }
+            )
+            continue
+        stat, p_raw = _pairwise_stat_and_p(y1, y2, stats_test)
+        if stats_test == "Mann-Whitney" and n1 > 0 and n2 > 0 and np.isfinite(stat):
+            rank_biserial_r = 1.0 - (2.0 * stat) / (n1 * n2)
+        else:
+            rank_biserial_r = float("nan")
+        comparisons.append(
+            {
+                **row_meta,
+                "kind": "between_x_categories",
+                "group1": str(c1),
+                "group2": str(c2),
+                "n1": n1,
+                "n2": n2,
+                "statistic": float(stat),
+                "rank_biserial_r": float(rank_biserial_r),
+                "p": p_raw,
+                "p_bonferroni": _p_bonferroni_if_applicable(
+                    p_raw, n_comp, stats_correction
+                ),
+            }
+        )
+
+    _entropy_stats_cols = [
+        "test",
+        "correction",
+        "n_comparisons",
+        "y_var",
+        "x_var",
+        "kind",
+        "group1",
+        "group2",
+        "n1",
+        "n2",
+        "statistic",
+        "rank_biserial_r",
+        "p",
+        "p_bonferroni",
+        "note",
+    ]
+    stats = pd.DataFrame(comparisons)
+    for c in _entropy_stats_cols:
+        if c not in stats.columns:
+            stats[c] = np.nan
+    stats = stats[_entropy_stats_cols]
+
+    if add_stats and n_comp > 0:
         annotator = Annotator(
             ax=ax,
             pairs=pairs,
             data=entropy_df,
             x=groupby_cat,
-            y="entropy",
+            y=_entropy_y,
             order=cat_list,
         )
         annotator.configure(
             test=stats_test,
             text_format=stats_text_format,
             loc=stats_loc,
-            comparisons_correction=stats_correction
+            comparisons_correction=stats_correction,
         )
         annotator.apply_and_annotate()
 
@@ -4509,4 +4761,4 @@ def plot_categorical_entropy(
         plt.savefig(save_path, **getattr(utils, "FIG_SAVE_KWARGS", {}), **kwargs)
     plt.show()
 
-    return {'fig': fig, 'ax': ax, 'data': agg_df}
+    return {"fig": fig, "ax": ax, "data": agg_df, "stats": stats}

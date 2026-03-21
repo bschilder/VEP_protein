@@ -1215,7 +1215,11 @@ def test_normality(df,
     Returns
     -------
     pd.DataFrame
-        DataFrame with groupby columns and columns: 'statistic', 'pvalue', 'n_samples'.
+        DataFrame with groupby columns and columns:
+        'statistic' (D'Agostino–Pearson K² test statistic),
+        'pvalue', 'n_samples', 'df' (degrees of freedom; 2 for this test),
+        'effect_size' (not defined for this omnibus test; NaN),
+        'ci_lower' and 'ci_upper' (confidence interval bounds; NaN).
     """
     if save_path is not None and os.path.exists(save_path) and not force:
         print("Loading cached normality results")
@@ -1236,15 +1240,30 @@ def test_normality(df,
         Returns
         -------
         pd.Series
-            Series with 'statistic', 'pvalue', and 'n_samples'.
+            Series with 'statistic', 'pvalue', 'n_samples', 'df',
+            'effect_size', 'ci_lower', and 'ci_upper'.
         """
         x_nonan = x.dropna()
         n = len(x_nonan)
         if n > min_n:
             stat, pval = normaltest(x_nonan)
+            df = 2  # D'Agostino–Pearson K² combines skewness and kurtosis
         else:
-            stat, pval = float("nan"), float("nan")
-        return pd.Series({"statistic": stat, "pvalue": pval, "n_samples": n})
+            stat, pval, df = float("nan"), float("nan"), float("nan")
+
+        # Effect sizes and confidence intervals are not standardly defined
+        # for this omnibus normality test, so we return NaN for these fields.
+        return pd.Series(
+            {
+                "statistic": stat,
+                "pvalue": pval,
+                "n_samples": n,
+                "df": df,
+                "effect_size": float("nan"),
+                "ci_lower": float("nan"),
+                "ci_upper": float("nan"),
+            }
+        )
 
     if show_progress:
         tqdm.pandas()
@@ -3527,7 +3546,7 @@ def plot_vep_kde_with_arrows(
     clinsig_col="clinsig",
     site_col="site", 
     title="VEP Distributions",
-    x_label=r"$VEP_{\text{mean}}$",
+    x_label="VEP", #r"$VEP_{\text{mean}}$",
     y_label="Proportion",  
     legend_title="Clinical Significance",
     palette=utils.get_clinsig_palette(),
@@ -3934,14 +3953,15 @@ def plot_vep_kde_with_arrows(
 
 
 def test_vep_clinsig_separation(
-    vep_agg, 
-    clinsig_col="clinsig", 
-    vep_col="VEP", 
-    model_col="model_location", 
-    clinsig_groups=None
+    vep_agg,
+    clinsig_col="clinsig",
+    vep_col="VEP",
+    model_col="model_location",
+    clinsig_groups=None,
+    stats_test="Mann-Whitney",
 ):
     """
-    Test the separation between all specified clinsig groups in each model using Mann-Whitney U test.
+    Test the separation between all specified clinsig groups in each model using a pairwise test.
 
     Parameters
     ----------
@@ -3954,17 +3974,23 @@ def test_vep_clinsig_separation(
     model_col : str
         Name of the column containing model identifiers.
     clinsig_groups : list or None
-        List of clinsig group labels to test. If None, defaults to ["benign", "likely_benign", "path", "likely_path"].
+        List of clinsig group labels to test. If None, uses unique labels in the data.
+    stats_test : str
+        Pairwise test name (same as ``statannotations`` / ``plot_variant_type_and_clinsig``):
+        ``'Mann-Whitney'``, ``'t-test_ind'``, ``'t-test_welch'``, ``'Mann-Whitney-ls'``.
+        Default ``'Mann-Whitney'`` preserves the original Mann–Whitney U behavior.
 
     Returns
     -------
     vep_diff_df : pd.DataFrame
-        DataFrame with Mann-Whitney U test results for all pairwise group comparisons per model.
+        DataFrame with test results for all pairwise group comparisons per model (includes
+        column ``stats_test`` recording which test was used).
     summary : pd.DataFrame
         Aggregated mean pvalue and statistic per model.
     """
-    from scipy.stats import mannwhitneyu
     import itertools
+
+    va._validate_pairwise_stats_test(stats_test)
 
     if clinsig_groups is None:
         clinsig_groups = vep_agg[clinsig_col].unique()
@@ -3981,14 +4007,17 @@ def test_vep_clinsig_separation(
             vep_vals = group.loc[mask, vep_col].dropna()
             group_veps[label] = vep_vals
 
-        # For each pairwise combination, perform Mann-Whitney U test if both groups have data
+        # For each pairwise combination, run the chosen test if both groups have data
         for g1, g2 in itertools.combinations(clinsig_groups, 2):
             vep1 = group_veps[g1]
             vep2 = group_veps[g2]
             if len(vep1) > 0 and len(vep2) > 0:
-                stat, pval = mannwhitneyu(vep1, vep2, alternative="two-sided")
-                results.append({
+                y1 = vep1.to_numpy(dtype=float, copy=False)
+                y2 = vep2.to_numpy(dtype=float, copy=False)
+                stat, pval = va._pairwise_stat_and_p(y1, y2, stats_test)
+                row = {
                     model_col: model,
+                    "stats_test": stats_test,
                     "group1": g1,
                     "group2": g2,
                     "n_group1": len(vep1),
@@ -3996,23 +4025,36 @@ def test_vep_clinsig_separation(
                     "statistic": stat,
                     "pvalue": pval,
                     "group1_median": vep1.median(),
-                    "group2_median": vep2.median()
-                })
+                    "group2_median": vep2.median(),
+                }
+                if stats_test == "Mann-Whitney" and len(vep1) > 0 and len(vep2) > 0:
+                    row["rank_biserial_r"] = 1.0 - (2.0 * stat) / (len(vep1) * len(vep2))
+                else:
+                    row["rank_biserial_r"] = np.nan
+                results.append(row)
             else:
-                results.append({
-                    model_col: model,
-                    "group1": g1,
-                    "group2": g2,
-                    "n_group1": len(vep1),
-                    "n_group2": len(vep2),
-                    "statistic": None,
-                    "pvalue": None,
-                    "group1_median": vep1.median() if len(vep1) > 0 else None,
-                    "group2_median": vep2.median() if len(vep2) > 0 else None
-                })
+                results.append(
+                    {
+                        model_col: model,
+                        "stats_test": stats_test,
+                        "group1": g1,
+                        "group2": g2,
+                        "n_group1": len(vep1),
+                        "n_group2": len(vep2),
+                        "statistic": None,
+                        "pvalue": None,
+                        "rank_biserial_r": np.nan,
+                        "group1_median": vep1.median() if len(vep1) > 0 else None,
+                        "group2_median": vep2.median() if len(vep2) > 0 else None,
+                    }
+                )
 
-    vep_diff_df = pd.DataFrame(results).sort_values(by=[model_col, 'group1', 'group2'])
-    summary = vep_diff_df.groupby(model_col).agg({"pvalue": "mean", "statistic": "mean"}).sort_values(by="statistic", ascending=False)
+    vep_diff_df = pd.DataFrame(results).sort_values(by=[model_col, "group1", "group2"])
+    summary = (
+        vep_diff_df.groupby(model_col)
+        .agg({"pvalue": "mean", "statistic": "mean"})
+        .sort_values(by="statistic", ascending=False)
+    )
     return vep_diff_df, summary
 
 import numpy as np
