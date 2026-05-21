@@ -18,6 +18,9 @@ The codebase provides pipelines to fetch haplotypes, run ESM-based scoring (e.g.
 
 ## Table of contents
 
+- [System requirements](#system-requirements)
+- [Installation](#installation)
+- [Demo](#demo)
 - [Environment setup](#environment-setup)
 - [Code organization](#code-organization)
 - [Getting started](#getting-started)
@@ -26,6 +29,33 @@ The codebase provides pipelines to fetch haplotypes, run ESM-based scoring (e.g.
 - [Citation](#citation)
 - [Manuscript](#manuscript)
 - [License](#license)
+
+---
+
+## System requirements
+
+- **Operating systems tested:** Linux (Ubuntu 20.04+ / RHEL 8+ on HPC), macOS 14+
+- **Python:** 3.12.9 (3.10–3.12 also supported)
+- **Key dependencies:** see `conda/*.yml` for per-model environments (`esm2.yml` is the main one; additional envs cover ESM3, ESMFold, evolocity, GenVarLoader, RAPIDS, Snakemake)
+- **Non-standard hardware:** NVIDIA GPU required for ESM model inference (tested on A100 80 GB and H100 80 GB); CPU-only runs are possible for small examples but not recommended
+
+## Installation
+
+See the [Environment setup](#environment-setup) and [Getting started](#getting-started) sections below for step-by-step instructions. Typical install time on a workstation with conda already installed:
+
+- **~15 min** to create the primary `esm2` conda environment
+- Additional time on first run for one-time downloads of model weights from Hugging Face
+
+> *Maintainer to confirm measured timings before final submission.*
+
+## Demo
+
+The fastest end-to-end demo is **`notebooks/VEP.ipynb`**, which loads protein haplotypes, injects a clinical variant, scores with ESM2-650M, and returns per-haplotype VEP scores.
+
+- **Expected runtime:** ~5 min on 1× A100 GPU for the bundled example transcript
+- **Expected output:** a Parquet file of per-haplotype VEP scores plus summary plots inline in the notebook
+
+> *Maintainer to confirm measured timings before final submission.*
 
 ---
 
@@ -165,4 +195,4 @@ The **`manuscript/`** directory contains the accompanying manuscript sources, in
 
 ## License
 
-This project is licensed under **Creative Commons Attribution-NonCommercial 4.0 International (CC BY-NC 4.0)**. You may share and adapt the material with attribution; commercial use is not permitted. See [LICENSE](LICENSE) for the full terms.
+This project is licensed under the **MIT License** (OSI-approved). See [LICENSE](LICENSE) for the full terms.
