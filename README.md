@@ -152,7 +152,6 @@ Notebooks are the main way to reproduce and explore the analyses.
 | [ProteinGym.ipynb](notebooks/ProteinGym.ipynb) | ProteinGym benchmarks. |
 | [Zenodo.ipynb](notebooks/Zenodo.ipynb) | Upload/download manuscript data to Zenodo (personalizedVEP record). |
 | [ESM3.ipynb](notebooks/ESM3.ipynb) | ESM3 model usage. |
-| [Evo2_figures.ipynb](notebooks/Evo2_figures.ipynb) | Evo2-related figures. |
 | [evolocity.ipynb](notebooks/evolocity.ipynb) | Evolocity analysis (use `conda/evolocity.yml`). |
 | [GVL.ipynb](notebooks/GVL.ipynb) | GVL workflow (use `conda/gvl.yml`). |
 | [distributions.ipynb](notebooks/distributions.ipynb), [embeddings.ipynb](notebooks/embeddings.ipynb) | Distribution and embedding analyses. |
