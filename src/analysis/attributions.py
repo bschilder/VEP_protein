@@ -5056,6 +5056,8 @@ def test_epistasis_pairwise(
     min_cooccurrence=10,
     pvalue_threshold=0.05,
     fdr=True,
+    n_permutations=0,
+    random_state=0,
     verbose=True,
 ):
     """
@@ -5095,20 +5097,32 @@ def test_epistasis_pairwise(
         Significance threshold; applied to the FDR q-value when ``fdr=True``.
     fdr : bool, default=True
         If True, add Benjamini-Hochberg q-values and use them for ``is_epistatic``.
+    n_permutations : int, default=0
+        If > 0, also compute a Freedman-Lane permutation p-value
+        (``epistasis_pvalue_perm``): the residuals of the additive model are
+        permuted, the full model refit, and F recomputed ``n_permutations``
+        times; the empirical p-value is the fraction of permuted F >= observed F
+        (add-one smoothed). Model-free check that does not rely on the
+        F-distribution; recommended for confirming headline hits (multiplies
+        runtime by ~n_permutations).
+    random_state : int, default=0
+        Seed for the permutation RNG.
     verbose : bool, default=True
         Print a progress bar and summary.
 
     Returns
     -------
     dict with keys 'epistasis_df' (one row per tested
-    (site, wt_variant_1, wt_variant_2)) and 'epistasis_results' (summary dict
-    with 'n_tested', 'n_epistatic', 'n_additive', 'epistasis_rate').
+    (site, wt_variant_1, wt_variant_2); includes 'epistasis_pvalue_perm' when
+    n_permutations>0) and 'epistasis_results' (summary dict with 'n_tested',
+    'n_epistatic', 'n_additive', 'epistasis_rate').
     """
     from itertools import combinations
     from sklearn.linear_model import LinearRegression
     from scipy.stats import f as f_distribution
     from tqdm import tqdm
 
+    rng = np.random.default_rng(random_state)
     wt_cols = list(Xwt.columns)
     records = []
     for site in tqdm(list(y_vep.columns), disable=not verbose, desc="Epistasis (pairwise)"):
@@ -5143,6 +5157,25 @@ def test_epistasis_pairwise(
             ss_tot = float(((y - y.mean()) ** 2).sum())
             r2_add = 1 - rss_add / ss_tot if ss_tot > 0 else np.nan
             r2_int = 1 - rss_int / ss_tot if ss_tot > 0 else np.nan
+
+            # Optional permutation null (Freedman-Lane): permute residuals of the
+            # additive model, refit the full model, recompute F. Tests the
+            # interaction term while preserving main effects under H0, without
+            # relying on the F-distribution holding.
+            pvalue_perm = np.nan
+            if n_permutations and n_permutations > 0:
+                yhat_red = m_add.predict(X_add)
+                resid = y - yhat_red
+                ge = 1  # add-one smoothing; counts the observed statistic
+                for _ in range(int(n_permutations)):
+                    ys = yhat_red + rng.permutation(resid)
+                    rss_a = float(((ys - LinearRegression().fit(X_add, ys).predict(X_add)) ** 2).sum())
+                    rss_i = float(((ys - LinearRegression().fit(X_int, ys).predict(X_int)) ** 2).sum())
+                    fs = max(((rss_a - rss_i) / 1.0) / (rss_i / df_int), 0.0) if rss_i > 1e-12 else 0.0
+                    if fs >= f_stat:
+                        ge += 1
+                pvalue_perm = ge / (int(n_permutations) + 1)
+
             records.append({
                 "site": site,
                 "clinical_variant": site,
@@ -5155,6 +5188,7 @@ def test_epistasis_pairwise(
                 "delta_r2": (r2_int - r2_add) if ss_tot > 0 else np.nan,
                 "epistasis_fstat": f_stat,
                 "epistasis_pvalue": pvalue,
+                "epistasis_pvalue_perm": pvalue_perm,
             })
 
     epistasis_df = pd.DataFrame.from_records(records)
