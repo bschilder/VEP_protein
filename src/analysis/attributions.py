@@ -1,24 +1,54 @@
-import torch
-import torch.nn as nn
 import pandas as pd
 import numpy as np
-import torch.optim as optim
 import matplotlib.pyplot as plt
 import seaborn as sns
 from scipy.stats import binomtest
 from tqdm import tqdm
-import matplotlib.pyplot as plt
-import seaborn as sns
-import numpy as np
 import matplotlib.patches as mpatches
 import matplotlib.ticker as ticker
 
 import src.utils as utils
-import src.vep_analysis as va
-import src.haplosaurus as hs
-import src.onekg as og
-import src.colabfold.colabfold as cf
 import src.analysis.matrices as mc
+
+# --- Optional heavy dependencies -------------------------------------------
+# torch and several sibling modules (which pull in ensembl_rest, pooch, Bio,
+# etc.) are only needed by specific functions/classes in this module. They are
+# imported lazily so that the CPU-only downstream analysis — e.g.
+# `wtvariants_to_vep_linear_model` and the bundled demo (demo/run_demo.py) —
+# can run on a normal desktop without a GPU or the full inference stack. When
+# these packages ARE installed (the intended environment), behaviour is
+# identical to importing them at the top of the module.
+try:
+    import torch
+    import torch.nn as nn
+    import torch.optim as optim
+    _HAS_TORCH = True
+except ImportError:  # pragma: no cover - exercised only on torch-free installs
+    torch = None
+    nn = None
+    optim = None
+    _HAS_TORCH = False
+
+# Base class for the optional torch model: real nn.Module when torch is present,
+# otherwise a plain object so the class definition does not fail to import.
+_NNModule = nn.Module if _HAS_TORCH else object
+
+try:
+    import src.vep_analysis as va
+except ImportError:
+    va = None
+try:
+    import src.haplosaurus as hs
+except ImportError:
+    hs = None
+try:
+    import src.onekg as og
+except ImportError:
+    og = None
+try:
+    import src.colabfold.colabfold as cf
+except ImportError:
+    cf = None
 
 def wtvariants_to_clusters_xgboost(dr_df, 
                                    target = "cluster",
@@ -96,8 +126,9 @@ def wtvariants_to_clusters_xgboost(dr_df,
 
 
 
-# Define a simple feedforward neural network 
-class SimpleNN(nn.Module):
+# Define a simple feedforward neural network
+# (requires torch; see the lazy-import guard near the top of this module)
+class SimpleNN(_NNModule):
     def __init__(self, input_dim, output_dim, hidden_dim=128):
         super(SimpleNN, self).__init__()
         self.net = nn.Sequential(

@@ -50,7 +50,29 @@ See the [Environment setup](#environment-setup) and [Getting started](#getting-s
 
 ## Demo
 
-The fastest end-to-end demo is **`notebooks/VEP.ipynb`**, which loads protein haplotypes, injects a clinical variant, scores with ESM2-650M, and returns per-haplotype VEP scores.
+### Quick demo (CPU, no GPU required)
+
+A small, self-contained demo of the downstream **surrogate-modeling** step (the
+joint-effect Ridge model and epistasis testing) runs on a normal desktop CPU in
+a few seconds on a tiny bundled, simulated dataset:
+
+```bash
+python demo/run_demo.py
+```
+
+- **Expected runtime:** a few seconds on CPU.
+- **Expected output:** `demo/output/interaction_df.csv` and `metrics.csv`,
+  matching the committed `demo/expected_output/` (deterministic, `random_state=42`).
+
+See [`demo/README.md`](demo/README.md) for details.
+
+### Full pipeline demo (GPU required)
+
+The end-to-end VEP pipeline is in **`notebooks/VEP.ipynb`**, which loads protein haplotypes, injects a clinical variant, scores with ESM2-650M, and returns per-haplotype VEP scores.
+
+> **⚠️ Hardware requirement:** ESM-based variant effect prediction **requires a
+> CUDA-capable NVIDIA GPU** (tested on A100/H100 80 GB). This step cannot be
+> meaningfully run on CPU.
 
 - **Expected runtime:** ~5 min on 1× A100 GPU for the bundled example transcript
 - **Expected output:** a Parquet file of per-haplotype VEP scores plus summary plots inline in the notebook
@@ -158,6 +180,27 @@ Notebooks are the main way to reproduce and explore the analyses.
 | [colabfold.ipynb](notebooks/colabfold.ipynb), [categorical_jacobians.ipynb](notebooks/categorical_jacobians.ipynb) | ColabFold and Jacobians. |
 
 Other notebooks in `notebooks/` (e.g. ensemblVEP, OpenTargets, patient_embeddings) follow the same pattern: they rely on `src/` and optional conda envs as noted above.
+
+---
+
+## Reproducing manuscript results
+
+Run each notebook from the repository root in the relevant conda environment
+(**GPU required** for the ESM inference notebooks). The main mappings:
+
+| Manuscript result | Notebook(s) |
+|---|---|
+| Per-haplotype ESM VEP scores | [VEP.ipynb](notebooks/VEP.ipynb) |
+| ProteinGym benchmark comparisons | [ProteinGym.ipynb](notebooks/ProteinGym.ipynb) |
+| Haplotype construction (ProHap / Haplosaurus) | [ProHap.ipynb](notebooks/ProHap.ipynb), [haplosaurus.ipynb](notebooks/haplosaurus.ipynb) |
+| Population analyses (1KG / HGDP) | [1KG.ipynb](notebooks/1KG.ipynb), [HGDP.ipynb](notebooks/HGDP.ipynb) |
+| VEP score distributions & embeddings | [distributions.ipynb](notebooks/distributions.ipynb), [embeddings.ipynb](notebooks/embeddings.ipynb) |
+| Structure analyses (ColabFold, categorical Jacobians) | [colabfold.ipynb](notebooks/colabfold.ipynb), [categorical_jacobians.ipynb](notebooks/categorical_jacobians.ipynb) |
+| Variant attribution / epistasis (joint-effect model, F-test) | [variant_attribution.ipynb](notebooks/variant_attribution.ipynb) |
+
+The surrogate-modeling / epistasis methodology underlying the attribution
+analyses is documented in [docs/methods_epistasis.md](docs/methods_epistasis.md)
+and demonstrated on a tiny CPU dataset in [`demo/`](demo/).
 
 ---
 
