@@ -46,7 +46,7 @@ See the [Environment setup](#environment-setup) and [Getting started](#getting-s
 - **~15 min** to create the primary `esm2` conda environment
 - Additional time on first run for one-time downloads of model weights from Hugging Face
 
-> *Maintainer to confirm measured timings before final submission.*
+> *Timings are approximate and will vary with hardware, network speed, and model-weight cache state.*
 
 ## Demo
 
@@ -55,7 +55,7 @@ The fastest end-to-end demo is **`notebooks/VEP.ipynb`**, which loads protein ha
 - **Expected runtime:** ~5 min on 1× A100 GPU for the bundled example transcript
 - **Expected output:** a Parquet file of per-haplotype VEP scores plus summary plots inline in the notebook
 
-> *Maintainer to confirm measured timings before final submission.*
+> *Timings are approximate and will vary with hardware, network speed, and model-weight cache state.*
 
 ---
 
