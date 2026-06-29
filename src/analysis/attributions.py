@@ -5232,6 +5232,7 @@ def test_wt_clinical_interaction(
     n_permutations=0,
     random_state=0,
     add_positions=True,
+    cluster_labels=None,
     verbose=True,
 ):
     """
@@ -5285,6 +5286,11 @@ def test_wt_clinical_interaction(
         Seed for the permutation RNG.
     add_positions : bool, default=True
         Best-effort parse of positions from variant names (no-op if unparseable).
+    cluster_labels : array-like, optional
+        Per-haplotype cluster labels (e.g. sample IDs) aligned to the rows of
+        ``Xwt``/``y_vep``. If given, an additional cluster-robust (sandwich) SE
+        clustered by these labels is computed (``pvalue_cluster``), handling
+        non-independence (scalable alternative to a per-sample random-effect model).
     verbose : bool, default=True
         Print a progress bar and summary.
 
@@ -5298,6 +5304,7 @@ def test_wt_clinical_interaction(
     from tqdm import tqdm
 
     rng = np.random.default_rng(random_state)
+    clab = None if cluster_labels is None else np.asarray(cluster_labels)
     wt_cols = list(Xwt.columns)
     records = []
     for site in tqdm(list(y_vep.columns), disable=not verbose, desc="WTxClinical"):
@@ -5307,6 +5314,7 @@ def test_wt_clinical_interaction(
             mask = ~(np.isnan(x_all) | np.isnan(y_all))
             x = x_all[mask]
             y = y_all[mask]
+            g = None if clab is None else clab[mask]
             n = len(y)
             n1 = int((x > 0.5).sum())
             n0 = n - n1
@@ -5327,6 +5335,21 @@ def test_wt_clinical_interaction(
                 continue
             t = beta / se
             pvalue = float(2 * stats.t.sf(abs(t), dfree))
+
+            # Optional cluster-robust SE (clustered by e.g. sample) for
+            # non-independence (scalable alternative to a random-effect model).
+            pvalue_cluster = np.nan
+            if g is not None:
+                resid = y - (intercept + beta * x)
+                u = (x - xbar) * resid
+                groups = pd.unique(g)
+                G = len(groups)
+                if G > 2:
+                    meat = float((pd.Series(u).groupby(g).sum().values ** 2).sum())
+                    V = meat / (Sxx ** 2) * (G / (G - 1.0)) * ((n - 1.0) / (n - 2.0))
+                    if V > 0:
+                        t_c = beta / np.sqrt(V)
+                        pvalue_cluster = float(2 * stats.t.sf(abs(t_c), G - 1))
 
             pvalue_perm = np.nan
             if n_permutations and n_permutations > 0:
@@ -5352,6 +5375,7 @@ def test_wt_clinical_interaction(
                 "interaction_beta": beta,
                 "t_stat": t,
                 "pvalue": pvalue,
+                "pvalue_cluster": pvalue_cluster,
                 "pvalue_perm": pvalue_perm,
             })
 
