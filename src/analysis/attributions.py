@@ -5375,6 +5375,13 @@ def test_wt_clinical_interaction(
             n_isolated = int(((nvar == 1) & carriers).sum())
             frac_carriers_isolated = (n_isolated / n1) if n1 > 0 else np.nan
 
+            # 1a: effect size relative to the clinical variant's own effect
+            # (its baseline VEP in non-carrier / reference backgrounds).
+            clinical_baseline = float(y[~carriers].mean()) if n0 > 0 else np.nan
+            beta_rel_clinical = (beta / abs(clinical_baseline)
+                                 if clinical_baseline is not None
+                                 and abs(clinical_baseline) > 1e-9 else np.nan)
+
             records.append({
                 "wt_variant": w,
                 "site": site,
@@ -5384,6 +5391,8 @@ def test_wt_clinical_interaction(
                 "n_isolated_carriers": n_isolated,
                 "frac_carriers_isolated": frac_carriers_isolated,
                 "interaction_beta": beta,
+                "clinical_baseline_vep": clinical_baseline,
+                "beta_rel_clinical": beta_rel_clinical,
                 "t_stat": t,
                 "pvalue": pvalue,
                 "pvalue_cluster": pvalue_cluster,
@@ -5403,6 +5412,25 @@ def test_wt_clinical_interaction(
             interaction_df["is_significant"] = interaction_df["qvalue"] < pvalue_threshold
         else:
             interaction_df["is_significant"] = interaction_df["pvalue"] < pvalue_threshold
+
+        # 1c: within-site outlier of the effect across all background variants at
+        # a clinical site. Uses the per-site distribution of beta as an EMPIRICAL
+        # null, so it stays valid for singletons (no per-pair replication needed).
+        def _robust_z(s):
+            med = s.median()
+            mad = (s - med).abs().median()
+            scale = 1.4826 * mad
+            return (s - med) / scale if scale > 1e-12 else s * np.nan
+
+        def _emp_rank_p(s):
+            a = s.abs().values
+            order = a.argsort()[::-1]
+            ranks = np.empty(len(a)); ranks[order] = np.arange(1, len(a) + 1)
+            return pd.Series(ranks / len(a), index=s.index)
+
+        g = interaction_df.groupby("site")["interaction_beta"]
+        interaction_df["beta_zscore_within_site"] = g.transform(_robust_z)
+        interaction_df["p_within_site"] = g.transform(_emp_rank_p)
 
         if add_positions:
             def _pos(name):
