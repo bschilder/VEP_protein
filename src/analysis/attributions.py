@@ -603,9 +603,10 @@ def wtvariants_to_vep_linear_model(
         warnings.warn(
             "This epistasis test builds its interaction regressor as "
             "`wt_clean * deviation_from_baseline` with a per-pair scalar, making it "
-            "collinear with the main WT term; it has ~no power to detect non-additivity "
-            "(delta_r2 ~ 0, p ~ 1). Use `test_epistasis_pairwise()` for a valid pairwise "
-            "epistasis test.",
+            "collinear with the main WT term; its F-stats/p-values are invalid (a Ridge "
+            "shrinkage artifact). Use `test_wt_clinical_interaction()` for a valid WT x "
+            "clinical epistasis test (correct p-values for the interaction-strength "
+            "coefficients).",
             stacklevel=2,
         )
         from scipy.stats import f as f_distribution
@@ -5220,3 +5221,177 @@ def test_epistasis_pairwise(
         print(f"Pairwise epistasis: tested={n_tested}, epistatic={n_epistatic} "
               f"({crit} < {pvalue_threshold}), rate={epistasis_results['epistasis_rate']:.4f}")
     return {"epistasis_df": epistasis_df, "epistasis_results": epistasis_results}
+
+
+def test_wt_clinical_interaction(
+    Xwt,
+    y_vep,
+    min_group=10,
+    pvalue_threshold=0.05,
+    fdr=True,
+    n_permutations=0,
+    random_state=0,
+    add_positions=True,
+    verbose=True,
+):
+    """
+    Test whether each background (WT) variant interacts with each clinical
+    variant: i.e. whether a clinical variant's *effect* depends on the presence
+    of a background variant.
+
+    This is the corrected significance test for the manuscript's epistasis
+    question ("does any WT variant interact with any clinical variant"). It
+    REPLACES the degenerate epistasis test inside
+    ``wtvariants_to_vep_linear_model(test_epistasis=True)`` (whose interaction
+    regressor ``wt * deviation`` is collinear with the main term, giving invalid
+    p-values).
+
+    Rationale: each VEP score ``y_vep[h, j]`` is itself the EFFECT (delta/LLR) of
+    clinical variant ``j`` in haplotype background ``h``. Therefore the
+    dependence of that effect on a background variant ``WT_i`` is exactly the
+    ``WT_i x clinical_j`` epistatic interaction (a cross-derivative). For each
+    (WT_i, clinical_j) pair we fit the ordinary least squares regression
+
+        y_vep[:, j] ~ 1 + WT_i
+
+    and t-test the slope ``beta_ij`` (the signed interaction strength; for binary
+    WT this equals mean(effect | WT_i=1) - mean(effect | WT_i=0)). OLS is used so
+    the t reference distribution is exact; Benjamini-Hochberg FDR is applied
+    across all tested pairs. ``beta_ij`` is the same interaction-strength
+    coefficient validated against AlphaFold2 contacts; this function provides its
+    valid p-value.
+
+    Note on confounding: the marginal model is unbiased for ``beta_ij`` when
+    background variants are independent across haplotypes (e.g. injected
+    artificially without LD). If background variants were in LD, a conditional
+    model controlling for co-occurring variants would be needed instead.
+
+    Parameters
+    ----------
+    Xwt : pd.DataFrame
+        Haplotype x WT-variant binary matrix (e.g. ``X_wt_clean``).
+    y_vep : pd.DataFrame
+        Haplotype x clinical-site matrix of VEP effects, aligned to Xwt.
+    min_group : int, default=10
+        Require at least this many haplotypes WITH and WITHOUT each WT variant.
+    pvalue_threshold : float, default=0.05
+        Significance threshold (applied to the FDR q-value when ``fdr=True``).
+    fdr : bool, default=True
+        Add Benjamini-Hochberg q-values and use them for the ``is_significant`` call.
+    n_permutations : int, default=0
+        If > 0, also compute a permutation p-value (``pvalue_perm``) per pair by
+        shuffling the VEP effect and recomputing |t| (model-free; for confirming hits).
+    random_state : int, default=0
+        Seed for the permutation RNG.
+    add_positions : bool, default=True
+        Best-effort parse of positions from variant names (no-op if unparseable).
+    verbose : bool, default=True
+        Print a progress bar and summary.
+
+    Returns
+    -------
+    dict with keys 'interaction_df' (one row per (wt_variant, site): beta_ij,
+    t_stat, pvalue, pvalue_perm, qvalue, is_significant) and 'results' (summary
+    dict with 'n_tested', 'n_significant', 'n_null', 'significant_rate').
+    """
+    from scipy import stats
+    from tqdm import tqdm
+
+    rng = np.random.default_rng(random_state)
+    wt_cols = list(Xwt.columns)
+    records = []
+    for site in tqdm(list(y_vep.columns), disable=not verbose, desc="WTxClinical"):
+        y_all = y_vep[site].values.astype(float)
+        for w in wt_cols:
+            x_all = Xwt[w].values.astype(float)
+            mask = ~(np.isnan(x_all) | np.isnan(y_all))
+            x = x_all[mask]
+            y = y_all[mask]
+            n = len(y)
+            n1 = int((x > 0.5).sum())
+            n0 = n - n1
+            if n1 < min_group or n0 < min_group:
+                continue
+            xbar = x.mean()
+            Sxx = float(((x - xbar) ** 2).sum())
+            if Sxx <= 0 or n - 2 <= 0:
+                continue
+            beta = float(((x - xbar) * (y - y.mean())).sum() / Sxx)
+            intercept = y.mean() - beta * xbar
+            rss = float(((y - (intercept + beta * x)) ** 2).sum())
+            dfree = n - 2
+            if rss <= 1e-12:
+                continue
+            se = float(np.sqrt((rss / dfree) / Sxx))
+            if se <= 0:
+                continue
+            t = beta / se
+            pvalue = float(2 * stats.t.sf(abs(t), dfree))
+
+            pvalue_perm = np.nan
+            if n_permutations and n_permutations > 0:
+                at = abs(t)
+                ge = 1
+                for _ in range(int(n_permutations)):
+                    yp = rng.permutation(y)
+                    b = ((x - xbar) * (yp - yp.mean())).sum() / Sxx
+                    icp = yp.mean() - b * xbar
+                    rss_p = ((yp - (icp + b * x)) ** 2).sum()
+                    se_p = np.sqrt((rss_p / dfree) / Sxx) if rss_p > 0 else 0.0
+                    tp = abs(b / se_p) if se_p > 0 else 0.0
+                    if tp >= at:
+                        ge += 1
+                pvalue_perm = ge / (int(n_permutations) + 1)
+
+            records.append({
+                "wt_variant": w,
+                "site": site,
+                "clinical_variant": site,
+                "n_with": n1,
+                "n_without": n0,
+                "interaction_beta": beta,
+                "t_stat": t,
+                "pvalue": pvalue,
+                "pvalue_perm": pvalue_perm,
+            })
+
+    interaction_df = pd.DataFrame.from_records(records)
+    if len(interaction_df):
+        if fdr:
+            p = interaction_df["pvalue"].values
+            m = len(p)
+            order = np.argsort(p)
+            ranked = p[order] * m / (np.arange(m) + 1)
+            q = np.empty(m)
+            q[order] = np.clip(np.minimum.accumulate(ranked[::-1])[::-1], 0, 1)
+            interaction_df["qvalue"] = q
+            interaction_df["is_significant"] = interaction_df["qvalue"] < pvalue_threshold
+        else:
+            interaction_df["is_significant"] = interaction_df["pvalue"] < pvalue_threshold
+
+        if add_positions:
+            def _pos(name):
+                try:
+                    return int(str(name).split(":")[1].split("-")[0])
+                except Exception:
+                    return np.nan
+            interaction_df["wt_position"] = interaction_df["wt_variant"].map(_pos)
+            interaction_df["clinical_position"] = interaction_df["site"].map(_pos)
+
+        interaction_df = interaction_df.reindex(
+            interaction_df["t_stat"].abs().sort_values(ascending=False).index
+        ).reset_index(drop=True)
+
+    n_tested = len(interaction_df)
+    n_sig = int(interaction_df["is_significant"].sum()) if n_tested else 0
+    results = {
+        "n_tested": n_tested,
+        "n_significant": n_sig,
+        "n_null": n_tested - n_sig,
+        "significant_rate": (n_sig / n_tested) if n_tested else 0.0,
+    }
+    if verbose:
+        crit = "q" if fdr else "p"
+        print(f"WT x clinical interactions: tested={n_tested}, significant={n_sig} "
+              f"({crit} < {pvalue_threshold}), rate={results['significant_rate']:.4f}")
+    return {"interaction_df": interaction_df, "results": results}
