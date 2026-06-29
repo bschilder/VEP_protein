@@ -5305,6 +5305,7 @@ def test_wt_clinical_interaction(
 
     rng = np.random.default_rng(random_state)
     clab = None if cluster_labels is None else np.asarray(cluster_labels)
+    hap_nvar = Xwt.values.astype(float).sum(axis=1)  # # background variants per haplotype
     wt_cols = list(Xwt.columns)
     records = []
     for site in tqdm(list(y_vep.columns), disable=not verbose, desc="WTxClinical"):
@@ -5315,6 +5316,7 @@ def test_wt_clinical_interaction(
             x = x_all[mask]
             y = y_all[mask]
             g = None if clab is None else clab[mask]
+            nvar = hap_nvar[mask]
             n = len(y)
             n1 = int((x > 0.5).sum())
             n0 = n - n1
@@ -5366,12 +5368,21 @@ def test_wt_clinical_interaction(
                         ge += 1
                 pvalue_perm = ge / (int(n_permutations) + 1)
 
+            # Isolation: fraction of WT_i carriers whose haplotype carries ONLY
+            # WT_i, so the effect (interaction_beta = ΔVEP) is cleanly
+            # attributable to it rather than confounded by co-occurring variants.
+            carriers = x > 0.5
+            n_isolated = int(((nvar == 1) & carriers).sum())
+            frac_carriers_isolated = (n_isolated / n1) if n1 > 0 else np.nan
+
             records.append({
                 "wt_variant": w,
                 "site": site,
                 "clinical_variant": site,
                 "n_with": n1,
                 "n_without": n0,
+                "n_isolated_carriers": n_isolated,
+                "frac_carriers_isolated": frac_carriers_isolated,
                 "interaction_beta": beta,
                 "t_stat": t,
                 "pvalue": pvalue,
